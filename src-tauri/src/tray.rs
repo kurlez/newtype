@@ -2,7 +2,14 @@ use crate::updater::{self, StateDto};
 use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NavigateEvent {
+    tab: String,
+    last: bool,
+}
 
 static LAST_MENU: Mutex<String> = Mutex::new(String::new());
 
@@ -12,7 +19,11 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
         .tooltip("newtype")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(|app, event| {
+            crate::dictation::remember_focus(app);
+            match event.id().as_ref() {
+            "history" => reveal_history(app, false),
+            "last" => reveal_history(app, true),
             "open" => reveal(app),
             "check" => {
                 let app = app.clone();
@@ -29,6 +40,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             "quit" => app.exit(0),
             "dictate" => crate::dictation::toggle(app),
             _ => {}
+        }
         });
     builder = builder.icon(tray_icon());
     #[cfg(target_os = "macos")]
@@ -70,15 +82,40 @@ pub fn refresh_menu(app: &AppHandle) {
 
 pub fn reveal(app: &AppHandle) {
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    if !crate::dictation::is_busy(app) {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    }
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
         let _ = window.unminimize();
-        let _ = window.set_focus();
+        if crate::dictation::is_busy(app) {
+            crate::overlay::show_without_activating(&window);
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
     }
 }
 
+fn reveal_history(app: &AppHandle, last: bool) {
+    reveal(app);
+    let _ = app.emit(
+        "ui://navigate",
+        NavigateEvent {
+            tab: "history".into(),
+            last,
+        },
+    );
+}
+
 fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
+    let history = MenuItem::with_id(app, "history", crate::locale::text("History", "历史"), true, None::<&str>)?;
+    let last = MenuItem::with_id(
+        app,
+        "last",
+        crate::locale::text("Show last result", "显示上一条结果"),
+        true,
+        None::<&str>,
+    )?;
     let open = MenuItem::with_id(app, "open", "Open newtype", true, None::<&str>)?;
     let version = MenuItem::with_id(
         app,
@@ -136,13 +173,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         Menu::with_items(
             app,
             &[
-                &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
+                &history, &last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
             ],
         )
     } else {
         Menu::with_items(
             app,
-            &[&open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
+            &[&history, &last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
         )
     }
 }

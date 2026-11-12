@@ -26,6 +26,7 @@
     "allow-dictation-open-privacy",
     "allow-dictation-capture-hotkey",
     "allow-dictation-cancel-capture",
+    "allow-dictation-capture-key",
     "allow-dictation-set-hotkey",
     "allow-dictation-record-toggle",
     "allow-dictation-cancel",

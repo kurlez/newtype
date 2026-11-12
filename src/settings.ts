@@ -56,6 +56,7 @@ let preview = false;
 let remoteModels: string[] = [];
 let dictionaryQuery = "";
 let historyQuery = "";
+let mainTab: "history" | "settings" = "history";
 
 export async function mount(previewMode: boolean): Promise<void> {
   preview = previewMode;
@@ -146,9 +147,35 @@ export async function mount(previewMode: boolean): Promise<void> {
       routeNotice.hidden = snap.routeNotice.length === 0;
     }
   });
+  window.addEventListener("keydown", onCaptureKey, true);
+  window.addEventListener("keyup", onCaptureKey, true);
+  await listen<{ tab: string; last: boolean }>("ui://navigate", (event) => {
+    if (event.payload.tab === "history" || event.payload.tab === "settings") {
+      mainTab = event.payload.tab;
+      paint();
+      if (event.payload.last) {
+        document.querySelector("#last-result")?.scrollIntoView({ block: "nearest" });
+      }
+    }
+  });
   await listen<CaptureEvent>("dictation://capture", (event) => {
     const mode = event.payload.mode as HotkeyModeName;
     if (!editors[mode]) {
+      return;
+    }
+    if (event.payload.phase === "listening") {
+      editors[mode] = {
+        ...editors[mode],
+        phase: "capturing",
+        pendingChord: event.payload.hotkey,
+        pendingLabel: event.payload.label,
+      };
+      setHotkeyMessage(
+        event.payload.label
+          ? `${ui("Heard", "已按下")} ${event.payload.label}. ${ui("Release the keys to finish.", "松开按键后完成。")}`
+          : ui("Press the keys, then release them. Escape cancels.", "按下按键后松开。Esc 取消。"),
+      );
+      renderHotkeys();
       return;
     }
     if (event.payload.phase === "idle" || !event.payload.hotkey) {
@@ -227,6 +254,27 @@ function paint(): void {
   const asr = preset(settings.asrProvider);
   const llm = preset(settings.llmProvider);
   host.innerHTML = `
+    <nav class="tabs" role="tablist" aria-label="${ui("Sections", "分区")}">
+      <button type="button" class="tab${mainTab === "history" ? " active" : ""}" data-tab="history" role="tab" aria-selected="${mainTab === "history"}">${ui("History", "历史")}</button>
+      <button type="button" class="tab${mainTab === "settings" ? " active" : ""}" data-tab="settings" role="tab" aria-selected="${mainTab === "settings"}">${ui("Settings", "设置")}</button>
+    </nav>
+    <p class="status" id="notice">${escapeHtml(notice)}</p>
+    <div id="panel-history" role="tabpanel" ${mainTab === "history" ? "" : "hidden"}>
+      ${lastResultCard()}
+      <section id="sec-history">
+        <h2>${ui("History", "历史")}</h2>
+        <p class="status">${ui("On this device only. Each entry shows the mode and the path. The latest 300 that are still inside the retention window are kept.", "只存在这台电脑上。每条显示模式和路径。保留期内最新的 300 条会被留下。")}</p>
+        <label class="field">${ui("Keep history", "保留时长")}
+          <select id="retention">
+            ${retentionOptions(settings.historyRetention || "month")}
+          </select>
+        </label>
+        <label class="field">${ui("Search", "搜索")}<input id="history-search" value="${escapeHtml(historyQuery)}" placeholder="${ui("Text, mode, or path", "文本、模式或路径")}" /></label>
+        <ul class="history">${visibleHistory().map((entry) => historyRow(entry)).join("") || `<li>${ui("No matching history.", "没有匹配的历史。")}</li>`}</ul>
+        <div class="row"><button type="button" id="clear-history">${ui("Clear all", "全部清除")}</button></div>
+      </section>
+    </div>
+    <div id="panel-settings" role="tabpanel" ${mainTab === "settings" ? "" : "hidden"}>
     <section>
       <h2 id="sec-path">${ui("Path", "路径")}</h2>
       <p class="banner" id="route-banner">${escapeHtml(snap.routeLabel)}</p>
@@ -312,9 +360,10 @@ function paint(): void {
       <div class="row">
         <button type="button" id="add-hotword">${ui("Add term", "添加词条")}</button>
         <button type="button" id="export-dictionary">${ui("Export JSON", "导出 JSON")}</button>
-        <button type="button" id="import-dictionary">${ui("Import JSON", "导入 JSON")}</button>
+        <button type="button" id="import-dictionary">${ui("Import dictionary", "导入词典")}</button>
       </div>
-      <input id="dictionary-file" type="file" accept="application/json,.json" hidden />
+      <p class="status">${ui("Import merges. JSON v1, one term per line, or CSV: term,replacement1|replacement2. A term already saved with the same spelling is kept once.", "导入会合并。支持 JSON v1、每行一个词条，或 CSV：词条,替换1|替换2。拼写完全相同的词条只保留一条。")}</p>
+      <input id="dictionary-file" type="file" accept="application/json,.json,text/plain,.txt,text/csv,.csv" hidden />
     </section>
     <section>
       <h2 id="sec-audio">${ui("Audio", "语音")}</h2>
@@ -322,22 +371,10 @@ function paint(): void {
       <datalist id="mic-list"></datalist>
       <div class="row"><button type="button" id="refresh-mics">List devices</button><button type="button" id="probe-mic">Test microphone</button><button type="button" id="record">Record a test</button></div>
     </section>
-    <section id="sec-history">
-      <h2>${ui("History", "历史")}</h2>
-      <p class="status">${ui("On this device only. Each entry shows the mode and the path. The latest 300 that are still inside the retention window are kept.", "只存在这台电脑上。每条显示模式和路径。保留期内最新的 300 条会被留下。")}</p>
-      <label class="field">${ui("Keep history", "保留时长")}
-        <select id="retention">
-          ${retentionOptions(settings.historyRetention || "month")}
-        </select>
-      </label>
-      <label class="field">${ui("Search", "搜索")}<input id="history-search" value="${escapeHtml(historyQuery)}" placeholder="${ui("Text, mode, or path", "文本、模式或路径")}" /></label>
-      <ul class="history">${visibleHistory().map((entry) => historyRow(entry)).join("") || `<li>${ui("No matching history.", "没有匹配的历史。")}</li>`}</ul>
-      <div class="row"><button type="button" id="clear-history">${ui("Clear all", "全部清除")}</button></div>
-    </section>
     <section>
       <div class="row"><button type="button" id="save" class="primary">${ui("Save settings", "保存设置")}</button><button type="button" id="reset-models">${ui("Reset suggested models", "恢复建议模型")}</button></div>
-      <p class="status" id="notice">${escapeHtml(notice)}</p>
     </section>
+    </div>
   `;
   const about = document.querySelector("#about-licenses");
   if (about && snap.local.attribution) {
@@ -382,6 +419,16 @@ function bind(): void {
     });
   }
   document.querySelector("#save")?.addEventListener("click", () => void save());
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
+    button.addEventListener("click", () => {
+      const next = button.dataset.tab;
+      if (next === "history" || next === "settings") {
+        readForm();
+        mainTab = next;
+        paint();
+      }
+    });
+  }
   document.querySelector("#save-key")?.addEventListener("click", () => void saveKeys());
   document.querySelector("#clear-key")?.addEventListener("click", () => void clearKey(snap.settings.asrProvider));
   document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider, "speech"));
@@ -1122,7 +1169,10 @@ function hotkeyRow(mode: HotkeyModeName, title: string, index: number): string {
             `<button type="button" data-mode="${mode}" data-preview-chord="${escapeHtml(chord)}" data-preview-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`,
         ).join("")}</div>`
       : "";
-    controls = `<p class="status">${preview ? "Preview has no keyboard hook. Choose a chord." : "Press the keys, then release them. Escape cancels."}</p>${previewKeys}<div class="row"><button type="button" data-cancel="${mode}">Cancel</button></div>`;
+    const heard = editor.pendingLabel
+      ? `<p class="status">${ui("Heard", "已按下")}: <strong>${escapeHtml(editor.pendingLabel)}</strong></p>`
+      : "";
+    controls = `<p class="status">${preview ? "Preview has no keyboard hook. Choose a chord." : ui("Press the keys, then release them. Escape cancels.", "按下按键后松开。Esc 取消。")}</p>${heard}${previewKeys}<div class="row"><button type="button" data-cancel="${mode}">Cancel</button></div>`;
   } else if (editor.phase === "pending") {
     controls = `<p class="status">Captured: <strong>${escapeHtml(editor.pendingLabel)}</strong> <code>${escapeHtml(editor.pendingChord)}</code></p>${pendingWarningLine}<div class="row"><button type="button" class="primary" data-set="${mode}">Set</button><button type="button" data-capture="${mode}">Capture again</button><button type="button" data-cancel="${mode}">Cancel</button></div>`;
   }
@@ -1158,7 +1208,53 @@ function historyRow(entry: HistoryEntry): string {
   const rerun = entry.audioKept
     ? `<button type="button" data-rerun="${escapeHtml(entry.id)}">${ui("Re-run", "重新识别")}</button>`
     : "";
-  return `<li><p><strong>${escapeHtml(entry.text || ui("(empty)", "（空）"))}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.appVersion)}${flag}${kept}</p>${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button>${rerun}<button type="button" data-delete="${escapeHtml(entry.id)}">${ui("Delete", "删除")}</button></div></li>`;
+  const hit = dictionaryHitLine(entry);
+  const hitLine = hit ? `<p class="status">${escapeHtml(hit)}</p>` : "";
+  return `<li><p><strong>${escapeHtml(entry.text || ui("(empty)", "（空）"))}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.appVersion)}${flag}${kept}</p>${hitLine}${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button>${rerun}<button type="button" data-delete="${escapeHtml(entry.id)}">${ui("Delete", "删除")}</button></div></li>`;
+}
+
+function lastResultCard(): string {
+  const entry = history[0];
+  const title = ui("Last result", "上一条结果");
+  if (!entry) {
+    return `<section class="last-result" id="last-result"><h2>${title}</h2><p class="status">${ui("No history yet.", "还没有历史。")}</p></section>`;
+  }
+  const hit = dictionaryHitLine(entry);
+  return `<section class="last-result" id="last-result"><h2>${title}</h2><p class="last-text">${escapeHtml(entry.text || ui("(empty)", "（空）"))}</p><p class="muted">${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)}</p>${hit ? `<p class="status">${escapeHtml(hit)}</p>` : ""}<div class="row"><button type="button" class="primary" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button></div></section>`;
+}
+
+function dictionaryHitLine(entry: HistoryEntry): string {
+  const applied = entry.dictionaryApplied ?? [];
+  const possible = entry.dictionaryPossible ?? [];
+  if (applied.length === 0 && possible.length === 0) {
+    return "";
+  }
+  const en = [
+    applied.length > 0 ? `applied ${applied.join(", ")}` : "",
+    possible.length > 0 ? `possible ${possible.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const zh = [
+    applied.length > 0 ? `已用 ${applied.join("、")}` : "",
+    possible.length > 0 ? `可能 ${possible.join("、")}` : "",
+  ]
+    .filter(Boolean)
+    .join("，");
+  return ui(`Dictionary: ${en}`, `词典：${zh}`);
+}
+
+function onCaptureKey(event: KeyboardEvent): void {
+  const capturing = HOTKEY_MODES.some(([mode]) => editors[mode].phase === "capturing");
+  if (!capturing || event.repeat || preview) {
+    return;
+  }
+  event.preventDefault();
+  void call("dictation_capture_key", {
+    code: event.code,
+    down: event.type === "keydown",
+    alt: event.altKey,
+  });
 }
 
 function modeLabel(mode: string): string {

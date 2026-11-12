@@ -267,6 +267,8 @@ export const previewHistory: HistoryEntry[] = [
     usedFallback: false,
     note: "",
     audioKept: false,
+    dictionaryApplied: ["Claude Code"],
+    dictionaryPossible: ["QuuxWidget"],
   },
   {
     id: "2",

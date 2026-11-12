@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-12: Dictation restores the window that had focus before paste. If it cannot, the text stays on the clipboard and in History. History is the first tab, a tray item, and a last-result card. The main window minimizes instead of hiding. Windows hotkey capture hears modifier keys, including Right Alt when Windows also injects Left Ctrl. Dictionary import merges JSON, one-term lines, and `term,replacement1|replacement2`, and history shows applied and possible dictionary terms.
 - 2026-11-12: macOS CI can sign with a stable self-signed identity (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`). Missing secrets stay on ad-hoc. Downloaded `llama-server` binaries are signed as one set.
 - 2026-11-12: SenseVoice-Small int8 is an optional local speech model (sherpa-onnx, not the default). The About page attributes FunASR only after it is installed.
 - 2026-11-12: Volcengine speech uses the official openspeech socket (`bigmodel`, resource `volc.seedasr.sauc.duration`). A missing microphone or Accessibility permission shows a prompt that opens the matching system settings pane.

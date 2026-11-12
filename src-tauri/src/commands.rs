@@ -108,6 +108,11 @@ pub fn dictation_cancel_capture(app: AppHandle) {
 }
 
 #[tauri::command]
+pub fn dictation_capture_key(app: AppHandle, code: String, down: bool, alt: bool) {
+    crate::dictation::capture_key(&app, &code, down, alt);
+}
+
+#[tauri::command]
 pub fn dictation_set_hotkey(
     app: AppHandle,
     mode: String,

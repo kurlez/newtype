@@ -5,7 +5,7 @@
 //! `rdev::listen` returns after a single `GetMessage`, which drops the hook
 //! after the first message on the thread. This loop keeps the hook alive.
 
-use crate::pipeline::hotkey::{self, KeyEdge, KeyId};
+use crate::pipeline::hotkey;
 
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
@@ -21,10 +21,8 @@ const WM_SYSKEYUP: usize = 0x0105;
 const LLKHF_UP: u32 = 0x80;
 
 static HOOK: Mutex<Option<isize>> = Mutex::new(None);
-static ON_EDGE: Mutex<Option<Box<dyn FnMut(KeyEdge) + Send>>> = Mutex::new(None);
 
-pub fn run(on_edge: impl FnMut(KeyEdge) + Send + 'static) -> Result<(), String> {
-    *ON_EDGE.lock().expect("hotkey callback") = Some(Box::new(on_edge));
+pub fn run() -> Result<(), String> {
     unsafe {
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0);
         if hook.is_null() {
@@ -50,31 +48,20 @@ pub fn run(on_edge: impl FnMut(KeyEdge) + Send + 'static) -> Result<(), String> 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         if let Some(edge) = edge_from(wparam, lparam) {
-            if let Some(callback) = ON_EDGE.lock().expect("hotkey callback").as_mut() {
-                callback(edge);
-            }
+            crate::key_feed::push(edge, false);
         }
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
-fn edge_from(wparam: WPARAM, lparam: LPARAM) -> Option<KeyEdge> {
+fn edge_from(wparam: WPARAM, lparam: LPARAM) -> Option<hotkey::KeyEdge> {
     let up = match wparam {
         WM_KEYUP | WM_SYSKEYUP => true,
         WM_KEYDOWN | WM_SYSKEYDOWN => false,
         _ => return None,
     };
     let info = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
-    let released = up || info.flags & LLKHF_UP != 0;
-    let key = hotkey::key_from_windows_vk(info.vkCode);
-    if key == KeyId::Other && info.vkCode == 0 {
-        return None;
-    }
-    Some(if released {
-        KeyEdge::Up(key)
-    } else {
-        KeyEdge::Down(key)
-    })
+    hotkey::edge_from_windows(info.vkCode, info.scanCode, info.flags, up || info.flags & LLKHF_UP != 0)
 }
 
 // Silence unused import if the compiler treats HHOOK as unused through the cast.

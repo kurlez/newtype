@@ -1,6 +1,7 @@
 //! Hot-word replacement before the LLM. Aliases and regex run on the transcript.
 //! Canonical spellings with no alias are prompt-only.
 
+use pinyin::ToPinyin;
 use serde::{Deserialize, Serialize};
 
 use super::ModuleStatus;
@@ -151,6 +152,325 @@ pub fn export_json(words: &[Hotword]) -> Result<String, String> {
         "terms": terms,
     }))
     .map_err(|err| err.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryHit {
+    pub applied: Vec<String>,
+    pub possible: Vec<String>,
+}
+
+/// Which dictionary terms the raw transcript actually replaced, and which ones
+/// it only came close to (edit distance or pinyin).
+pub fn analyze(raw: &str, words: &[Hotword]) -> DictionaryHit {
+    let mut applied = Vec::new();
+    let mut possible = Vec::new();
+    for word in words {
+        let canonical = word.canonical.trim();
+        if canonical.is_empty() {
+            continue;
+        }
+        if word_applied(raw, word) {
+            if !applied.iter().any(|item: &String| item == canonical) {
+                applied.push(canonical.to_string());
+            }
+            continue;
+        }
+        if possible.len() < 6 && near_miss(raw, word) && !possible.iter().any(|item: &String| item == canonical) {
+            possible.push(canonical.to_string());
+        }
+    }
+    DictionaryHit { applied, possible }
+}
+
+fn word_applied(raw: &str, word: &Hotword) -> bool {
+    let only = [word.clone()];
+    apply(raw, &only) != raw
+}
+
+fn near_miss(raw: &str, word: &Hotword) -> bool {
+    let canonical = word.canonical.trim();
+    if contains_exact_ci(raw, canonical) {
+        return false;
+    }
+    let mut targets = vec![canonical.to_string()];
+    targets.extend(word.aliases.iter().map(|alias| alias.trim().to_string()));
+    for target in targets {
+        if target.chars().count() < 2 {
+            continue;
+        }
+        if phonetic_close(raw, &target) {
+            return true;
+        }
+    }
+    false
+}
+
+fn contains_exact_ci(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
+fn phonetic_close(raw: &str, target: &str) -> bool {
+    let raw_py = pinyin_key(raw);
+    let target_py = pinyin_key(target);
+    if target_py.chars().count() >= 3 && raw_py == target_py && !contains_exact_ci(raw, target) {
+        return true;
+    }
+    if target_py.chars().count() >= 4 && !raw_py.is_empty() {
+        let distance = edit_distance(&raw_py, &target_py);
+        if distance > 0 && distance <= allowed(target_py.chars().count()) {
+            return true;
+        }
+    }
+    let target_len = target.chars().count();
+    if target_len >= 2 {
+        for window in char_windows(raw, target_len) {
+            if window.eq_ignore_ascii_case(target) {
+                continue;
+            }
+            let window_py = pinyin_key(&window);
+            if !target_py.is_empty() && window_py == target_py && window_py.chars().count() >= 3 {
+                return true;
+            }
+            if !target.chars().all(|ch| ch.is_ascii()) {
+                let distance = edit_distance(&window, target);
+                if distance > 0 && distance <= 1 {
+                    return true;
+                }
+            }
+        }
+    }
+    for token in tokens(raw) {
+        if token.eq_ignore_ascii_case(target) {
+            continue;
+        }
+        let token_len = token.chars().count();
+        let target_len = target.chars().count();
+        let ascii = target.chars().all(|ch| ch.is_ascii());
+        if ascii && target_len < 4 {
+            continue;
+        }
+        if !ascii && target_len < 2 {
+            continue;
+        }
+        let distance = edit_distance(&token.to_lowercase(), &target.to_lowercase());
+        let limit = allowed(target_len.max(token_len));
+        if distance > 0 && distance <= limit {
+            return true;
+        }
+        let token_py = pinyin_key(&token);
+        if token_py.chars().count() >= 3 && token_py == target_py && token_py != target.to_lowercase() {
+            return true;
+        }
+    }
+    false
+}
+
+fn allowed(len: usize) -> usize {
+    if len <= 4 {
+        1
+    } else if len <= 8 {
+        2
+    } else {
+        3
+    }
+}
+
+fn char_windows(raw: &str, len: usize) -> Vec<String> {
+    let chars: Vec<char> = raw.chars().collect();
+    if len == 0 || chars.len() < len {
+        return Vec::new();
+    }
+    (0..=chars.len() - len)
+        .map(|index| chars[index..index + len].iter().collect())
+        .collect()
+}
+
+fn tokens(raw: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut cjk = false;
+    for ch in raw.chars() {
+        let this_cjk = is_cjk(ch);
+        let keep = ch.is_ascii_alphanumeric() || this_cjk;
+        if keep && (current.is_empty() || this_cjk == cjk) {
+            current.push(ch);
+            cjk = this_cjk;
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            if keep {
+                current.push(ch);
+                cjk = this_cjk;
+            }
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(ch,
+        '\u{3400}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}'
+    )
+}
+
+fn pinyin_key(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        if let Some(py) = ch.to_pinyin() {
+            out.push_str(py.plain());
+        } else if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.is_empty() {
+        return right.len();
+    }
+    if right.is_empty() {
+        return left.len();
+    }
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    let mut current = vec![0; right.len() + 1];
+    for (i, left_ch) in left.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, right_ch) in right.iter().enumerate() {
+            let cost = if left_ch == right_ch { 0 } else { 1 };
+            current[j + 1] = (previous[j + 1] + 1).min(current[j] + 1).min(previous[j] + cost);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
+/// Merge imported terms into the existing list. The same spelling (case-sensitive,
+/// after trimming) keeps one entry and unions aliases.
+pub fn merge(existing: &[Hotword], incoming: &[Hotword]) -> Vec<Hotword> {
+    let mut out = Vec::new();
+    for word in existing.iter().chain(incoming.iter()) {
+        let canonical = word.canonical.trim();
+        if canonical.is_empty() {
+            continue;
+        }
+        if let Some(slot) = out.iter_mut().find(|item: &&mut Hotword| item.canonical == canonical) {
+            for alias in &word.aliases {
+                let alias = alias.trim();
+                if !alias.is_empty() && !slot.aliases.iter().any(|have| have == alias) {
+                    slot.aliases.push(alias.to_string());
+                }
+            }
+            if slot.pattern.trim().is_empty() && !word.pattern.trim().is_empty() {
+                slot.pattern = word.pattern.trim().to_string();
+            }
+        } else {
+            out.push(Hotword {
+                canonical: canonical.to_string(),
+                aliases: word
+                    .aliases
+                    .iter()
+                    .map(|alias| alias.trim().to_string())
+                    .filter(|alias| !alias.is_empty())
+                    .collect(),
+                pattern: word.pattern.trim().to_string(),
+            });
+        }
+    }
+    out
+}
+
+pub fn import_any(body: &str) -> Result<Vec<Hotword>, HotwordError> {
+    let trimmed = body.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return import_json(trimmed);
+    }
+    import_lines(trimmed)
+}
+
+fn import_lines(body: &str) -> Result<Vec<Hotword>, HotwordError> {
+    let mut words = Vec::new();
+    for (index, line) in body.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match parse_line(line) {
+            Ok(Some(word)) => words.push(word),
+            Ok(None) => {}
+            Err(err) => {
+                return Err(HotwordError {
+                    message: format!("Line {}: {}", index + 1, err.message),
+                });
+            }
+        }
+    }
+    validate(&words)?;
+    Ok(words)
+}
+
+fn parse_line(line: &str) -> Result<Option<Hotword>, HotwordError> {
+    let (term, rest) = match split_first_comma(line) {
+        Some(pair) => pair,
+        None => {
+            return Ok(Some(Hotword {
+                canonical: line.to_string(),
+                aliases: Vec::new(),
+                pattern: String::new(),
+            }));
+        }
+    };
+    if is_header(&term, &rest) {
+        return Ok(None);
+    }
+    if term.is_empty() {
+        return Err(HotwordError {
+            message: "A line needs a term before the comma.".into(),
+        });
+    }
+    let aliases = rest
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok(Some(Hotword {
+        canonical: term,
+        aliases,
+        pattern: String::new(),
+    }))
+}
+
+fn split_first_comma(line: &str) -> Option<(String, String)> {
+    let (left, right) = line.split_once(',')?;
+    Some((unquote(left.trim()), unquote(right.trim())))
+}
+
+fn unquote(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        value[1..value.len() - 1].replace("\"\"", "\"").trim().to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn is_header(term: &str, rest: &str) -> bool {
+    term.eq_ignore_ascii_case("term")
+        && (rest.eq_ignore_ascii_case("replacements")
+            || rest.eq_ignore_ascii_case("replacement")
+            || rest.eq_ignore_ascii_case("aliases")
+            || rest.eq_ignore_ascii_case("repl1|repl2"))
 }
 
 pub fn import_json(body: &str) -> Result<Vec<Hotword>, HotwordError> {
@@ -332,5 +652,51 @@ mod tests {
         assert_eq!(from_legacy[0].aliases, vec!["a p i".to_string()]);
         assert!(import_json(r#"{"terms":[{"term":"X","pattern":"("}]}"#).is_err());
         assert!(import_json("not json").is_err());
+    }
+
+    #[test]
+    fn import_merges_json_lines_and_csv_without_case_insensitive_collisions() {
+        let existing = vec![word("Zorblax", &["zor"], "")];
+        let json = r#"{"version":1,"terms":[{"term":"Zorblax","replacements":["zorblx"],"pattern":""},{"term":"Fnordix","replacements":[],"pattern":""}]}"#;
+        let from_json = import_any(json).unwrap();
+        let merged = merge(&existing, &from_json);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].canonical, "Zorblax");
+        assert_eq!(merged[0].aliases, vec!["zor".to_string(), "zorblx".to_string()]);
+        assert_eq!(merged[1].canonical, "Fnordix");
+
+        let lines = "QuuxWidget\nZorblax,zor|extra\nzorblax\nterm,replacements\n";
+        let from_lines = import_any(lines).unwrap();
+        assert_eq!(from_lines[0].canonical, "QuuxWidget");
+        assert!(from_lines[0].aliases.is_empty());
+        assert_eq!(from_lines[1].aliases, vec!["zor".to_string(), "extra".to_string()]);
+        assert_eq!(from_lines[2].canonical, "zorblax");
+        let again = merge(&merged, &from_lines);
+        assert!(again.iter().any(|item| item.canonical == "Zorblax"));
+        assert!(again.iter().any(|item| item.canonical == "zorblax"));
+        assert_eq!(again.iter().filter(|item| item.canonical == "Zorblax").count(), 1);
+        let zorblax = again.iter().find(|item| item.canonical == "Zorblax").unwrap();
+        assert!(zorblax.aliases.iter().any(|alias| alias == "extra"));
+        assert_eq!(zorblax.aliases.iter().filter(|alias| *alias == "zor").count(), 1);
+    }
+
+    #[test]
+    fn dictionary_hits_mark_an_applied_alias_and_a_near_miss() {
+        let words = vec![
+            word("QuuxWidget", &["quux widget"], ""),
+            word("Fnordix", &[], ""),
+            word("中文", &[], ""),
+        ];
+        let hit = analyze("please use quux widget today", &words);
+        assert_eq!(hit.applied, vec!["QuuxWidget".to_string()]);
+        assert!(!hit.possible.iter().any(|item| item == "QuuxWidget"));
+
+        let miss = analyze("please use QuuxWiget today", &words);
+        assert!(miss.applied.is_empty());
+        assert!(miss.possible.iter().any(|item| item == "QuuxWidget"));
+
+        let homophone = analyze("这是中闻测试", &words);
+        assert!(homophone.possible.iter().any(|item| item == "中文"));
+        assert!(homophone.applied.is_empty());
     }
 }

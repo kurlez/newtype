@@ -3,6 +3,9 @@ mod commands;
 mod diag;
 mod dictate_config;
 mod dictation;
+mod key_feed;
+mod locale;
+mod overlay;
 mod permissions;
 mod pipeline;
 mod secrets;
@@ -34,12 +37,13 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
                 if window.label() == "main" {
-                    #[cfg(target_os = "macos")]
-                    let _ = window
-                        .app_handle()
-                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                    // Stay in the taskbar and Alt+Tab. Closing minimizes.
+                    if window.minimize().is_err() {
+                        let _ = window.show();
+                    }
+                } else {
+                    let _ = window.hide();
                 }
             }
         })
@@ -59,6 +63,7 @@ pub fn run() {
             commands::dictation_open_privacy,
             commands::dictation_capture_hotkey,
             commands::dictation_cancel_capture,
+            commands::dictation_capture_key,
             commands::dictation_set_hotkey,
             commands::dictation_record_toggle,
             commands::dictation_cancel,
