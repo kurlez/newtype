@@ -1,0 +1,8 @@
+{
+  "repo": "kurlez/newtype-releases",
+  "devTag": "dev",
+  "channels": {
+    "dev": "https://github.com/kurlez/newtype-releases/releases/download/dev/latest.json",
+    "stable": "https://github.com/kurlez/newtype-releases/releases/latest/download/latest.json"
+  }
+}

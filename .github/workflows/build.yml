@@ -1,0 +1,175 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+# github.run_number for this file is the dev build number. Renaming the file resets it.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            bundles: app,dmg
+          - name: windows-x64
+            os: windows-latest
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Require Apple Silicon
+        if: runner.os == 'macOS'
+        run: "rustc -vV | grep -q 'host: aarch64-apple-darwin'"
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Test version and release scripts
+        run: npm test
+
+      - name: Updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY}"
+            if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
+              echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+            fi
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY<<NEWTYPE_KEY"
+              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY}"
+              echo "NEWTYPE_KEY"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<NEWTYPE_PASS"
+              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+              echo "NEWTYPE_PASS"
+            } >> "$GITHUB_ENV"
+            echo "Using TAURI_SIGNING_PRIVATE_KEY from repository secrets."
+          else
+            echo "No TAURI_SIGNING_PRIVATE_KEY secret. Generating an ephemeral key so the bundle step can run."
+            echo "This build's updater signature will not match the committed public key and must not be published."
+            node node_modules/@tauri-apps/cli/tauri.js signer generate --ci -w "$RUNNER_TEMP/ephemeral-updater.key" -f
+            echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/ephemeral-updater.key" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          fi
+
+      - name: macOS signing identity
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APPLE_CERTIFICATE}" ] || [ -n "${APPLE_SIGNING_IDENTITY}" ] || [ -n "${APPLE_CERTIFICATE_PASSWORD}" ]; then
+            if [ -z "${APPLE_CERTIFICATE}" ] || [ -z "${APPLE_CERTIFICATE_PASSWORD}" ] || [ -z "${APPLE_SIGNING_IDENTITY}" ]; then
+              echo "Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY, or none of them."
+              exit 1
+            fi
+            echo "Stable macOS signing identity is configured. Hardened runtime stays off; this is not Developer ID notarization."
+            echo "::add-mask::${APPLE_CERTIFICATE}"
+            echo "::add-mask::${APPLE_CERTIFICATE_PASSWORD}"
+            {
+              echo "APPLE_CERTIFICATE<<NEWTYPE_APPLE_CERT"
+              printf '%s\n' "${APPLE_CERTIFICATE}"
+              echo "NEWTYPE_APPLE_CERT"
+              echo "APPLE_CERTIFICATE_PASSWORD<<NEWTYPE_APPLE_PASS"
+              printf '%s\n' "${APPLE_CERTIFICATE_PASSWORD}"
+              echo "NEWTYPE_APPLE_PASS"
+              echo "APPLE_SIGNING_IDENTITY<<NEWTYPE_APPLE_ID"
+              printf '%s\n' "${APPLE_SIGNING_IDENTITY}"
+              echo "NEWTYPE_APPLE_ID"
+            } >> "$GITHUB_ENV"
+          else
+            echo "No Apple certificate secret. The app will be ad-hoc signed (signingIdentity -)."
+            echo "The cdhash changes every build, so Accessibility and Microphone grants may not survive updates."
+          fi
+
+      - name: Build
+        run: node scripts/with-version.mjs -- build --bundles ${{ matrix.bundles }}
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          cp build-meta.json dist-release/
+          find src-tauri/target/release/bundle -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
+            -exec cp {} dist-release/ \;
+          find dist-release -maxdepth 1 -type f -print
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist-release
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Secrets present
+        id: gate
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          NEWTYPE_RELEASES_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$NEWTYPE_RELEASES_TOKEN" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Updater publish skipped::Publishing needs TAURI_SIGNING_PRIVATE_KEY and NEWTYPE_RELEASES_TOKEN. See SETUP.md."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify and publish
+        if: steps.gate.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
+        run: node scripts/publish-release.mjs --artifacts artifacts

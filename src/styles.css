@@ -1,0 +1,208 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f1ea;
+  --ink: #1c1915;
+  --muted: #5e584f;
+  --line: #ddd6c8;
+  --card: #fffdf8;
+  --accent: #1f6b4a;
+  --accent-ink: #f3fff8;
+  --warn: #8a4b12;
+  --ok: #1f6b4a;
+  --danger: #8d2c2c;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161411;
+    --ink: #f3efe6;
+    --muted: #b7b0a4;
+    --line: #3a342c;
+    --card: #211e1a;
+    --accent: #8ddec0;
+    --accent-ink: #10241c;
+    --warn: #e2b07a;
+    --ok: #8ddec0;
+    --danger: #f0a8a2;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+#app {
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 28px 22px 40px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.version {
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.version span {
+  display: block;
+  color: var(--muted);
+}
+
+fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+label.choice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 8px 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+label.choice small {
+  display: block;
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+button {
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.status {
+  margin-top: 14px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.status.ready {
+  color: var(--warn);
+}
+
+progress {
+  width: 100%;
+  margin-top: 8px;
+  height: 8px;
+  accent-color: var(--accent);
+}
+
+code,
+.endpoint {
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.endpoint {
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+ol {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.lang {
+  margin-top: 14px;
+  color: var(--muted);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+ul.stubs {
+  margin: 0;
+  padding-left: 18px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+ul.stubs li span {
+  color: var(--muted);
+}
