@@ -152,7 +152,9 @@ export const previewSnapshot: Snapshot = {
     guidance:
       "Allow Microphone and Accessibility. Some macOS versions also ask for Input Monitoring. System Settings → Privacy & Security.",
   },
-  listener: "Listening for hotkeys.",
+  listener: "Listening for the right-hand Control key.",
+  secureStore: "ready",
+  logPath: "C:\\Users\\example\\AppData\\Local\\app.newtype.desktop\\logs\\newtype.log",
   routeLabel: "Cloud · 云端",
   routeDetail: "Speech goes to the provider you configured.",
   phase: "idle",

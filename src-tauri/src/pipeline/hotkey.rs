@@ -571,6 +571,26 @@ pub fn key_label(key: KeyId, os: OsKind) -> String {
     }
 }
 
+/// Windows virtual-key codes. `VK_CONTROL` (0x11) is not treated as Right Ctrl.
+pub fn key_from_windows_vk(code: u32) -> KeyId {
+    match code {
+        162 => KeyId::ControlLeft,
+        163 => KeyId::ControlRight,
+        160 => KeyId::ShiftLeft,
+        161 => KeyId::ShiftRight,
+        164 => KeyId::AltLeft,
+        165 => KeyId::AltRight,
+        91 => KeyId::MetaLeft,
+        92 => KeyId::MetaRight,
+        13 => KeyId::Enter,
+        27 => KeyId::Escape,
+        32 => KeyId::Space,
+        0x41..=0x5A => KeyId::Letter(code as u8),
+        0x70..=0x7B => KeyId::Function((code - 0x6F) as u8),
+        _ => KeyId::Other,
+    }
+}
+
 /// Map a hardware key from the listener. Right Option and Right Alt are `AltRight`.
 pub fn key_from_rdev(key: &rdev::Key) -> Option<KeyId> {
     use rdev::Key::*;
@@ -646,6 +666,15 @@ mod tests {
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
+    }
+
+    #[test]
+    fn windows_right_control_is_not_the_generic_control_key() {
+        assert_eq!(key_from_windows_vk(163), KeyId::ControlRight);
+        assert_eq!(key_from_windows_vk(162), KeyId::ControlLeft);
+        assert_eq!(key_from_windows_vk(0x11), KeyId::Other);
+        assert_eq!(key_from_windows_vk(165), KeyId::AltRight);
+        assert_ne!(key_from_windows_vk(163), key_from_windows_vk(162));
     }
 
     #[test]
