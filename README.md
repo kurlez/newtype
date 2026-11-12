@@ -108,7 +108,9 @@ The NSIS installer is per-user and is not Authenticode signed.
 
 The hotkey starts and stops a recording. macOS and Windows use the same defaults: dictate is Right Ctrl (the right-hand Control key, `ControlRight`, not Left Control), translate is Right Ctrl + Right Shift, and command is Right Ctrl + Enter (Return). Right Option is not a default. On a PC keyboard attached to a Mac, Right Alt is Right Option, and that key belongs to Typeless. Left and right modifiers stay distinct. Toggle is the default. Hold-to-talk is in settings. Escape cancels. Translate and command are registered and do not record.
 
-Saving a key writes it to the macOS Keychain or Windows Credential Manager. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
+Saving a key writes it to the macOS Keychain or Windows Credential Manager and reads it back before the settings window says it was saved. The build enables keyring's `apple-native` and `windows-native` features. Without those, keyring keeps the secret in process memory only, `cmdkey /list` stays empty, and the next launch has no key. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
+
+A startup check writes and deletes a throwaway credential. If that check fails, the settings page says the store is unavailable. Dictation errors open the floating indicator instead of failing silently. A rolling log is `newtype.log` in the app log directory. The settings page and the tray menu show that path. The log does not contain API keys.
 
 Speech is sent only after you stop, to the provider you picked. The rewrite uses temperature 0 and turns thinking off where that model allows it. If the rewrite fails, times out, or looks like an answer, the text after hot-word replacement is pasted instead. Paste uses the clipboard and then restores the previous clipboard text. On macOS that is Command+V. On Windows it is Ctrl+V.
 

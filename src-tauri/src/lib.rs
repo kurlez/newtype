@@ -1,5 +1,6 @@
 mod build_info;
 mod commands;
+mod diag;
 mod dictate_config;
 mod dictation;
 mod permissions;
@@ -8,6 +9,8 @@ mod secrets;
 mod settings;
 mod tray;
 mod updater;
+#[cfg(windows)]
+mod win_hotkey;
 
 use tauri::Manager;
 

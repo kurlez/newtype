@@ -21,7 +21,49 @@ pub fn set_key(provider: &str, key: &str, dev_path: &Path) -> Result<(), String>
     if key.chars().any(|ch| ch == '\n' || ch == '\r') {
         return Err("The API key cannot contain a line break.".into());
     }
-    store(&account, key, dev_path)
+    store(&account, key, dev_path)?;
+    match load(&account, dev_path)? {
+        Some(found) if found == key => Ok(()),
+        _ => {
+            let _ = remove(&account, dev_path);
+            Err(format!(
+                "The key was not kept by {store}. Save again after this build is updated; an in-memory store reports success and then forgets the value.",
+                store = store_name()
+            ))
+        }
+    }
+}
+
+/// Write, read, and delete a throwaway value. This fails when the crate is
+/// linked against keyring's in-memory mock instead of the OS store.
+pub fn probe(dev_path: &Path) -> Result<(), String> {
+    static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let account = format!(
+        "probe-{}-{}",
+        std::process::id(),
+        PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let nonce = format!("ok-{account}");
+    store(&account, &nonce, dev_path)?;
+    let found = load(&account, dev_path);
+    let _ = remove(&account, dev_path);
+    match found? {
+        Some(value) if value == nonce => Ok(()),
+        _ => Err(format!(
+            "Credential store check failed. {store} did not return a value that was just written. On macOS the build needs the keyring apple-native feature; on Windows it needs windows-native. Without those, keyring keeps the secret in process memory only.",
+            store = store_name()
+        )),
+    }
+}
+
+pub fn store_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Windows Credential Manager"
+    } else if cfg!(target_os = "macos") {
+        "the macOS Keychain"
+    } else {
+        "the local dev file"
+    }
 }
 
 pub fn get_key(provider: &str, dev_path: &Path) -> Result<Option<String>, String> {
@@ -124,4 +166,25 @@ fn write_dev(path: &Path, file: &DevSecrets) -> Result<(), String> {
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_store_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "newtype-secrets-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        probe(&dir.join("dev-secrets.json")).expect("credential store round trip");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

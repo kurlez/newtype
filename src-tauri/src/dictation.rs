@@ -46,6 +46,8 @@ pub struct Dictation {
     history: Mutex<Vec<HistoryEntry>>,
     hotkeys: Arc<Mutex<HotkeyShare>>,
     listener: Arc<Mutex<String>>,
+    secure_store: Mutex<String>,
+    log_path: String,
     mic_status: Arc<Mutex<String>>,
     phase: Mutex<String>,
     control: Sender<Control>,
@@ -103,6 +105,8 @@ pub struct Snapshot {
     pub presets: Vec<PresetDto>,
     pub permissions: PermissionSnapshot,
     pub listener: String,
+    pub secure_store: String,
+    pub log_path: String,
     pub route_label: String,
     pub route_detail: String,
     pub phase: String,
@@ -119,6 +123,18 @@ impl Dictation {
         let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
         std::fs::create_dir_all(&config_dir).map_err(|err| err.to_string())?;
         std::fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+        let log_dir = app.path().app_log_dir().unwrap_or_else(|_| config_dir.clone());
+        crate::diag::init(&log_dir);
+        let secure_store = match secrets::probe(&config_dir.join("dev-secrets.json")) {
+            Ok(()) => {
+                crate::diag::record(&format!("credential store ready ({})", secrets::store_name()));
+                "ready".to_string()
+            }
+            Err(err) => {
+                crate::diag::record(&format!("credential store unavailable: {err}"));
+                err
+            }
+        };
         let settings_path = config_dir.join("dictation.json");
         let history_path = data_dir.join("history.json");
         let dev_secrets = config_dir.join("dev-secrets.json");
@@ -140,6 +156,8 @@ impl Dictation {
                 capture_mode: String::new(),
             })),
             listener: Arc::new(Mutex::new("Starting the hotkey listener.".into())),
+            secure_store: Mutex::new(secure_store),
+            log_path: crate::diag::path().unwrap_or_default(),
             mic_status: Arc::new(Mutex::new("unknown".into())),
             phase: Mutex::new("idle".into()),
             control,
@@ -157,7 +175,7 @@ impl Dictation {
         let hotkeys = Arc::clone(&state.hotkeys);
         let listener = Arc::clone(&state.listener);
         drop(state);
-        spawn_listener(control.clone(), hotkeys, listener);
+        spawn_listener(app.clone(), control.clone(), hotkeys, listener);
         if let Some(rx) = rx {
             std::thread::Builder::new()
                 .name("newtype-session".into())
@@ -213,6 +231,8 @@ impl Dictation {
             presets: cloud::presets().iter().map(preset_dto).collect(),
             permissions: permissions::snapshot(&self.mic_status.lock().expect("mic")),
             listener: self.listener.lock().expect("listener").clone(),
+            secure_store: self.secure_store.lock().expect("store").clone(),
+            log_path: self.log_path.clone(),
             route_label,
             route_detail,
             phase: self.phase.lock().expect("phase").clone(),
@@ -296,6 +316,7 @@ fn now_ms() -> u64 {
 }
 
 fn spawn_listener(
+    app: AppHandle,
     control: Sender<Control>,
     hotkeys: Arc<Mutex<HotkeyShare>>,
     listener: Arc<Mutex<String>>,
@@ -310,16 +331,7 @@ fn spawn_listener(
                 engine.set_capture(share.capture);
                 (share.generation, share.capture)
             };
-            *listener.lock().expect("listener") = "Listening for hotkeys.".into();
-            let listen_result = rdev::listen(move |event| {
-                let edge = match event.event_type {
-                    rdev::EventType::KeyPress(key) => hotkey::key_from_rdev(&key).map(KeyEdge::Down),
-                    rdev::EventType::KeyRelease(key) => hotkey::key_from_rdev(&key).map(KeyEdge::Up),
-                    _ => None,
-                };
-                let Some(edge) = edge else {
-                    return;
-                };
+            let mut on_edge = move |edge: KeyEdge| {
                 {
                     let share = hotkeys.lock().expect("hotkeys");
                     if share.generation != seen {
@@ -332,16 +344,58 @@ fn spawn_listener(
                     }
                 }
                 for engine_event in engine.on_edge(edge) {
+                    crate::diag::record(&format!("hotkey {engine_event:?}"));
                     let _ = control.send(Control::Engine(engine_event));
                 }
-            });
-            if let Err(err) = listen_result {
-                *listener.lock().expect("listener") = format!(
-                    "Hotkey listener is not running ({err:?}). On macOS, grant Accessibility and, if the hotkey still does nothing, Input Monitoring, then restart newtype."
-                );
+            };
+            set_listener(&app, &listener, "Listening for the right-hand Control key.");
+            crate::diag::record("hotkey listener starting");
+            #[cfg(windows)]
+            {
+                if let Err(err) = crate::win_hotkey::run(on_edge) {
+                    let message = format!("Hotkey listener is not running. {err}");
+                    set_listener(&app, &listener, &message);
+                    crate::diag::record(&message);
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let listen_result = rdev::listen(move |event| {
+                    let edge = match event.event_type {
+                        rdev::EventType::KeyPress(key) => {
+                            hotkey::key_from_rdev(&key).map(KeyEdge::Down)
+                        }
+                        rdev::EventType::KeyRelease(key) => {
+                            hotkey::key_from_rdev(&key).map(KeyEdge::Up)
+                        }
+                        _ => None,
+                    };
+                    if let Some(edge) = edge {
+                        on_edge(edge);
+                    }
+                });
+                if let Err(err) = listen_result {
+                    let message = format!(
+                        "Hotkey listener is not running ({err:?}). On macOS, grant Accessibility and, if the hotkey still does nothing, Input Monitoring, then restart newtype."
+                    );
+                    set_listener(&app, &listener, &message);
+                    crate::diag::record(&message);
+                } else {
+                    let message = "Hotkey listener stopped.";
+                    set_listener(&app, &listener, message);
+                    crate::diag::record(message);
+                }
             }
         })
         .expect("hotkey thread");
+}
+
+fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {
+    *listener.lock().expect("listener") = message.to_string();
+    let queued = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::tray::refresh_menu(&queued);
+    });
 }
 
 fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
@@ -526,16 +580,14 @@ fn begin_recording(
     }
     if !secrets::has_key(&effective.asr_provider, &state.dev_secrets) {
         talk.active = None;
-        emit_phase(
-            app,
-            "error",
-            route,
-            "Save an API key for the speech provider. Audio is not sent until you do.",
-            0,
-            0.0,
-            "",
-        );
-        schedule_hide(app, 3600);
+        let store = state.secure_store.lock().expect("store").clone();
+        let message = if store == "ready" {
+            "Save an API key for the speech provider. Audio is not sent until you do.".to_string()
+        } else {
+            store
+        };
+        emit_phase(app, "error", route, &message, 0, 0.0, "");
+        schedule_hide(app, 5000);
         return;
     }
     match audio::MicSession::start(&effective.microphone) {
@@ -765,6 +817,9 @@ fn emit_phase(app: &AppHandle, phase: &str, route: &str, message: &str, elapsed_
     if let Ok(mut slot) = app.state::<Dictation>().phase.lock() {
         *slot = phase.to_string();
     }
+    if phase != "recording" {
+        crate::diag::record(&format!("phase {phase}: {message}"));
+    }
     let _ = app.emit(
         "dictation://phase",
         PhaseEvent {
@@ -776,15 +831,31 @@ fn emit_phase(app: &AppHandle, phase: &str, route: &str, message: &str, elapsed_
             text: text.into(),
         },
     );
+    if phase == "idle" {
+        hide_indicator(app);
+    } else {
+        show_indicator(app);
+    }
     if phase != "recording" {
         crate::tray::refresh_menu(app);
     }
 }
 
 fn show_indicator(app: &AppHandle) {
+    if app.get_webview_window("indicator").is_none() {
+        open_indicator(app);
+        crate::diag::record("indicator window was missing and was created again");
+    }
     if let Some(window) = app.get_webview_window("indicator") {
+        if window.is_visible().unwrap_or(false) {
+            return;
+        }
         place(&window);
-        let _ = window.show();
+        if window.show().is_err() {
+            crate::diag::record("indicator window could not be shown");
+        }
+    } else {
+        crate::diag::record("indicator window could not be created");
     }
 }
 
@@ -870,9 +941,33 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     Ok(state.snapshot(app))
 }
 
-pub fn set_key(app: &AppHandle, provider: &str, key: &str) -> Result<(), String> {
-    let path = app.state::<Dictation>().dev_secrets.clone();
-    secrets::set_key(provider, key, &path)
+pub fn set_key(app: &AppHandle, provider: &str, key: &str) -> Result<String, String> {
+    let state = app.state::<Dictation>();
+    let store_status = state.secure_store.lock().expect("store").clone();
+    if store_status != "ready" {
+        return Err(store_status);
+    }
+    secrets::set_key(provider, key, &state.dev_secrets)?;
+    let settings = state.settings.lock().expect("settings").clone();
+    dictate_config::save(&state.settings_path, &settings)?;
+    let message = format!(
+        "Saved the {provider} key and read it back from {}.",
+        secrets::store_name()
+    );
+    crate::diag::record(&format!("stored credential for provider {provider}"));
+    Ok(message)
+}
+
+pub fn listener_line(app: &AppHandle) -> String {
+    app.state::<Dictation>()
+        .listener
+        .lock()
+        .expect("listener")
+        .clone()
+}
+
+pub fn log_line() -> String {
+    crate::diag::path().unwrap_or_else(|| "log not open".into())
 }
 
 pub fn clear_key(app: &AppHandle, provider: &str) -> Result<(), String> {

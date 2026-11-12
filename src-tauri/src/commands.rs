@@ -44,7 +44,7 @@ pub fn dictation_save(
 }
 
 #[tauri::command]
-pub fn dictation_set_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
+pub fn dictation_set_key(app: AppHandle, provider: String, key: String) -> Result<String, String> {
     crate::dictation::set_key(&app, &provider, &key)
 }
 

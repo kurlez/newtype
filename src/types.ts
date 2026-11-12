@@ -62,6 +62,8 @@ export interface Snapshot {
   presets: PresetInfo[];
   permissions: PermissionInfo;
   listener: string;
+  secureStore: string;
+  logPath: string;
   routeLabel: string;
   routeDetail: string;
   phase: string;

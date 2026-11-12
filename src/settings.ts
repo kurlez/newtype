@@ -115,7 +115,9 @@ function paint(): void {
       <h2>Path</h2>
       <p class="banner">${escapeHtml(snap.routeLabel)}</p>
       <p class="status">${escapeHtml(snap.routeDetail)}</p>
-      <p class="status">${escapeHtml(snap.listener)}</p>
+      <p class="status">Hotkey listener: ${escapeHtml(snap.listener)}</p>
+      <p class="status">Log file: ${escapeHtml(snap.logPath || "not open yet")}</p>
+      ${snap.secureStore === "ready" ? "" : `<p class="status warn">Credential store: ${escapeHtml(snap.secureStore)}</p>`}
       ${radios("preference", [
         ["cloudDefault", "Cloud default", "Use the configured provider. Local fallback is decided by the router and is not linked yet."],
         ["localOnly", "Local only", "Not available in this build. Audio will not be sent."],
@@ -150,6 +152,7 @@ function paint(): void {
           <option value="low" ${settings.thinking === "low" ? "selected" : ""}>Low effort when off is rejected</option>
         </select>
       </label>
+      <p class="status">Speech key: ${snap.keys[settings.asrProvider] ? `saved in ${snap.devKeyStore ? "the local dev file" : "the system credential store"}` : "not saved"}</p>
       <label class="field">API key for ${escapeHtml(settings.asrProvider)}
         <input id="api-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.asrProvider] ? "Saved. Enter a new key to replace it." : "Not saved"}" />
       </label>
@@ -376,16 +379,24 @@ async function saveKeys(): Promise<void> {
     paint();
     return;
   }
+  if (!speech.trim() && !rewrite.trim()) {
+    notice = "Enter an API key before saving.";
+    const node = document.querySelector("#notice");
+    if (node) {
+      node.textContent = notice;
+    }
+    return;
+  }
   try {
+    const messages: string[] = [];
     if (speech.trim()) {
-      await call("dictation_set_key", { provider: snap.settings.asrProvider, key: speech });
+      messages.push(await call<string>("dictation_set_key", { provider: snap.settings.asrProvider, key: speech }));
     }
     if (rewrite.trim()) {
-      await call("dictation_set_key", { provider: snap.settings.llmProvider, key: rewrite });
+      messages.push(await call<string>("dictation_set_key", { provider: snap.settings.llmProvider, key: rewrite }));
     }
-    notice = "Key saved in the OS keychain.";
     await reload();
-    notice = "Key saved in the OS keychain.";
+    notice = messages.join(" ");
     const node = document.querySelector("#notice");
     if (node) {
       node.textContent = notice;
