@@ -1,0 +1,58 @@
+name: qwen3-asr-mac-bench
+
+# Manual spike. This does not build or publish newtype.
+# GitHub only shows the Run workflow button after this file is on the default branch.
+# Until then, a push of the bench script on the spike branch runs it once.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/qwen3-asr-mac-spike-485d
+    paths:
+      - spikes/qwen3-asr-mac/bench.py
+      - .github/workflows/qwen3-asr-mac-bench.yml
+
+concurrency:
+  group: qwen3-asr-mac-bench-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: macos-arm64
+    # macos-14 was retired on 2026-11-02. macos-15 is the Apple Silicon M1 image:
+    # 3 vCPU, 7 GB RAM, 14 GB SSD. That is not a 16 GB Mac.
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require Apple Silicon
+        run: |
+          uname -m | grep -qx arm64
+          sysctl -n hw.memsize
+          sysctl -n machdep.cpu.brand_string || true
+
+      - name: Benchmark
+        run: python3 spikes/qwen3-asr-mac/bench.py
+
+      - name: Show results
+        if: always()
+        run: |
+          if [ -f spikes/qwen3-asr-mac/out/results.json ]; then
+            python3 -m json.tool spikes/qwen3-asr-mac/out/results.json
+          else
+            echo "No results.json was written."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen3-asr-mac-bench
+          path: |
+            spikes/qwen3-asr-mac/out/results.json
+            spikes/qwen3-asr-mac/out/llama-server.log
+          if-no-files-found: warn
