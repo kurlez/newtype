@@ -91,7 +91,7 @@ fn guidance() -> String {
     match std::env::consts::OS {
         "macos" => concat!(
             "Allow Microphone and Accessibility for newtype. ",
-            "Accessibility is required to hear the Right Option hotkey and to paste into the focused app. ",
+            "Accessibility is required to hear the Right Control hotkey and to paste into the focused app. ",
             "Some macOS versions also ask for Input Monitoring; if the hotkey does nothing after Accessibility is on, enable that too. ",
             "System Settings → Privacy & Security. After an update, macOS may ask again because this build is not Developer ID signed."
         )

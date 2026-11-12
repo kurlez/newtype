@@ -106,7 +106,7 @@ The NSIS installer is per-user and is not Authenticode signed.
 
 ## Dictation
 
-The hotkey starts and stops a recording. macOS defaults to Right Option. Windows defaults to Right Ctrl. Translate is Right Option + Right Shift, or Right Ctrl + Right Shift. Command is that modifier plus Enter. Left and right modifiers are different keys. Toggle is the default. Hold-to-talk is in settings. Escape cancels. Translate and command are registered and do not record.
+The hotkey starts and stops a recording. macOS and Windows use the same defaults: dictate is Right Ctrl (the right-hand Control key, `ControlRight`, not Left Control), translate is Right Ctrl + Right Shift, and command is Right Ctrl + Enter (Return). Right Option is not a default. On a PC keyboard attached to a Mac, Right Alt is Right Option, and that key belongs to Typeless. Left and right modifiers stay distinct. Toggle is the default. Hold-to-talk is in settings. Escape cancels. Translate and command are registered and do not record.
 
 Saving a key writes it to the macOS Keychain or Windows Credential Manager. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
 
@@ -157,7 +157,7 @@ CI does not set `NEWTYPE_PROMPT_API_KEY`, so `prompt_harness` returns without a 
 
 This environment cannot grant Accessibility, open a microphone, or paste into another app.
 
-- Right Option (Mac) and Right Ctrl (Windows) start recording without also firing the left key. Hold-to-talk releases cleanly.
+- Right Ctrl on both Mac and Windows starts recording. Left Ctrl and Right Option do not. Hold-to-talk releases cleanly.
 - The floating indicator shows recording, processing, and error, and names Cloud or the local path.
 - The first launch asks for the microphone. macOS also needs Accessibility, and some versions need Input Monitoring before the hotkey tap runs.
 - Dictation pastes into the focused app and the previous clipboard comes back.

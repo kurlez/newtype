@@ -163,7 +163,7 @@ function paint(): void {
     </section>
     <section>
       <h2>Hotkey</h2>
-      <p class="status">Defaults avoid Typeless: macOS Right Option, Windows Right Ctrl. Left and right are different keys. Escape cancels.</p>
+      <p class="status">Both desktops default to Right Ctrl, the right-hand Control key (ControlRight), not Left Control and not Right Option. Right Option is Typeless on a PC keyboard, including on a Mac. Escape cancels.</p>
       ${radios("talk", [["toggle", "Toggle", "Press to start, press again to stop."], ["hold", "Hold to talk", "Release to stop."]], settings.talkMode)}
       ${hotkeyRow("dictate", "Dictate", 0)}
       ${hotkeyRow("translate", "Translate (stub)", 1)}

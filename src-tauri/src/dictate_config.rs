@@ -362,7 +362,9 @@ mod tests {
         assert_eq!(windows.asr_model, "gpt-transcribe");
         assert!(windows.asr_implemented);
         let mac = effective(&settings, OsKind::Mac).unwrap();
-        assert_eq!(mac.hotkey_labels[0], "Right Option");
+        assert_eq!(mac.hotkey_labels[0], "Right Ctrl");
+        assert_eq!(mac.hotkey_labels[1], "Right Ctrl + Right Shift");
+        assert_eq!(mac.hotkey_labels[2], "Right Ctrl + Enter");
         assert!(mac.warnings.iter().all(|warning| !warning.contains("Typeless")));
     }
 }

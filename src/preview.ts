@@ -61,10 +61,10 @@ export const previewSnapshot: Snapshot = {
     },
     hotwords: [{ canonical: "Claude Code", aliases: ["cloud code"], pattern: "" }],
   },
-  hotkeyLabels: ["Right Option", "Right Option + Right Shift", "Right Option + Enter"],
-  hotkeyChords: ["AltRight", "AltRight+ShiftRight", "AltRight+Enter"],
+  hotkeyLabels: ["Right Ctrl", "Right Ctrl + Right Shift", "Right Ctrl + Enter"],
+  hotkeyChords: ["ControlRight", "ControlRight+ShiftRight", "ControlRight+Enter"],
   warnings: [
-    "Right Option is also part of Right Option + Right Shift. A short press uses the shorter one; adding the extra key at the start uses the longer one.",
+    "Right Ctrl is also part of Right Ctrl + Right Shift. A short press uses the shorter one; adding the extra key at the start uses the longer one.",
   ],
   verifiedOn: "2026-11-12",
   keys: { openai: false, groq: false, dashscope: false, volcengine: false, custom: false },

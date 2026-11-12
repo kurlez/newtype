@@ -1,6 +1,6 @@
 //! Global hotkeys that can tell the left modifier from the right one.
 //!
-//! Modifier-only chords (Right Option, Right Ctrl) are not OS accelerators.
+//! Modifier-only chords (Right Ctrl on both desktops) are not OS accelerators.
 //! A low-level key listener feeds this engine. Translate and command are
 //! registered here; the session treats them as stubs.
 
@@ -301,14 +301,11 @@ impl TalkController {
     }
 }
 
-pub fn default_chord(mode: HotkeyMode, os: OsKind) -> Chord {
+pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
+    // macOS matches Windows. Right Option is Typeless when a PC keyboard
+    // (Right Alt) is used on the Mac, so the factory key is Right Control.
     let mut chord = Chord::new();
-    let main = if os == OsKind::Mac {
-        KeyId::AltRight
-    } else {
-        KeyId::ControlRight
-    };
-    chord.insert(main);
+    chord.insert(KeyId::ControlRight);
     match mode {
         HotkeyMode::Dictate => {}
         HotkeyMode::Translate => {
@@ -418,11 +415,11 @@ fn known_conflict(chord: &Chord, os: OsKind) -> Option<&'static str> {
     if os == OsKind::Mac && is(&[KeyId::Fn, KeyId::Space]) {
         return Some("Fn + Space is a Typeless shortcut on macOS.");
     }
-    if os != OsKind::Mac && is(&[KeyId::AltRight]) {
-        return Some("Right Alt is Typeless's dictate key on Windows. The newtype default is Right Ctrl.");
+    if is(&[KeyId::AltRight]) {
+        return Some("Right Option / Right Alt is Typeless's dictate key, including a PC keyboard on a Mac. The newtype default is Right Ctrl.");
     }
-    if os != OsKind::Mac && is(&[KeyId::AltRight, KeyId::ShiftRight]) {
-        return Some("Right Alt + Right Shift is a Typeless shortcut on Windows.");
+    if is(&[KeyId::AltRight, KeyId::ShiftRight]) {
+        return Some("Right Option + Right Shift is a Typeless shortcut. The newtype default is Right Ctrl + Right Shift.");
     }
     if is(&[KeyId::ControlLeft, KeyId::Space]) {
         return Some("Left Ctrl + Space switches input methods on many systems.");
@@ -682,19 +679,24 @@ mod tests {
             assert!(warnings.iter().all(|warning| !warning.contains("Typeless")));
             assert!(warnings.iter().any(|warning| warning.contains("short press")));
         }
+        let right_ctrl = chord(&[KeyId::ControlRight]);
+        assert_eq!(default_chord(HotkeyMode::Dictate, OsKind::Mac), right_ctrl);
+        assert_eq!(default_chord(HotkeyMode::Dictate, OsKind::Windows), right_ctrl);
         assert_eq!(
-            default_chord(HotkeyMode::Dictate, OsKind::Mac),
-            chord(&[KeyId::AltRight])
+            default_chord(HotkeyMode::Translate, OsKind::Mac),
+            chord(&[KeyId::ControlRight, KeyId::ShiftRight])
         );
         assert_eq!(
-            default_chord(HotkeyMode::Dictate, OsKind::Windows),
-            chord(&[KeyId::ControlRight])
+            default_chord(HotkeyMode::Command, OsKind::Mac),
+            chord(&[KeyId::ControlRight, KeyId::Enter])
         );
-        let typeless = [(
-            HotkeyMode::Dictate,
-            chord(&[KeyId::AltRight]),
-        )];
+        assert_ne!(right_ctrl, chord(&[KeyId::ControlLeft]));
+        assert_ne!(right_ctrl, chord(&[KeyId::AltRight]));
+        let typeless = [(HotkeyMode::Dictate, chord(&[KeyId::AltRight]))];
         assert!(binding_warnings(&typeless, OsKind::Windows)
+            .iter()
+            .any(|warning| warning.contains("Typeless")));
+        assert!(binding_warnings(&typeless, OsKind::Mac)
             .iter()
             .any(|warning| warning.contains("Typeless")));
     }
@@ -702,13 +704,15 @@ mod tests {
     #[test]
     fn engine_distinguishes_sides_and_disambiguates_chords() {
         let mut engine = engine(OsKind::Mac);
-        assert!(engine.on_edge(KeyEdge::Down(KeyId::AltLeft)).is_empty());
-        engine.on_edge(KeyEdge::Up(KeyId::AltLeft));
+        assert!(engine.on_edge(KeyEdge::Down(KeyId::ControlLeft)).is_empty());
+        assert!(engine.on_edge(KeyEdge::Down(KeyId::AltRight)).is_empty());
+        engine.on_edge(KeyEdge::Up(KeyId::ControlLeft));
+        engine.on_edge(KeyEdge::Up(KeyId::AltRight));
         assert_eq!(
-            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            engine.on_edge(KeyEdge::Down(KeyId::ControlRight)),
             vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
         );
-        assert!(engine.on_edge(KeyEdge::Down(KeyId::AltRight)).is_empty());
+        assert!(engine.on_edge(KeyEdge::Down(KeyId::ControlRight)).is_empty());
         assert_eq!(
             engine.on_edge(KeyEdge::Down(KeyId::ShiftRight)),
             vec![EngineEvent::Pressed(HotkeyMode::Translate)]
