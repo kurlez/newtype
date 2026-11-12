@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use std::sync::mpsc::{self, Receiver, Sender};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::build_info::{commit, full_version};
 use crate::dictate_config::{self, DictationSettings};
@@ -78,6 +78,8 @@ struct CaptureEvent {
     mode: String,
     hotkey: String,
     label: String,
+    /// `pending` shows the chord and waits for Set. `idle` means capture was cancelled.
+    phase: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -122,18 +124,21 @@ pub struct Snapshot {
 
 impl Dictation {
     pub fn load(app: &AppHandle) -> Result<Self, String> {
-        let config_dir = app
-            .path()
-            .app_config_dir()
-            .map_err(|err| err.to_string())?;
+        let config_dir = app.path().app_config_dir().map_err(|err| err.to_string())?;
         let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
         std::fs::create_dir_all(&config_dir).map_err(|err| err.to_string())?;
         std::fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
-        let log_dir = app.path().app_log_dir().unwrap_or_else(|_| config_dir.clone());
+        let log_dir = app
+            .path()
+            .app_log_dir()
+            .unwrap_or_else(|_| config_dir.clone());
         crate::diag::init(&log_dir);
         let secure_store = match secrets::probe(&config_dir.join("dev-secrets.json")) {
             Ok(()) => {
-                crate::diag::record(&format!("credential store ready ({})", secrets::store_name()));
+                crate::diag::record(&format!(
+                    "credential store ready ({})",
+                    secrets::store_name()
+                ));
                 "ready".to_string()
             }
             Err(err) => {
@@ -147,8 +152,11 @@ impl Dictation {
         let engines = Arc::new(Engines::new(data_dir.join("models")));
         let mut settings = dictate_config::load(&settings_path);
         dictate_config::normalize(&mut settings);
-        let effective = dictate_config::effective(&settings, hotkey::host_os())
-            .unwrap_or_else(|_| dictate_config::effective(&DictationSettings::default(), hotkey::host_os()).expect("defaults"));
+        let effective =
+            dictate_config::effective(&settings, hotkey::host_os()).unwrap_or_else(|_| {
+                dictate_config::effective(&DictationSettings::default(), hotkey::host_os())
+                    .expect("defaults")
+            });
         let (control, inbox) = mpsc::channel();
         Ok(Self {
             settings_path,
@@ -290,7 +298,9 @@ pub fn toggle(app: &AppHandle) {
 }
 
 pub fn cancel(app: &AppHandle) {
-    app.state::<Dictation>().cancel.store(true, Ordering::Relaxed);
+    app.state::<Dictation>()
+        .cancel
+        .store(true, Ordering::Relaxed);
     let _ = app.state::<Dictation>().control.send(Control::Cancel);
 }
 
@@ -308,8 +318,16 @@ fn preset_dto(preset: &Preset) -> PresetDto {
         default_base: preset.default_base.into(),
         default_asr: preset.default_asr.into(),
         default_llm: preset.default_llm.into(),
-        asr_models: preset.asr_models.iter().map(|id| (*id).to_string()).collect(),
-        llm_models: preset.llm_models.iter().map(|id| (*id).to_string()).collect(),
+        asr_models: preset
+            .asr_models
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect(),
+        llm_models: preset
+            .llm_models
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect(),
         asr_wire: preset.asr_wire.as_str().into(),
         note: preset.note.into(),
         verified: preset.verified.into(),
@@ -403,13 +421,25 @@ fn spawn_listener(
                     if share.generation != seen {
                         seen = share.generation;
                         engine.set_bindings(share.bindings.clone());
-                        if share.capture != capturing {
-                            capturing = share.capture;
-                            engine.set_capture(capturing);
-                        }
+                    }
+                    if share.capture != capturing {
+                        capturing = share.capture;
+                        engine.set_capture(capturing);
                     }
                 }
-                for engine_event in engine.on_edge(edge) {
+                let events = engine.on_edge(edge);
+                let capture_ended = events.iter().any(|event| {
+                    matches!(
+                        event,
+                        EngineEvent::Captured(_) | EngineEvent::CaptureCancelled
+                    )
+                });
+                if capture_ended {
+                    capturing = false;
+                    let mut share = hotkeys.lock().expect("hotkeys");
+                    share.capture = false;
+                }
+                for engine_event in events {
                     crate::diag::record(&format!("hotkey {engine_event:?}"));
                     let _ = control.send(Control::Engine(engine_event));
                 }
@@ -491,6 +521,26 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         mode,
                         hotkey: chord,
                         label,
+                        phase: "pending".into(),
+                    },
+                );
+            }
+            Control::Engine(EngineEvent::CaptureCancelled) => {
+                let state = app.state::<Dictation>();
+                let mode = state.hotkeys.lock().expect("hotkeys").capture_mode.clone();
+                {
+                    let mut share = state.hotkeys.lock().expect("hotkeys");
+                    share.capture = false;
+                    share.generation = share.generation.wrapping_add(1);
+                }
+                drop(state);
+                let _ = app.emit(
+                    "dictation://capture",
+                    CaptureEvent {
+                        mode,
+                        hotkey: String::new(),
+                        label: String::new(),
+                        phase: "idle".into(),
                     },
                 );
             }
@@ -505,31 +555,57 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                     &mut started,
                     &mut busy,
                     effect,
-                )
-                ;
+                );
             }
             Control::Toggle => {
                 if busy {
-                    emit_phase(&app, "processing", &route, "Still working on the last dictation.", 0, 0.0, "");
+                    emit_phase(
+                        &app,
+                        "processing",
+                        &route,
+                        "Still working on the last dictation.",
+                        0,
+                        0.0,
+                        "",
+                    );
                 } else if mic.is_some() {
                     talk.active = None;
                     finish_recording(&app, &mut mic, &mut started, &mut busy, &route, false);
                 } else {
                     talk.active = Some(HotkeyMode::Dictate);
                     talk.started_ms = now_ms();
-                    begin_recording(&app, &control, &mut talk, &mut mic, &mut route, &mut started);
+                    begin_recording(
+                        &app,
+                        &control,
+                        &mut talk,
+                        &mut mic,
+                        &mut route,
+                        &mut started,
+                    );
                 }
             }
             Control::Cancel => {
-                app.state::<Dictation>().cancel.store(true, Ordering::Relaxed);
+                app.state::<Dictation>()
+                    .cancel
+                    .store(true, Ordering::Relaxed);
                 talk.active = None;
                 if mic.take().is_some() {
                     started = None;
                     bump(&app);
-                    emit_phase(&app, "cancelled", &route, "Cancelled. Nothing was inserted.", 0, 0.0, "");
+                    emit_phase(
+                        &app,
+                        "cancelled",
+                        &route,
+                        "Cancelled. Nothing was inserted.",
+                        0,
+                        0.0,
+                        "",
+                    );
                     schedule_hide(&app, 900);
                 } else if !busy {
-                    app.state::<Dictation>().cancel.store(false, Ordering::Relaxed);
+                    app.state::<Dictation>()
+                        .cancel
+                        .store(false, Ordering::Relaxed);
                     emit_phase(&app, "idle", &route, "", 0, 0.0, "");
                     hide_indicator(&app);
                 }
@@ -545,7 +621,12 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
 }
 
 fn current_talk_mode(app: &AppHandle) -> TalkMode {
-    let settings = app.state::<Dictation>().settings.lock().expect("settings").clone();
+    let settings = app
+        .state::<Dictation>()
+        .settings
+        .lock()
+        .expect("settings")
+        .clone();
     dictate_config::effective(&settings, hotkey::host_os())
         .map(|effective| effective.talk_mode)
         .unwrap_or(TalkMode::Toggle)
@@ -572,7 +653,15 @@ fn apply(
             mic.take();
             *started = None;
             bump(app);
-            emit_phase(app, "cancelled", route, "Cancelled. Nothing was inserted.", 0, 0.0, "");
+            emit_phase(
+                app,
+                "cancelled",
+                route,
+                "Cancelled. Nothing was inserted.",
+                0,
+                0.0,
+                "",
+            );
             schedule_hide(app, 900);
         }
         TalkEffect::Stub(mode) | TalkEffect::CancelThenStub(mode) => {
@@ -582,8 +671,12 @@ fn apply(
                 bump(app);
             }
             let message = match mode {
-                HotkeyMode::Translate => "Translate is registered and not implemented in this build.",
-                HotkeyMode::Command => "Command mode is registered and not implemented in this build.",
+                HotkeyMode::Translate => {
+                    "Translate is registered and not implemented in this build."
+                }
+                HotkeyMode::Command => {
+                    "Command mode is registered and not implemented in this build."
+                }
                 HotkeyMode::Dictate => "Dictation is ready.",
             };
             emit_phase(app, "stub", route, message, 0, 0.0, "");
@@ -678,7 +771,12 @@ fn begin_recording(
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    if app_loop.state::<Dictation>().generation.load(Ordering::Relaxed) != generation {
+                    if app_loop
+                        .state::<Dictation>()
+                        .generation
+                        .load(Ordering::Relaxed)
+                        != generation
+                    {
                         break;
                     }
                     let elapsed = started_at.elapsed().as_millis() as u64;
@@ -701,7 +799,15 @@ fn begin_recording(
         Err(err) => {
             talk.active = None;
             *state.mic_status.lock().expect("mic") = format!("unavailable: {err}");
-            emit_phase(app, "error", route, &format!("Microphone: {err}"), 0, 0.0, "");
+            emit_phase(
+                app,
+                "error",
+                route,
+                &format!("Microphone: {err}"),
+                0,
+                0.0,
+                "",
+            );
             show_indicator(app);
             schedule_hide(app, 4200);
         }
@@ -727,14 +833,34 @@ fn finish_recording(
     let clip = session.stop();
     if audio::is_silent(&clip.samples) {
         *busy = false;
-        emit_phase(app, "silence", route, "No speech detected. Nothing was inserted.", 0, 0.0, "");
+        emit_phase(
+            app,
+            "silence",
+            route,
+            "No speech detected. Nothing was inserted.",
+            0,
+            0.0,
+            "",
+        );
         schedule_hide(app, 1600);
         return;
     }
     let outcome = transcribe_and_polish(app, clip, route.to_string());
-    if app.state::<Dictation>().cancel.swap(false, Ordering::Relaxed) {
+    if app
+        .state::<Dictation>()
+        .cancel
+        .swap(false, Ordering::Relaxed)
+    {
         *busy = false;
-        emit_phase(app, "cancelled", route, "Cancelled. Nothing was inserted.", 0, 0.0, "");
+        emit_phase(
+            app,
+            "cancelled",
+            route,
+            "Cancelled. Nothing was inserted.",
+            0,
+            0.0,
+            "",
+        );
         schedule_hide(app, 1200);
         return;
     }
@@ -750,7 +876,11 @@ fn finish_recording(
                     message = format!("{message} Could not paste: {err} Copy it from history.");
                 }
             }
-            let phase = if done.used_fallback { "fallback" } else { "inserted" };
+            let phase = if done.used_fallback {
+                "fallback"
+            } else {
+                "inserted"
+            };
             emit_phase(app, phase, route, &message, 0, 0.0, &done.text);
             schedule_hide(app, 1800);
         }
@@ -973,7 +1103,15 @@ fn bump(app: &AppHandle) -> u64 {
         + 1
 }
 
-fn emit_phase(app: &AppHandle, phase: &str, route: &str, message: &str, elapsed_ms: u64, level: f32, text: &str) {
+fn emit_phase(
+    app: &AppHandle,
+    phase: &str,
+    route: &str,
+    message: &str,
+    elapsed_ms: u64,
+    level: f32,
+    text: &str,
+) {
     if let Ok(mut slot) = app.state::<Dictation>().phase.lock() {
         *slot = phase.to_string();
     }
@@ -1089,13 +1227,16 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     let warnings = dictate_config::validate(&settings, hotkey::host_os())?;
     let effective = dictate_config::effective(&settings, hotkey::host_os())?;
     let state = app.state::<Dictation>();
+    let previous = state.settings.lock().expect("settings").clone();
     dictate_config::save(&state.settings_path, &settings)?;
     {
         let mut share = state.hotkeys.lock().expect("hotkeys");
         share.bindings = effective.bindings;
+        share.capture = false;
         share.generation = share.generation.wrapping_add(1);
     }
-    *state.settings.lock().expect("settings") = settings;
+    *state.settings.lock().expect("settings") = settings.clone();
+    log_applied_hotkeys(&previous, &settings);
     let _ = warnings;
     crate::tray::refresh_menu(app);
     Ok(state.snapshot(app))
@@ -1199,6 +1340,52 @@ pub fn local_use_model(app: &AppHandle, role: &str, id: &str) -> Result<Snapshot
     Ok(state.snapshot(app))
 }
 
+pub fn set_hotkey(app: &AppHandle, mode: &str, chord: &str) -> Result<Snapshot, String> {
+    let state = app.state::<Dictation>();
+    let mut settings = state.settings.lock().expect("settings").clone();
+    drop(state);
+    dictate_config::assign_hotkey(&mut settings, mode, chord, hotkey::host_os())?;
+    save_settings(app, settings)
+}
+
+fn log_applied_hotkeys(previous: &DictationSettings, settings: &DictationSettings) {
+    let os = hotkey::host_os();
+    let rows = [
+        (
+            "dictate",
+            HotkeyMode::Dictate,
+            &previous.dictate_hotkey,
+            &settings.dictate_hotkey,
+        ),
+        (
+            "translate",
+            HotkeyMode::Translate,
+            &previous.translate_hotkey,
+            &settings.translate_hotkey,
+        ),
+        (
+            "command",
+            HotkeyMode::Command,
+            &previous.command_hotkey,
+            &settings.command_hotkey,
+        ),
+    ];
+    for (name, mode, before, after) in rows {
+        if before == after {
+            continue;
+        }
+        let described = match hotkey::effective_chord(after, mode, os) {
+            Ok(chord) => format!(
+                "{} ({})",
+                hotkey::canonical(&chord),
+                hotkey::chord_label(&chord, os)
+            ),
+            Err(_) => after.clone(),
+        };
+        crate::diag::record(&format!("applied hotkey {name} {described}"));
+    }
+}
+
 pub fn set_key(app: &AppHandle, provider: &str, key: &str) -> Result<String, String> {
     let state = app.state::<Dictation>();
     let store_status = state.secure_store.lock().expect("store").clone();
@@ -1238,7 +1425,10 @@ pub fn test_connection(app: &AppHandle, provider: &str) -> Result<String, String
     let settings = state.settings.lock().expect("settings").clone();
     let effective = dictate_config::effective(&settings, hotkey::host_os())?;
     let (base, model_ready) = if provider == effective.llm_provider {
-        (effective.llm_base, effective.llm_implemented || provider == "volcengine")
+        (
+            effective.llm_base,
+            effective.llm_implemented || provider == "volcengine",
+        )
     } else if provider == settings.asr_provider {
         (provider_base(&settings, provider), true)
     } else {
@@ -1310,7 +1500,11 @@ pub fn cancel_capture(app: &AppHandle) {
 }
 
 pub fn history(app: &AppHandle) -> Vec<HistoryEntry> {
-    app.state::<Dictation>().history.lock().expect("history").clone()
+    app.state::<Dictation>()
+        .history
+        .lock()
+        .expect("history")
+        .clone()
 }
 
 pub fn delete_history(app: &AppHandle, id: &str) -> Result<(), String> {

@@ -24,6 +24,7 @@ fn main() {
             "dictation_open_privacy",
             "dictation_capture_hotkey",
             "dictation_cancel_capture",
+            "dictation_set_hotkey",
             "dictation_record_toggle",
             "dictation_cancel",
             "dictation_history",

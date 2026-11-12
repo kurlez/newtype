@@ -61,7 +61,10 @@ pub async fn dictation_test_connection(app: AppHandle, provider: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn dictation_list_models(app: AppHandle, provider: String) -> Result<Vec<String>, String> {
+pub async fn dictation_list_models(
+    app: AppHandle,
+    provider: String,
+) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || crate::dictation::list_models(&app, &provider))
         .await
         .map_err(|err| err.to_string())?
@@ -96,6 +99,15 @@ pub fn dictation_capture_hotkey(app: AppHandle, mode: String) -> Result<(), Stri
 #[tauri::command]
 pub fn dictation_cancel_capture(app: AppHandle) {
     crate::dictation::cancel_capture(&app);
+}
+
+#[tauri::command]
+pub fn dictation_set_hotkey(
+    app: AppHandle,
+    mode: String,
+    hotkey: String,
+) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::set_hotkey(&app, &mode, &hotkey)
 }
 
 #[tauri::command]

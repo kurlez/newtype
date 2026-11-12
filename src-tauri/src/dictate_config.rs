@@ -191,6 +191,40 @@ pub fn save(path: &Path, settings: &DictationSettings) -> Result<(), String> {
     std::fs::write(path, body).map_err(|err| err.to_string())
 }
 
+/// Store one chord and leave the other two alone.
+///
+/// A Typeless clash is a warning. The chord is still stored. An empty chord,
+/// an unknown key, or a duplicate of another mode is an error and the previous
+/// value stays in place.
+pub fn assign_hotkey(
+    settings: &mut DictationSettings,
+    mode: &str,
+    chord: &str,
+    os: OsKind,
+) -> Result<Vec<String>, String> {
+    let canonical = hotkey::canonical(&hotkey::parse_chord(chord)?);
+    let slot = match mode {
+        "dictate" => &mut settings.dictate_hotkey,
+        "translate" => &mut settings.translate_hotkey,
+        "command" => &mut settings.command_hotkey,
+        _ => return Err("Unknown hotkey.".into()),
+    };
+    let previous = std::mem::replace(slot, canonical);
+    match effective(settings, os) {
+        Ok(effective) => Ok(effective.warnings),
+        Err(err) => {
+            let slot = match mode {
+                "dictate" => &mut settings.dictate_hotkey,
+                "translate" => &mut settings.translate_hotkey,
+                "command" => &mut settings.command_hotkey,
+                _ => return Err(err),
+            };
+            *slot = previous;
+            Err(err)
+        }
+    }
+}
+
 pub fn validate(settings: &DictationSettings, os: OsKind) -> Result<Vec<String>, String> {
     hotwords::validate(&settings.hotwords).map_err(|err| err.to_string())?;
     let effective = effective(settings, os)?;
@@ -206,8 +240,8 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     let polish = PolishLevel::parse(&settings.polish_level)
         .or(Some(PolishLevel::Polish).filter(|_| settings.polish_level.is_empty()))
         .ok_or_else(|| format!("Unknown polish level \"{}\".", settings.polish_level))?;
-    let preference = RoutePreference::parse(&settings.preference)
-        .unwrap_or(RoutePreference::CloudDefault);
+    let preference =
+        RoutePreference::parse(&settings.preference).unwrap_or(RoutePreference::CloudDefault);
     if cloud::preset(&settings.asr_provider).is_none() {
         return Err("Unknown speech provider.".into());
     }
@@ -279,7 +313,11 @@ struct End {
 
 fn provider_end(settings: &DictationSettings, id: &str, speech: bool) -> Result<End, String> {
     let preset = cloud::preset(id).ok_or_else(|| "Unknown provider.".to_string())?;
-    let config = settings.providers.get(id).cloned().unwrap_or_else(|| config_from_preset(preset));
+    let config = settings
+        .providers
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| config_from_preset(preset));
     let model = if speech {
         if config.asr_model.trim().is_empty() {
             preset.default_asr.to_string()
@@ -292,7 +330,11 @@ fn provider_end(settings: &DictationSettings, id: &str, speech: bool) -> Result<
         config.llm_model.trim().to_string()
     };
     let base = if preset.id == "custom" {
-        let specific = if speech { &config.asr_base } else { &config.llm_base };
+        let specific = if speech {
+            &config.asr_base
+        } else {
+            &config.llm_base
+        };
         if !specific.trim().is_empty() {
             specific.trim().to_string()
         } else {
@@ -381,6 +423,69 @@ mod tests {
         assert_eq!(mac.hotkey_labels[0], "Right Ctrl");
         assert_eq!(mac.hotkey_labels[1], "Right Ctrl + Right Shift");
         assert_eq!(mac.hotkey_labels[2], "Right Ctrl + Enter");
-        assert!(mac.warnings.iter().all(|warning| !warning.contains("Typeless")));
+        assert!(mac
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("Typeless")));
+    }
+
+    #[test]
+    fn saved_alt_right_chords_round_trip_and_still_bind() {
+        let mut settings = DictationSettings::default();
+        settings.dictate_hotkey = "AltRight".into();
+        settings.translate_hotkey = "AltRight+ShiftRight".into();
+        settings.command_hotkey = "AltRight+Enter".into();
+        let dir = std::env::temp_dir().join(format!("newtype-hotkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictation.json");
+        save(&path, &settings).unwrap();
+        let loaded = load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.dictate_hotkey, "AltRight");
+        assert_eq!(loaded.translate_hotkey, "AltRight+ShiftRight");
+        assert_eq!(loaded.command_hotkey, "AltRight+Enter");
+        for os in [OsKind::Windows, OsKind::Mac] {
+            let effective = effective(&loaded, os).unwrap();
+            assert_eq!(hotkey::canonical(&effective.bindings[0].1), "AltRight");
+            assert_eq!(
+                hotkey::canonical(&effective.bindings[1].1),
+                "AltRight+ShiftRight"
+            );
+            assert_eq!(
+                hotkey::canonical(&effective.bindings[2].1),
+                "AltRight+Enter"
+            );
+            assert!(effective
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Typeless")));
+            assert_ne!(
+                hotkey::canonical(&effective.bindings[0].1),
+                hotkey::canonical(&hotkey::default_chord(HotkeyMode::Dictate, os))
+            );
+        }
+        let windows = effective(&loaded, OsKind::Windows).unwrap();
+        assert_eq!(windows.hotkey_labels[0], "Right Alt");
+        assert_eq!(windows.hotkey_labels[1], "Right Alt + Right Shift");
+        assert_eq!(windows.hotkey_labels[2], "Right Alt + Enter");
+    }
+
+    #[test]
+    fn assign_hotkey_keeps_a_typeless_warning_and_rejects_a_duplicate() {
+        let mut settings = DictationSettings::default();
+        settings.translate_hotkey = "AltRight+ShiftRight".into();
+        settings.command_hotkey = "AltRight+Enter".into();
+        let warnings =
+            assign_hotkey(&mut settings, "dictate", "AltRight", OsKind::Windows).unwrap();
+        assert_eq!(settings.dictate_hotkey, "AltRight");
+        assert_eq!(settings.translate_hotkey, "AltRight+ShiftRight");
+        assert_eq!(settings.command_hotkey, "AltRight+Enter");
+        assert!(warnings.iter().any(|warning| warning.contains("Typeless")));
+        let error =
+            assign_hotkey(&mut settings, "translate", "AltRight", OsKind::Windows).unwrap_err();
+        assert!(error.contains("same hotkey"));
+        assert_eq!(settings.translate_hotkey, "AltRight+ShiftRight");
+        assert!(assign_hotkey(&mut settings, "dictate", "", OsKind::Mac).is_err());
+        assert_eq!(settings.dictate_hotkey, "AltRight");
     }
 }

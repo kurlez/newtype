@@ -1,3 +1,14 @@
+import {
+  beginCapture,
+  bindingError,
+  bindingWarnings,
+  cancelEditor,
+  idleEditor,
+  knownConflict,
+  type HotkeyEditor,
+  type HotkeyModeName,
+  showCaptured,
+} from "./hotkeyEditor";
 import { bindLocal, localPanel, showProgress, takeRemembered, wireLocal } from "./local-models";
 import { previewHistory, previewSnapshot } from "./preview";
 import {
@@ -11,6 +22,28 @@ import {
   type Snapshot,
   type UpdateState,
 } from "./types";
+
+const HOTKEY_MODES: Array<[HotkeyModeName, string]> = [
+  ["dictate", "Dictate"],
+  ["translate", "Translate (stub)"],
+  ["command", "Command (stub)"],
+];
+
+const PREVIEW_CHORDS: Array<[string, string]> = [
+  ["AltRight", "Right Alt"],
+  ["AltRight+ShiftRight", "Right Alt + Right Shift"],
+  ["AltRight+Enter", "Right Alt + Enter"],
+  ["ControlRight", "Right Ctrl"],
+];
+
+const editors: Record<HotkeyModeName, HotkeyEditor> = {
+  dictate: idleEditor("", ""),
+  translate: idleEditor("", ""),
+  command: idleEditor("", ""),
+};
+
+let hotkeyMessage = "";
+let hotkeyMessageError = false;
 
 const root = document.querySelector<HTMLDivElement>("#app");
 let snap: Snapshot = previewSnapshot;
@@ -52,6 +85,7 @@ export async function mount(previewMode: boolean): Promise<void> {
         <li>macOS: drag newtype to Applications. Do not double-click the first time. Right-click → Open, then Open. If a double-click was blocked: System Settings → Privacy &amp; Security → Open Anyway.</li>
         <li>macOS：第一次不要双击。右键 → 打开。若已拦截：系统设置 → 隐私与安全性 → 仍要打开。</li>
         <li>Windows: if SmartScreen appears, choose More info, then Run anyway.</li>
+        <li>The dictate key defaults to Right Ctrl. If this keyboard has no Right Ctrl key, use Hotkey below: click Capture, press a key that exists, then click Set.</li>
       </ol>
       <p class="status">Updates are not Developer ID signed. Microphone and Accessibility may need to be granted again after an update. That has to be checked on a real Mac.</p>
     </section>
@@ -82,15 +116,23 @@ export async function mount(previewMode: boolean): Promise<void> {
   const { listen } = await import("@tauri-apps/api/event");
   await listen<UpdateState>("update://state", (event) => renderUpdate(event.payload));
   await listen<CaptureEvent>("dictation://capture", (event) => {
-    const input = document.querySelector<HTMLInputElement>(`#hotkey-${event.payload.mode}`);
-    if (input) {
-      input.value = event.payload.hotkey;
-      notice = `${event.payload.label} captured. Save to keep it.`;
-      const note = document.querySelector("#notice");
-      if (note) {
-        note.textContent = notice;
-      }
+    const mode = event.payload.mode as HotkeyModeName;
+    if (!editors[mode]) {
+      return;
     }
+    if (event.payload.phase === "idle" || !event.payload.hotkey) {
+      editors[mode] = cancelEditor(editors[mode]);
+      setHotkeyMessage("Capture cancelled. The saved hotkey is unchanged.");
+    } else {
+      editors[mode] = showCaptured(editors[mode], event.payload.hotkey, event.payload.label);
+      const warning = knownConflict(event.payload.hotkey);
+      setHotkeyMessage(
+        warning
+          ? `${event.payload.label} captured. ${warning} Click Set to keep it.`
+          : `${event.payload.label} captured. Click Set to keep it.`,
+      );
+    }
+    renderHotkeys();
   });
   const { invoke } = await import("@tauri-apps/api/core");
   renderUpdate(await invoke<UpdateState>("get_state"));
@@ -149,6 +191,7 @@ function paint(): void {
   if (!host) {
     return;
   }
+  syncEditorsFromSnapshot();
   const settings = snap.settings;
   const asr = preset(settings.asrProvider);
   const llm = preset(settings.llmProvider);
@@ -209,13 +252,9 @@ function paint(): void {
     </section>
     <section>
       <h2>Hotkey</h2>
-      <p class="status">Both desktops default to Right Ctrl, the right-hand Control key (ControlRight), not Left Control and not Right Option. Right Option is Typeless on a PC keyboard, including on a Mac. Escape cancels.</p>
+      <p class="status hotkey-hint">The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A Typeless clash is a warning, and Set still keeps the chord.</p>
       ${radios("talk", [["toggle", "Toggle", "Press to start, press again to stop."], ["hold", "Hold to talk", "Release to stop."]], settings.talkMode)}
-      ${hotkeyRow("dictate", "Dictate", 0)}
-      ${hotkeyRow("translate", "Translate (stub)", 1)}
-      ${hotkeyRow("command", "Command (stub)", 2)}
-      <div class="row"><button type="button" id="defaults">Restore default hotkeys</button></div>
-      <ul class="notes">${snap.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>
+      <div id="hotkey-editor">${hotkeyEditorInner()}</div>
     </section>
     <section>
       <h2>Polish</h2>
@@ -285,12 +324,6 @@ function bind(): void {
   document.querySelector("#clear-key")?.addEventListener("click", () => void clearKey(snap.settings.asrProvider));
   document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider));
   document.querySelector("#load-models")?.addEventListener("click", () => void loadModels(snap.settings.asrProvider));
-  document.querySelector("#defaults")?.addEventListener("click", () => {
-    snap.settings.dictateHotkey = "";
-    snap.settings.translateHotkey = "";
-    snap.settings.commandHotkey = "";
-    void save();
-  });
   document.querySelector("#reset-models")?.addEventListener("click", () => void resetModels());
   document.querySelector("#add-hotword")?.addEventListener("click", () => {
     readHotwords();
@@ -305,9 +338,7 @@ function bind(): void {
   document.querySelector("#refresh-mics")?.addEventListener("click", () => void listMics());
   document.querySelector("#probe-mic")?.addEventListener("click", () => void probe());
   document.querySelector("#record")?.addEventListener("click", () => void record());
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-capture]")) {
-    button.addEventListener("click", () => void capture(button.dataset.capture ?? "dictate"));
-  }
+  bindHotkeyButtons();
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
     button.addEventListener("click", () => void copyHistory(button.dataset.copy ?? ""));
   }
@@ -319,9 +350,6 @@ function bind(): void {
 function readForm(): void {
   const settings = snap.settings;
   const read = (id: string) => document.querySelector<HTMLInputElement>(id)?.value ?? "";
-  settings.dictateHotkey = read("#hotkey-dictate");
-  settings.translateHotkey = read("#hotkey-translate");
-  settings.commandHotkey = read("#hotkey-command");
   settings.microphone = read("#microphone");
   settings.thinking = document.querySelector<HTMLSelectElement>("#thinking")?.value ?? settings.thinking;
   writeProvider(settings, settings.asrProvider, true);
@@ -590,25 +618,182 @@ async function record(): Promise<void> {
   await call("dictation_record_toggle");
 }
 
-async function capture(mode: string): Promise<void> {
+async function capture(mode: HotkeyModeName): Promise<void> {
+  for (const [other] of HOTKEY_MODES) {
+    if (other !== mode && editors[other].phase === "capturing") {
+      editors[other] = cancelEditor(editors[other]);
+    }
+  }
+  editors[mode] = beginCapture(editors[mode]);
+  setHotkeyMessage(
+    preview
+      ? "Preview has no keyboard hook. Choose the chord, then click Set."
+      : "Press the keys, then release them. Escape cancels.",
+  );
+  renderHotkeys();
   if (preview) {
-    const input = document.querySelector<HTMLInputElement>(`#hotkey-${mode}`);
-    if (input) {
-      input.value = "ControlRight";
-    }
-    notice = "Preview captured Right Ctrl. Save to keep it.";
-    const node = document.querySelector("#notice");
-    if (node) {
-      node.textContent = notice;
-    }
     return;
   }
-  notice = "Press the keys, then release them.";
-  const node = document.querySelector("#notice");
-  if (node) {
-    node.textContent = notice;
+  try {
+    await call("dictation_capture_hotkey", { mode });
+  } catch (error) {
+    editors[mode] = cancelEditor(editors[mode]);
+    setHotkeyMessage(String(error), true);
+    renderHotkeys();
   }
-  await call("dictation_capture_hotkey", { mode });
+}
+
+function acceptPreviewChord(mode: HotkeyModeName, chord: string, label: string): void {
+  editors[mode] = showCaptured(editors[mode], chord, label);
+  const warning = knownConflict(chord);
+  setHotkeyMessage(
+    warning
+      ? `${label} captured. ${warning} Click Set to keep it.`
+      : `${label} captured. Click Set to keep it.`,
+  );
+  renderHotkeys();
+}
+
+async function setHotkey(mode: HotkeyModeName): Promise<void> {
+  const editor = editors[mode];
+  if (editor.phase !== "pending" || !editor.pendingChord) {
+    setHotkeyMessage("Capture a chord before Set.", true);
+    renderHotkeys();
+    return;
+  }
+  const chords = HOTKEY_MODES.map(([name], index) =>
+    name === mode ? editor.pendingChord : editors[name].activeChord || snap.hotkeyChords[index] || "",
+  );
+  const localError = bindingError(chords);
+  if (localError) {
+    setHotkeyMessage(localError, true);
+    renderHotkeys();
+    return;
+  }
+  const title = HOTKEY_MODES.find(([name]) => name === mode)?.[1] ?? mode;
+  if (preview) {
+    snap.settings.dictateHotkey = chords[0] ?? "";
+    snap.settings.translateHotkey = chords[1] ?? "";
+    snap.settings.commandHotkey = chords[2] ?? "";
+    snap.hotkeyChords = chords;
+    snap.hotkeyLabels = HOTKEY_MODES.map(([name], index) =>
+      name === mode ? editor.pendingLabel : snap.hotkeyLabels[index] ?? "",
+    );
+    snap.warnings = bindingWarnings(chords);
+    editors[mode] = idleEditor(editor.pendingChord, editor.pendingLabel);
+    syncEditorsFromSnapshot();
+    setHotkeyMessage(appliedMessage(title, editor.pendingLabel, snap.warnings));
+    renderHotkeys();
+    return;
+  }
+  try {
+    const next = await call<Snapshot>("dictation_set_hotkey", { mode, hotkey: editor.pendingChord });
+    const index = HOTKEY_MODES.findIndex(([name]) => name === mode);
+    const label = next.hotkeyLabels[index] ?? editor.pendingLabel;
+    snap.hotkeyLabels = next.hotkeyLabels;
+    snap.hotkeyChords = next.hotkeyChords;
+    snap.warnings = next.warnings;
+    snap.settings.dictateHotkey = next.settings.dictateHotkey;
+    snap.settings.translateHotkey = next.settings.translateHotkey;
+    snap.settings.commandHotkey = next.settings.commandHotkey;
+    editors[mode] = idleEditor(next.hotkeyChords[index] ?? editor.pendingChord, label);
+    syncEditorsFromSnapshot();
+    setHotkeyMessage(appliedMessage(title, label, next.warnings));
+    renderHotkeys();
+  } catch (error) {
+    setHotkeyMessage(String(error), true);
+    renderHotkeys();
+  }
+}
+
+async function cancelHotkey(mode: HotkeyModeName): Promise<void> {
+  const wasCapturing = editors[mode].phase === "capturing";
+  editors[mode] = cancelEditor(editors[mode]);
+  const someoneCapturing = HOTKEY_MODES.some(([name]) => editors[name].phase === "capturing");
+  setHotkeyMessage("Capture cancelled. The saved hotkey is unchanged.");
+  renderHotkeys();
+  if (!preview && (wasCapturing || !someoneCapturing)) {
+    await call("dictation_cancel_capture");
+  }
+}
+
+function appliedMessage(title: string, label: string, warnings: string[]): string {
+  const typeless = warnings.filter((warning) => warning.includes("Typeless"));
+  return typeless.length ? `Set ${title} to ${label}. ${typeless.join(" ")}` : `Set ${title} to ${label}.`;
+}
+
+function setHotkeyMessage(message: string, isError = false): void {
+  hotkeyMessage = message;
+  hotkeyMessageError = isError;
+  notice = message;
+  setNotice(message, isError);
+}
+
+function setNotice(message: string, isError = false): void {
+  const node = document.querySelector("#notice");
+  if (!node) {
+    return;
+  }
+  node.textContent = message;
+  node.classList.toggle("error", isError);
+}
+
+function syncEditorsFromSnapshot(): void {
+  HOTKEY_MODES.forEach(([mode], index) => {
+    editors[mode].activeChord = snap.hotkeyChords[index] ?? editors[mode].activeChord;
+    editors[mode].activeLabel = snap.hotkeyLabels[index] ?? editors[mode].activeLabel;
+  });
+}
+
+function renderHotkeys(): void {
+  const host = document.querySelector("#hotkey-editor");
+  if (!host) {
+    return;
+  }
+  host.innerHTML = hotkeyEditorInner();
+  bindHotkeyButtons();
+}
+
+function bindHotkeyButtons(): void {
+  document.querySelector("#defaults")?.addEventListener("click", () => {
+    for (const [mode] of HOTKEY_MODES) {
+      editors[mode] = cancelEditor(editors[mode]);
+    }
+    snap.settings.dictateHotkey = "";
+    snap.settings.translateHotkey = "";
+    snap.settings.commandHotkey = "";
+    if (preview) {
+      snap.hotkeyChords = [...previewSnapshot.hotkeyChords];
+      snap.hotkeyLabels = [...previewSnapshot.hotkeyLabels];
+      snap.warnings = [...previewSnapshot.warnings];
+    }
+    setHotkeyMessage("Restored the default hotkeys. Dictate is Right Ctrl.");
+    void save();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-capture]")) {
+    button.addEventListener("click", () => void capture((button.dataset.capture ?? "dictate") as HotkeyModeName));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-set]")) {
+    button.addEventListener("click", () => void setHotkey((button.dataset.set ?? "dictate") as HotkeyModeName));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-cancel]")) {
+    button.addEventListener("click", () => void cancelHotkey((button.dataset.cancel ?? "dictate") as HotkeyModeName));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preview-chord]")) {
+    button.addEventListener("click", () => {
+      const mode = (button.dataset.mode ?? "dictate") as HotkeyModeName;
+      acceptPreviewChord(mode, button.dataset.previewChord ?? "", button.dataset.previewLabel ?? "");
+    });
+  }
+}
+
+function hotkeyEditorInner(): string {
+  const rows = HOTKEY_MODES.map(([mode, title], index) => hotkeyRow(mode, title, index)).join("");
+  const notes = snap.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const status = hotkeyMessage
+    ? `<p class="status${hotkeyMessageError ? " error" : ""}" id="hotkey-status">${escapeHtml(hotkeyMessage)}</p>`
+    : "";
+  return `${rows}${status}<div class="row"><button type="button" id="defaults">Restore default hotkeys</button></div><ul class="notes" id="hotkey-notes">${notes}</ul>`;
 }
 
 async function copyHistory(id: string): Promise<void> {
@@ -667,10 +852,27 @@ function providerFields(settings: DictationSettings): string {
     <datalist id="model-list">${list}</datalist>`;
 }
 
-function hotkeyRow(mode: string, title: string, index: number): string {
-  const value = snap.hotkeyChords[index] ?? "";
-  const label = snap.hotkeyLabels[index] ?? "";
-  return `<label class="field">${escapeHtml(title)} <span class="muted">${escapeHtml(label)}</span><span class="hotkey-line"><input id="hotkey-${mode}" value="${escapeHtml(value)}" /><button type="button" data-capture="${mode}">Set</button></span></label>`;
+function hotkeyRow(mode: HotkeyModeName, title: string, index: number): string {
+  const editor = editors[mode];
+  const activeChord = editor.activeChord || snap.hotkeyChords[index] || "";
+  const activeLabel = editor.activeLabel || snap.hotkeyLabels[index] || "";
+  const pendingWarning = editor.phase === "pending" ? knownConflict(editor.pendingChord) : null;
+  const activeWarning = editor.phase === "pending" ? null : knownConflict(activeChord);
+  const activeWarningLine = activeWarning ? `<p class="status warn">${escapeHtml(activeWarning)}</p>` : "";
+  const pendingWarningLine = pendingWarning ? `<p class="status warn">${escapeHtml(pendingWarning)}</p>` : "";
+  let controls = `<div class="row"><button type="button" data-capture="${mode}">Capture</button></div>`;
+  if (editor.phase === "capturing") {
+    const previewKeys = preview
+      ? `<div class="row">${PREVIEW_CHORDS.map(
+          ([chord, label]) =>
+            `<button type="button" data-mode="${mode}" data-preview-chord="${escapeHtml(chord)}" data-preview-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`,
+        ).join("")}</div>`
+      : "";
+    controls = `<p class="status">${preview ? "Preview has no keyboard hook. Choose a chord." : "Press the keys, then release them. Escape cancels."}</p>${previewKeys}<div class="row"><button type="button" data-cancel="${mode}">Cancel</button></div>`;
+  } else if (editor.phase === "pending") {
+    controls = `<p class="status">Captured: <strong>${escapeHtml(editor.pendingLabel)}</strong> <code>${escapeHtml(editor.pendingChord)}</code></p>${pendingWarningLine}<div class="row"><button type="button" class="primary" data-set="${mode}">Set</button><button type="button" data-capture="${mode}">Capture again</button><button type="button" data-cancel="${mode}">Cancel</button></div>`;
+  }
+  return `<div class="hotkey-row" data-mode="${mode}"><h3>${escapeHtml(title)}</h3><p class="status">Active: <strong>${escapeHtml(activeLabel)}</strong> <code>${escapeHtml(activeChord)}</code></p>${activeWarningLine}${controls}</div>`;
 }
 
 function hotwordRow(word: Hotword, index: number): string {
