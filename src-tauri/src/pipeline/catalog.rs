@@ -25,6 +25,16 @@ const LLAMA_MAC_SHA: &str = "94b860a529a64aecfe20c4b9ccb9ca6fb4cf9126b019f3380ee
 const LLAMA_MAC_SIZE: u64 = 16_870_580;
 const LLAMA_WIN_SHA: &str = "12017843d67f560ce1bacf771dccdb189ff651a2dde684cbb49634c29df5b751";
 const LLAMA_WIN_SIZE: u64 = 25_057_882;
+/// Official sherpa-onnx export of FunAudioLLM SenseVoice-Small, int8.
+/// SHA-256 is the Hugging Face LFS oid, checked against the k2-fsa release
+/// tarball `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2`
+/// on 2026-11-12. ModelScope does not publish these bytes.
+const SENSE_MODEL_SHA: &str = "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51";
+const SENSE_MODEL_SIZE: u64 = 239_233_841;
+const SENSE_TOKENS_SHA: &str = "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc";
+const SENSE_TOKENS_SIZE: u64 = 315_894;
+pub const SENSEVOICE_ID: &str = "sensevoice-small-int8";
+const SENSE_REPO: &str = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mirror {
@@ -160,6 +170,18 @@ pub fn cards() -> &'static [Card] {
             depends_on: &["silero-vad"],
         },
         Card {
+            id: SENSEVOICE_ID,
+            name: "SenseVoice-Small int8",
+            role: Role::Asr,
+            license: "FunASR Model License (attribution required)",
+            languages: "Chinese, English, Japanese, Korean, Cantonese",
+            runtime: "sherpa-onnx, in process",
+            memory: "About 228 MB of weights. Lighter than Qwen3-ASR.",
+            notes: "Optional lightweight speech model. Not the local default. Inverse text normalization stays on so punctuation is kept. Hugging Face and hf-mirror only; ModelScope does not host this export.",
+            platforms: MAC_WIN,
+            depends_on: &["silero-vad"],
+        },
+        Card {
             id: "qwen3-4b-q4",
             name: "Qwen3 4B Q4_K_M",
             role: Role::Llm,
@@ -218,6 +240,7 @@ pub fn files_for(id: &str, os: OsKind) -> Result<&'static [RemoteFile], String> 
     match id {
         "qwen3-asr-1.7b-q8" => Ok(asr_17_files()),
         "qwen3-asr-0.6b-int8" => Ok(asr_06_files()),
+        SENSEVOICE_ID => Ok(sensevoice_files()),
         "qwen3-4b-q4" => Ok(llm_4b_files()),
         "qwen3-1.7b-q4" => Ok(llm_17_files()),
         "silero-vad" => Ok(silero_files()),
@@ -271,6 +294,32 @@ pub fn recommend(hardware: Hardware) -> Recommendation {
         llm_id: llm_id.to_string(),
         summary,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalAsrBackend {
+    QwenSherpa,
+    SenseVoice,
+    QwenLlama,
+}
+
+pub fn local_asr_backend(id: &str) -> Option<LocalAsrBackend> {
+    match id {
+        "qwen3-asr-0.6b-int8" => Some(LocalAsrBackend::QwenSherpa),
+        SENSEVOICE_ID => Some(LocalAsrBackend::SenseVoice),
+        "qwen3-asr-1.7b-q8" => Some(LocalAsrBackend::QwenLlama),
+        _ => None,
+    }
+}
+
+pub fn attribution(sensevoice_installed: bool) -> String {
+    let mut text = String::from(
+        "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
+    );
+    if sensevoice_installed {
+        text.push_str(" SenseVoice-Small is installed. Its weights use the FunASR Model License and require attribution to FunAudioLLM / Alibaba.");
+    }
+    text
 }
 
 pub fn active_id(role: Role, selected: &str, hardware: Hardware) -> String {
@@ -424,6 +473,22 @@ fn hf(repo: &str, file: &str) -> &'static [Url] {
     Box::leak(urls.into_boxed_slice())
 }
 
+fn hosted(repo: &str, file: &str) -> &'static [Url] {
+    let hugging = format!("https://huggingface.co/{repo}/resolve/main/{file}");
+    let mirror = format!("https://hf-mirror.com/{repo}/resolve/main/{file}");
+    let urls = vec![
+        Url {
+            mirror: Mirror::HuggingFace,
+            url: Box::leak(hugging.into_boxed_str()),
+        },
+        Url {
+            mirror: Mirror::HfMirror,
+            url: Box::leak(mirror.into_boxed_str()),
+        },
+    ];
+    Box::leak(urls.into_boxed_slice())
+}
+
 fn github(url: &'static str) -> &'static [Url] {
     Box::leak(
         vec![Url {
@@ -491,6 +556,30 @@ fn asr_06_files() -> &'static [RemoteFile] {
     })
 }
 static ASR_06_CELL: OnceLock<&'static [RemoteFile]> = OnceLock::new();
+
+fn sensevoice_files() -> &'static [RemoteFile] {
+    once(&SENSE_CELL, || {
+        file_set(vec![
+            RemoteFile {
+                name: "model.int8.onnx",
+                sha256: SENSE_MODEL_SHA,
+                size: SENSE_MODEL_SIZE,
+                urls: hosted(SENSE_REPO, "model.int8.onnx"),
+                extract: false,
+                required: &["model.int8.onnx"],
+            },
+            RemoteFile {
+                name: "tokens.txt",
+                sha256: SENSE_TOKENS_SHA,
+                size: SENSE_TOKENS_SIZE,
+                urls: hosted(SENSE_REPO, "tokens.txt"),
+                extract: false,
+                required: &["tokens.txt"],
+            },
+        ])
+    })
+}
+static SENSE_CELL: OnceLock<&'static [RemoteFile]> = OnceLock::new();
 
 fn llm_4b_files() -> &'static [RemoteFile] {
     once(&LLM_4B_CELL, || {
@@ -633,6 +722,37 @@ mod tests {
         assert!(err.contains("GitHub"), "{err}");
         let github = urls_for(sherpa, Mirror::GitHub).unwrap();
         assert!(github[0].contains("github.com"));
+    }
+
+    #[test]
+    fn sensevoice_is_optional_and_is_not_the_local_default() {
+        for hardware in [hw(OsKind::Mac, 24), hw(OsKind::Mac, 8), hw(OsKind::Windows, 32), hw(OsKind::Windows, 8)] {
+            assert_ne!(recommend(hardware).asr_id, SENSEVOICE_ID);
+            assert_eq!(active_id(Role::Asr, SENSEVOICE_ID, hardware), SENSEVOICE_ID);
+        }
+        assert_eq!(active_id(Role::Asr, "", hw(OsKind::Mac, 24)), "qwen3-asr-1.7b-q8");
+        assert_eq!(local_asr_backend(SENSEVOICE_ID), Some(LocalAsrBackend::SenseVoice));
+        assert_eq!(local_asr_backend("qwen3-asr-0.6b-int8"), Some(LocalAsrBackend::QwenSherpa));
+        assert_eq!(local_asr_backend("qwen3-asr-1.7b-q8"), Some(LocalAsrBackend::QwenLlama));
+        assert!(local_asr_backend("qwen3-4b-q4").is_none());
+        let files = files_for(SENSEVOICE_ID, OsKind::Windows).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].sha256, SENSE_MODEL_SHA);
+        assert_eq!(files[0].size, SENSE_MODEL_SIZE);
+        assert_eq!(files[1].sha256, SENSE_TOKENS_SHA);
+        assert_eq!(files[1].size, SENSE_TOKENS_SIZE);
+        let auto = urls_for(&files[0], Mirror::Auto).unwrap();
+        assert!(auto[0].contains("huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx"));
+        assert!(auto.iter().any(|url| url.contains("hf-mirror.com")));
+        assert!(auto.iter().all(|url| !url.contains("modelscope.cn")));
+        let err = urls_for(&files[0], Mirror::ModelScope).unwrap_err();
+        assert!(err.contains("ModelScope"), "{err}");
+        assert!(err.contains("Hugging Face"), "{err}");
+        assert!(!attribution(false).contains("FunASR"));
+        let installed = attribution(true);
+        assert!(installed.contains("FunASR"));
+        assert!(installed.contains("FunAudioLLM"));
+        assert!(card(SENSEVOICE_ID).unwrap().license.contains("FunASR"));
     }
 
     #[test]

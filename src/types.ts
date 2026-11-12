@@ -96,6 +96,7 @@ export interface LocalLibrary {
   activeAsr: string;
   activeLlm: string;
   downloading: string;
+  attribution: string;
   models: LocalModel[];
 }
 
