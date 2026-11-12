@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -11,9 +11,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use crate::build_info::{commit, full_version};
 use crate::dictate_config::{self, DictationSettings};
 use crate::permissions::{self, PermissionSnapshot};
-use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::asr::AsrProvider;
+use crate::pipeline::audio::{self, AudioClip, MicSession};
+use crate::pipeline::catalog::{self, Mirror};
 use crate::pipeline::cloud::{self, CloudAsr, CloudLlm, Preset};
+use crate::pipeline::engines::Engines;
+use crate::pipeline::library::{self, LibraryView};
+use crate::pipeline::local_run;
 use crate::pipeline::front;
 use crate::pipeline::history::{self, HistoryEntry};
 use crate::pipeline::hotkey::{
@@ -42,6 +46,7 @@ pub struct Dictation {
     settings_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
     dev_secrets: std::path::PathBuf,
+    engines: Arc<Engines>,
     settings: Mutex<DictationSettings>,
     history: Mutex<Vec<HistoryEntry>>,
     hotkeys: Arc<Mutex<HotkeyShare>>,
@@ -112,6 +117,7 @@ pub struct Snapshot {
     pub phase: String,
     pub version: String,
     pub dev_key_store: bool,
+    pub local: LibraryView,
 }
 
 impl Dictation {
@@ -138,6 +144,7 @@ impl Dictation {
         let settings_path = config_dir.join("dictation.json");
         let history_path = data_dir.join("history.json");
         let dev_secrets = config_dir.join("dev-secrets.json");
+        let engines = Arc::new(Engines::new(data_dir.join("models")));
         let mut settings = dictate_config::load(&settings_path);
         dictate_config::normalize(&mut settings);
         let effective = dictate_config::effective(&settings, hotkey::host_os())
@@ -147,6 +154,7 @@ impl Dictation {
             settings_path,
             history_path: history_path.clone(),
             dev_secrets,
+            engines,
             settings: Mutex::new(settings),
             history: Mutex::new(history::load(&history_path)),
             hotkeys: Arc::new(Mutex::new(HotkeyShare {
@@ -174,7 +182,23 @@ impl Dictation {
         let control = state.control.clone();
         let hotkeys = Arc::clone(&state.hotkeys);
         let listener = Arc::clone(&state.listener);
+        let engines = Arc::clone(&state.engines);
         drop(state);
+        let idle_app = app.clone();
+        std::thread::Builder::new()
+            .name("newtype-idle".into())
+            .spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(30));
+                let minutes = idle_app
+                    .state::<Dictation>()
+                    .settings
+                    .lock()
+                    .expect("settings")
+                    .local_idle_minutes
+                    .clamp(1, 120);
+                engines.reap(Duration::from_secs(u64::from(minutes) * 60));
+            })
+            .expect("idle thread");
         spawn_listener(app.clone(), control.clone(), hotkeys, listener);
         if let Some(rx) = rx {
             std::thread::Builder::new()
@@ -190,10 +214,9 @@ impl Dictation {
         let effective = dictate_config::effective(&settings, hotkey::host_os());
         let (labels, chords, warnings, route_label, route_detail) = match &effective {
             Ok(effective) => {
-                let decision = route_for(effective);
-                let detail = router::block_message(decision.block)
-                    .unwrap_or("Speech goes to the provider you configured. The path name stays visible.")
-                    .to_string();
+                let ready = readiness_of(self);
+                let decision = route_for(effective, ready);
+                let detail = route_detail(decision, ready);
                 (
                     effective.hotkey_labels.clone(),
                     effective
@@ -238,6 +261,7 @@ impl Dictation {
             phase: self.phase.lock().expect("phase").clone(),
             version: version_of(app),
             dev_key_store: cfg!(not(any(target_os = "macos", target_os = "windows"))),
+            local: self.library_view(),
         }
     }
 
@@ -249,12 +273,11 @@ impl Dictation {
         let settings = self.settings.lock().expect("settings").clone();
         match dictate_config::effective(&settings, hotkey::host_os()) {
             Ok(effective) => {
-                let decision = route_for(&effective);
+                let ready = readiness_of(self);
+                let decision = route_for(&effective, ready);
                 (
                     decision.label.text().to_string(),
-                    router::block_message(decision.block)
-                        .unwrap_or("")
-                        .to_string(),
+                    route_detail(decision, ready),
                 )
             }
             Err(err) => ("Cloud · 云端".into(), err),
@@ -293,15 +316,58 @@ fn preset_dto(preset: &Preset) -> PresetDto {
     }
 }
 
-fn route_for(effective: &dictate_config::Effective) -> router::RouteDecision {
+fn route_for(effective: &dictate_config::Effective, ready: library::Readiness) -> router::RouteDecision {
     router::decide(RouteInput {
         preference: effective.preference,
+        // M3: replace Unknown with a debounced endpoint probe. Unknown keeps
+        // cloud-default on the cloud path even when local models are installed.
         reachability: Reachability::Unknown,
         cloud_configured: effective.asr_implemented,
         asr_implemented: effective.asr_implemented,
-        local_asr_ready: false,
-        local_llm_ready: false,
+        local_asr_ready: ready.asr,
+        local_llm_ready: ready.llm,
     })
+}
+
+fn readiness_of(state: &Dictation) -> library::Readiness {
+    let settings = state.settings.lock().expect("settings").clone();
+    library::readiness(
+        state.engines.root(),
+        catalog::host_hardware(),
+        &settings.local_asr_id,
+        &settings.local_llm_id,
+    )
+}
+
+fn route_detail(decision: router::RouteDecision, ready: library::Readiness) -> String {
+    if let Some(message) = router::block_message(decision.block) {
+        return message.to_string();
+    }
+    match decision.asr {
+        Slot::Local if decision.llm == Slot::None => {
+            "Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+        }
+        Slot::Local => "Audio stays on this computer. Speech and rewrite use the installed local models.".into(),
+        Slot::Cloud if !ready.fallback_ready() => {
+            "Speech goes to the provider you configured. Offline fallback is not ready until both local models are installed.".into()
+        }
+        _ => "Speech goes to the provider you configured. The path name stays visible.".into(),
+    }
+}
+
+impl Dictation {
+    fn library_view(&self) -> LibraryView {
+        let settings = self.settings.lock().expect("settings").clone();
+        library::view(
+            self.engines.root(),
+            catalog::host_hardware(),
+            &settings.local_mirror,
+            settings.local_download_skipped,
+            &settings.local_asr_id,
+            &settings.local_llm_id,
+            &self.engines.downloading(),
+        )
+    }
 }
 
 fn version_of(app: &AppHandle) -> String {
@@ -550,46 +616,51 @@ fn begin_recording(
             return;
         }
     };
-    let decision = route_for(&effective);
+    let ready = readiness_of(&state);
+    let decision = route_for(&effective, ready);
     *route = decision.label.text().to_string();
-    if decision.block != Block::None || decision.asr != Slot::Cloud {
+    if decision.block != Block::None || decision.asr == Slot::None {
         talk.active = None;
-        let message = if decision.asr == Slot::Local {
-            "The router selected local speech recognition, which is not linked in this build. Audio was not sent."
-        } else {
-            router::block_message(decision.block).unwrap_or("Dictation cannot start.")
-        };
+        let message = router::block_message(decision.block).unwrap_or("Dictation cannot start.");
         emit_phase(app, "error", route, message, 0, 0.0, "");
         show_indicator(app);
         schedule_hide(app, 3600);
         return;
     }
-    if effective.asr_base.is_empty() || effective.asr_model.is_empty() {
-        talk.active = None;
-        emit_phase(
-            app,
-            "error",
-            route,
-            "Set the speech model and base URL before dictating.",
-            0,
-            0.0,
-            "",
-        );
-        schedule_hide(app, 3600);
-        return;
+    let on_device = decision.asr == Slot::Local;
+    if !on_device {
+        if effective.asr_base.is_empty() || effective.asr_model.is_empty() {
+            talk.active = None;
+            emit_phase(
+                app,
+                "error",
+                route,
+                "Set the speech model and base URL before dictating.",
+                0,
+                0.0,
+                "",
+            );
+            schedule_hide(app, 3600);
+            return;
+        }
+        if !secrets::has_key(&effective.asr_provider, &state.dev_secrets) {
+            talk.active = None;
+            let store = state.secure_store.lock().expect("store").clone();
+            let message = if store == "ready" {
+                "Save an API key for the speech provider. Audio is not sent until you do.".to_string()
+            } else {
+                store
+            };
+            emit_phase(app, "error", route, &message, 0, 0.0, "");
+            schedule_hide(app, 5000);
+            return;
+        }
     }
-    if !secrets::has_key(&effective.asr_provider, &state.dev_secrets) {
-        talk.active = None;
-        let store = state.secure_store.lock().expect("store").clone();
-        let message = if store == "ready" {
-            "Save an API key for the speech provider. Audio is not sent until you do.".to_string()
-        } else {
-            store
-        };
-        emit_phase(app, "error", route, &message, 0, 0.0, "");
-        schedule_hide(app, 5000);
-        return;
-    }
+    let recording_line = if on_device {
+        "Recording. Audio stays on this computer."
+    } else {
+        "Recording. Audio will be sent to your speech provider when you stop."
+    };
     match audio::MicSession::start(&effective.microphone) {
         Ok(session) => {
             *state.mic_status.lock().expect("mic") = "granted".into();
@@ -598,11 +669,12 @@ fn begin_recording(
             *mic = Some(session);
             *started = Some(started_at);
             let generation = bump(app);
-            emit_phase(app, "recording", route, "Recording. Audio will be sent to your speech provider when you stop.", 0, 0.0, "");
+            emit_phase(app, "recording", route, recording_line, 0, 0.0, "");
             show_indicator(app);
             let app_loop = app.clone();
             let control = control.clone();
             let route_loop = route.clone();
+            let recording_loop = recording_line.to_string();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -614,7 +686,7 @@ fn begin_recording(
                         &app_loop,
                         "recording",
                         &route_loop,
-                        "Recording.",
+                        &recording_loop,
                         elapsed,
                         handle.level(),
                         "",
@@ -700,6 +772,21 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip, route: String) -> Res
     let state = app.state::<Dictation>();
     let settings = state.settings.lock().expect("settings").clone();
     let effective = dictate_config::effective(&settings, hotkey::host_os())?;
+    let ready = readiness_of(&state);
+    let decision = route_for(&effective, ready);
+    if decision.asr == Slot::Local {
+        return transcribe_local(app, clip, &route, &effective, &settings);
+    }
+    if local_run::refuses_network(effective.preference) || decision.asr != Slot::Cloud {
+        let message = router::block_message(decision.block)
+            .unwrap_or("Audio was not sent.")
+            .to_string();
+        remember(app, &effective, &route, "local", "", "", "", true, &message);
+        return Err(message);
+    }
+    // M3 can retry this recording on the local engines after a cloud failure.
+    // `retry_same_audio_on_cloud_failure` stays false until that probe exists.
+    let _retry_on_local = false;
     let key = secrets::get_key(&effective.asr_provider, &state.dev_secrets)?
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Speech API key is missing.".to_string())?;
@@ -717,6 +804,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip, route: String) -> Res
                 app,
                 &effective,
                 &route,
+                &format!("{} / {}", effective.asr_provider, effective.llm_provider),
                 "",
                 "",
                 "",
@@ -759,6 +847,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip, route: String) -> Res
         app,
         &effective,
         &route,
+        &format!("{} / {}", effective.asr_provider, effective.llm_provider),
         &finished.raw,
         &finished.ruled,
         &finished.text,
@@ -772,10 +861,81 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip, route: String) -> Res
     })
 }
 
+fn transcribe_local(
+    app: &AppHandle,
+    clip: AudioClip,
+    route: &str,
+    effective: &dictate_config::Effective,
+    settings: &crate::dictate_config::DictationSettings,
+) -> Result<Done, String> {
+    let state = app.state::<Dictation>();
+    let hardware = catalog::host_hardware();
+    let asr_id = catalog::active_id(catalog::Role::Asr, &settings.local_asr_id, hardware);
+    let llm_id = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
+    let llm_ready = library::engine_ready(state.engines.root(), &llm_id, hardware.os);
+    let engines = Arc::clone(&state.engines);
+    drop(state);
+    let report = |message: &str| emit_phase(app, "processing", route, message, 0, 0.0, "");
+    match local_run::run(
+        &engines,
+        hardware.os,
+        clip,
+        &asr_id,
+        &llm_id,
+        llm_ready,
+        effective.polish,
+        &effective.hotwords,
+        &front::front_app_name(),
+        &report,
+    ) {
+        Ok(outcome) => {
+            let mut reason = outcome.finished.reason.clone();
+            if !outcome.note.is_empty() {
+                if !reason.is_empty() {
+                    reason.push(' ');
+                }
+                reason.push_str(&outcome.note);
+            }
+            let provider = format!("local / {}", outcome.engine);
+            remember(
+                app,
+                effective,
+                route,
+                &provider,
+                &outcome.finished.raw,
+                &outcome.finished.ruled,
+                &outcome.finished.text,
+                outcome.finished.used_fallback,
+                &reason,
+            );
+            Ok(Done {
+                text: outcome.finished.text,
+                used_fallback: outcome.finished.used_fallback,
+                reason,
+            })
+        }
+        Err(err) => {
+            remember(
+                app,
+                effective,
+                route,
+                "local",
+                "",
+                "",
+                "",
+                true,
+                &err,
+            );
+            Err(err)
+        }
+    }
+}
+
 fn remember(
     app: &AppHandle,
     effective: &dictate_config::Effective,
     route: &str,
+    provider: &str,
     raw: &str,
     ruled: &str,
     text: &str,
@@ -789,7 +949,7 @@ fn remember(
         app_version: version_of(app),
         mode: "dictate".into(),
         route: route.to_string(),
-        provider: format!("{} / {}", effective.asr_provider, effective.llm_provider),
+        provider: provider.to_string(),
         polish_level: match effective.polish {
             PolishLevel::Polish => "polish",
             PolishLevel::Literal => "literal",
@@ -937,6 +1097,104 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     }
     *state.settings.lock().expect("settings") = settings;
     let _ = warnings;
+    crate::tray::refresh_menu(app);
+    Ok(state.snapshot(app))
+}
+
+pub fn shutdown(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Dictation>() {
+        state.engines.shutdown();
+    }
+}
+
+pub fn fallback_line(app: &AppHandle) -> String {
+    let state = app.state::<Dictation>();
+    if readiness_of(&state).fallback_ready() {
+        "Local fallback: ready".into()
+    } else {
+        "Local fallback: not ready".into()
+    }
+}
+
+pub fn local_download(app: &AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {
+    let state = app.state::<Dictation>();
+    let settings = state.settings.lock().expect("settings").clone();
+    if settings.preference == "strictOffline" && !confirm_network {
+        return Err("Strict offline is on. Downloading contacts the model host you picked. Allow it once, or leave strict offline.".into());
+    }
+    let mirror = Mirror::parse(&settings.local_mirror).unwrap_or(Mirror::Auto);
+    let engines = Arc::clone(&state.engines);
+    drop(state);
+    engines.spawn_download(app.clone(), ids, hotkey::host_os(), mirror)
+}
+
+pub fn local_cancel_download(app: &AppHandle) {
+    app.state::<Dictation>().engines.cancel_download();
+}
+
+pub fn local_delete(app: &AppHandle, id: &str) -> Result<Snapshot, String> {
+    let state = app.state::<Dictation>();
+    library::delete_model(state.engines.root(), id)?;
+    state.engines.shutdown();
+    crate::diag::record(&format!("deleted local model {id}"));
+    crate::tray::refresh_menu(app);
+    Ok(state.snapshot(app))
+}
+
+pub fn local_skip_download(app: &AppHandle) -> Result<Snapshot, String> {
+    let state = app.state::<Dictation>();
+    {
+        let mut settings = state.settings.lock().expect("settings");
+        settings.local_download_skipped = true;
+        dictate_config::save(&state.settings_path, &settings)?;
+    }
+    crate::diag::record("local model download skipped");
+    crate::tray::refresh_menu(app);
+    Ok(state.snapshot(app))
+}
+
+pub fn local_set_mirror(app: &AppHandle, mirror: &str) -> Result<Snapshot, String> {
+    let parsed = Mirror::parse(mirror).ok_or_else(|| "Unknown download source.".to_string())?;
+    let state = app.state::<Dictation>();
+    {
+        let mut settings = state.settings.lock().expect("settings");
+        settings.local_mirror = parsed.as_str().into();
+        dictate_config::save(&state.settings_path, &settings)?;
+    }
+    crate::tray::refresh_menu(app);
+    Ok(state.snapshot(app))
+}
+
+pub fn local_use_model(app: &AppHandle, role: &str, id: &str) -> Result<Snapshot, String> {
+    if role != "asr" && role != "llm" {
+        return Err(format!("Unknown model role \"{role}\"."));
+    }
+    if !id.is_empty() {
+        let card = catalog::card(id).ok_or_else(|| format!("Unknown model \"{id}\"."))?;
+        let expected = if role == "asr" {
+            catalog::Role::Asr
+        } else {
+            catalog::Role::Llm
+        };
+        if card.role != expected {
+            return Err(format!("{} is not a {role} model.", card.name));
+        }
+    }
+    let state = app.state::<Dictation>();
+    {
+        let mut settings = state.settings.lock().expect("settings");
+        if role == "asr" {
+            settings.local_asr_id = id.to_string();
+        } else {
+            settings.local_llm_id = id.to_string();
+        }
+        dictate_config::save(&state.settings_path, &settings)?;
+        let hardware = catalog::host_hardware();
+        let asr = catalog::active_id(catalog::Role::Asr, &settings.local_asr_id, hardware);
+        let llm = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
+        state.engines.retain(&asr, &llm);
+    }
+    crate::diag::record(&format!("selected local model role={role}"));
     crate::tray::refresh_menu(app);
     Ok(state.snapshot(app))
 }

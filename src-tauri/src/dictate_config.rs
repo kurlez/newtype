@@ -52,6 +52,11 @@ pub struct DictationSettings {
     pub command_hotkey: String,
     pub thinking: String,
     pub microphone: String,
+    pub local_mirror: String,
+    pub local_download_skipped: bool,
+    pub local_asr_id: String,
+    pub local_llm_id: String,
+    pub local_idle_minutes: u32,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -73,6 +78,11 @@ impl Default for DictationSettings {
             command_hotkey: String::new(),
             thinking: "auto".into(),
             microphone: String::new(),
+            local_mirror: "auto".into(),
+            local_download_skipped: false,
+            local_asr_id: String::new(),
+            local_llm_id: String::new(),
+            local_idle_minutes: 5,
             providers,
             hotwords: Vec::new(),
         }
@@ -144,6 +154,12 @@ pub fn normalize(settings: &mut DictationSettings) {
     }
     if settings.thinking.is_empty() {
         settings.thinking = "auto".into();
+    }
+    if crate::pipeline::catalog::Mirror::parse(&settings.local_mirror).is_none() {
+        settings.local_mirror = "auto".into();
+    }
+    if settings.local_idle_minutes == 0 || settings.local_idle_minutes > 120 {
+        settings.local_idle_minutes = 5;
     }
     fill_missing_providers(settings);
     for preset in cloud::presets() {

@@ -14,7 +14,7 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "audio",
         status: "ready",
-        note: "The default input device records until the hotkey stops. Silero VAD is not linked.",
+        note: "The default input device records until the hotkey stops. Local recognition resamples to 16 kHz and trims silence.",
     }
 }
 
@@ -218,8 +218,12 @@ pub fn is_silent(samples: &[f32]) -> bool {
         < 0.012
 }
 
+pub fn pcm_16k(clip: &AudioClip) -> Vec<f32> {
+    resample_16k(&clip.samples, clip.sample_rate)
+}
+
 pub fn encode_wav_16k(clip: &AudioClip) -> Vec<u8> {
-    let mono = resample_16k(&clip.samples, clip.sample_rate);
+    let mono = pcm_16k(clip);
     let mut body = Vec::with_capacity(44 + mono.len() * 2);
     let data_len = (mono.len() * 2) as u32;
     body.extend_from_slice(b"RIFF");

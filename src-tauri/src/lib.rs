@@ -67,7 +67,18 @@ pub fn run() {
             commands::dictation_microphones,
             commands::dictation_probe_microphone,
             commands::dictation_reset_models,
+            commands::local_download,
+            commands::local_cancel_download,
+            commands::local_delete,
+            commands::local_skip_download,
+            commands::local_set_mirror,
+            commands::local_use_model,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running newtype");
+        .build(tauri::generate_context!())
+        .expect("error while building newtype")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                dictation::shutdown(app);
+            }
+        });
 }

@@ -1,8 +1,8 @@
 # newtype
 
-Menu-bar voice input for macOS (Apple Silicon) and Windows. This build dictates in the focused app with a cloud speech model and a cloud rewrite model. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
+Menu-bar voice input for macOS (Apple Silicon) and Windows. This build dictates in the focused app with a cloud speech model and a cloud rewrite model. Choosing local or strict offline runs Qwen3-ASR and a Qwen3 rewrite model on the computer instead. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
 
-Local speech models, offline auto-switch, translation, and command mode are not in this build. The router can already name those paths. Silero VAD is not linked. Volcengine speech and the DashScope WebSocket message model are marked partial in the settings window.
+Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Automatic offline switching is not in this build. Translation, command mode, and Volcengine speech are still partial.
 
 ## Version scheme
 

@@ -7,6 +7,14 @@ const V1_SYSTEM: &str = include_str!("../../../prompts/v1-literal.system.txt");
 const V1_USER: &str = include_str!("../../../prompts/v1-literal.user.txt");
 const V2_SYSTEM: &str = include_str!("../../../prompts/v2-polish.system.txt");
 const V2_USER: &str = include_str!("../../../prompts/v2-polish.user.txt");
+const LOCAL_SYSTEM: &str = include_str!("../../../prompts/v2-polish-local.system.txt");
+const LOCAL_USER: &str = include_str!("../../../prompts/v2-polish-local.user.txt");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptAudience {
+    Cloud,
+    Local,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolishLevel {
@@ -64,9 +72,30 @@ pub fn build_messages(
     words: &[Hotword],
     app_context: &str,
 ) -> PromptMessages {
-    let (system_template, user_template) = match level {
-        PolishLevel::Polish => (V2_SYSTEM, V2_USER),
-        PolishLevel::Literal => (V1_SYSTEM, V1_USER),
+    render_messages(PromptAudience::Cloud, level, transcript, words, app_context)
+}
+
+pub fn build_local_messages(
+    level: PolishLevel,
+    transcript: &str,
+    words: &[Hotword],
+    app_context: &str,
+) -> PromptMessages {
+    render_messages(PromptAudience::Local, level, transcript, words, app_context)
+}
+
+fn render_messages(
+    audience: PromptAudience,
+    level: PolishLevel,
+    transcript: &str,
+    words: &[Hotword],
+    app_context: &str,
+) -> PromptMessages {
+    let (system_template, user_template) = match (audience, level) {
+        (PromptAudience::Local, PolishLevel::Polish) => (LOCAL_SYSTEM, LOCAL_USER),
+        (PromptAudience::Local, PolishLevel::Literal) => (V1_SYSTEM, V1_USER),
+        (PromptAudience::Cloud, PolishLevel::Polish) => (V2_SYSTEM, V2_USER),
+        (PromptAudience::Cloud, PolishLevel::Literal) => (V1_SYSTEM, V1_USER),
     };
     let context = if app_context.trim().is_empty() {
         "无".to_string()
@@ -83,6 +112,19 @@ pub fn build_messages(
 }
 
 pub fn max_tokens_for(text: &str, level: PolishLevel) -> u32 {
+    scale_tokens(text, level, false)
+}
+
+pub fn max_tokens_local(text: &str) -> u32 {
+    // LOC-13: local 1.7B/4B stays near 1.3× the input. The cap keeps a small model from rambling.
+    let chars = text.chars().count() as u32;
+    (chars.saturating_mul(13) / 10 + 32).clamp(64, 1024)
+}
+
+fn scale_tokens(text: &str, level: PolishLevel, local: bool) -> u32 {
+    if local && level == PolishLevel::Polish {
+        return max_tokens_local(text);
+    }
     let chars = text.chars().count() as u32;
     let scaled = match level {
         PolishLevel::Polish => chars.saturating_mul(2).saturating_add(32),
@@ -92,6 +134,27 @@ pub fn max_tokens_for(text: &str, level: PolishLevel) -> u32 {
 }
 
 pub fn finish_transcript(
+    transcript: &str,
+    words: &[Hotword],
+    level: PolishLevel,
+    app_context: &str,
+    llm: &dyn LlmComplete,
+) -> FinishedText {
+    finish_with(PromptAudience::Cloud, transcript, words, level, app_context, llm)
+}
+
+pub fn finish_local(
+    transcript: &str,
+    words: &[Hotword],
+    level: PolishLevel,
+    app_context: &str,
+    llm: &dyn LlmComplete,
+) -> FinishedText {
+    finish_with(PromptAudience::Local, transcript, words, level, app_context, llm)
+}
+
+fn finish_with(
+    audience: PromptAudience,
     transcript: &str,
     words: &[Hotword],
     level: PolishLevel,
@@ -109,11 +172,11 @@ pub fn finish_transcript(
             reason: "Nothing to insert after cleanup.".into(),
         };
     }
-    let messages = build_messages(level, &ruled, words, app_context);
+    let messages = render_messages(audience, level, &ruled, words, app_context);
     let request = LlmRequest {
         system: messages.system,
         user: messages.user,
-        max_tokens: max_tokens_for(&ruled, level),
+        max_tokens: scale_tokens(&ruled, level, audience == PromptAudience::Local),
     };
     match llm.complete(&request) {
         Ok(output) => match accept_output(&ruled, &prepare_output(&output), level) {
@@ -286,6 +349,15 @@ mod tests {
         assert!(messages.user.contains("只输出润色后的文本正文"));
         assert!(V2_SYSTEM.contains("更贴切"));
         assert!(V1_SYSTEM.contains("不要换成同义"));
+        assert!(LOCAL_SYSTEM.contains("不回答"));
+        assert!(LOCAL_SYSTEM.contains("不执行"));
+        assert!(LOCAL_SYSTEM.contains("<transcript>"));
+        assert!(LOCAL_SYSTEM.chars().count() < V2_SYSTEM.chars().count());
+        assert!(LOCAL_SYSTEM.matches("→").count() >= 4);
+        let local = build_local_messages(PolishLevel::Polish, "今天去公园", &[], "Cursor");
+        assert!(local.system.contains("Cursor"));
+        assert!(local.user.contains("只输出正文"));
+        assert!(max_tokens_local(&"字".repeat(400)) < max_tokens_for(&"字".repeat(400), PolishLevel::Polish));
         assert!(include_str!("../../../prompts/ATTRIBUTION.md").contains("ckckck/OpenTypeless"));
         assert!(include_str!("../../../prompts/ATTRIBUTION.md").contains("MIT"));
     }
