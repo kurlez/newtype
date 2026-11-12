@@ -12,7 +12,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sherpa_onnx::{OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig};
+use sherpa_onnx::{
+    OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
+};
 
 use super::asr_text;
 use super::catalog::{self, Mirror};
@@ -217,12 +219,12 @@ impl Engines {
     }
 
     pub fn transcribe(&self, id: &str, samples: &[f32], wav: &[u8], report: &dyn Fn(&str)) -> Result<String, String> {
-        let text = if id == ASR_06 {
-            self.transcribe_sherpa(samples, report)?
-        } else if id == ASR_17 {
-            self.transcribe_llama(wav, report)?
-        } else {
-            return Err(format!("\"{id}\" is not a local speech model."));
+        let text = match catalog::local_asr_backend(id) {
+            Some(catalog::LocalAsrBackend::QwenSherpa | catalog::LocalAsrBackend::SenseVoice) => {
+                self.transcribe_sherpa(id, samples, report)?
+            }
+            Some(catalog::LocalAsrBackend::QwenLlama) => self.transcribe_llama(wav, report)?,
+            None => return Err(format!("\"{id}\" is not a local speech model.")),
         };
         let text = asr_text::split_asr_text(&text);
         if text.trim().is_empty() {
@@ -254,15 +256,19 @@ impl Engines {
         chat_complete(port, &alias, request)
     }
 
-    fn transcribe_sherpa(&self, samples: &[f32], report: &dyn Fn(&str)) -> Result<String, String> {
+    fn transcribe_sherpa(&self, id: &str, samples: &[f32], report: &dyn Fn(&str)) -> Result<String, String> {
         report("Loading the local speech model…");
         let mut slot = self.asr.lock().expect("asr engine");
-        let ready = matches!(&*slot, Some(LoadedAsr::Sherpa { id, .. }) if id == ASR_06);
+        let ready = matches!(&*slot, Some(LoadedAsr::Sherpa { id: loaded, .. }) if loaded == id);
         if !ready {
             *slot = None;
-            let recognizer = load_sherpa(&self.root)?;
+            let recognizer = match catalog::local_asr_backend(id) {
+                Some(catalog::LocalAsrBackend::SenseVoice) => load_sensevoice(&self.root)?,
+                Some(catalog::LocalAsrBackend::QwenSherpa) => load_sherpa(&self.root)?,
+                _ => return Err(format!("\"{id}\" is not a sherpa-onnx speech model.")),
+            };
             *slot = Some(LoadedAsr::Sherpa {
-                id: ASR_06.to_string(),
+                id: id.to_string(),
                 recognizer,
                 last: Instant::now(),
             });
@@ -341,6 +347,25 @@ fn load_sherpa(root: &Path) -> Result<OfflineRecognizer, String> {
     config.model_config.num_threads = 4;
     config.model_config.debug = false;
     OfflineRecognizer::create(&config).ok_or_else(|| "Could not load Qwen3-ASR 0.6B.".to_string())
+}
+
+fn load_sensevoice(root: &Path) -> Result<OfflineRecognizer, String> {
+    let dir = library::model_dir(root, catalog::SENSEVOICE_ID);
+    let model = extract::find_named(&dir, "model.int8.onnx")
+        .ok_or_else(|| "SenseVoice-Small is not installed yet.".to_string())?;
+    let tokens = extract::find_named(&dir, "tokens.txt")
+        .ok_or_else(|| "SenseVoice-Small is missing tokens.txt.".to_string())?;
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
+        model: Some(model.display().to_string()),
+        language: Some("auto".into()),
+        use_itn: true,
+    };
+    config.model_config.tokens = Some(tokens.display().to_string());
+    config.model_config.provider = Some("cpu".into());
+    config.model_config.num_threads = 4;
+    config.model_config.debug = false;
+    OfflineRecognizer::create(&config).ok_or_else(|| "Could not load SenseVoice-Small.".to_string())
 }
 
 fn start_asr(root: &Path) -> Result<Sidecar, String> {

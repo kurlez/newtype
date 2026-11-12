@@ -1,6 +1,7 @@
 # Changelog
 
 - 2026-11-12: macOS CI can sign with a stable self-signed identity (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`). Missing secrets stay on ad-hoc. Downloaded `llama-server` binaries are signed as one set.
+- 2026-11-12: SenseVoice-Small int8 is an optional local speech model (sherpa-onnx, not the default). The About page attributes FunASR only after it is installed.
 - 2026-11-12: Volcengine speech uses the official openspeech socket (`bigmodel`, resource `volc.seedasr.sauc.duration`). A missing microphone or Accessibility permission shows a prompt that opens the matching system settings pane.
 - 2026-11-12: Translate and command hotkeys record. Translate inserts text in the target language (English by default). Command rewrites a selection or inserts generated text. The dictionary imports and exports JSON, and history can be searched, inserted again, cleared, and kept for a chosen period.
 - 2026-11-12: Auto routing falls back to local models when the cloud provider is unreachable, retries the same recording if a cloud call fails, and strict offline blocks outbound pipeline traffic.

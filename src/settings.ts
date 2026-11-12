@@ -96,7 +96,7 @@ export async function mount(previewMode: boolean): Promise<void> {
     </section>
     <section>
       <h2>About</h2>
-      <p class="status">Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0 and download after install. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.</p>
+      <p class="status" id="about-licenses">Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.</p>
     </section>
   `;
   wireUpdates();
@@ -339,6 +339,10 @@ function paint(): void {
       <p class="status" id="notice">${escapeHtml(notice)}</p>
     </section>
   `;
+  const about = document.querySelector("#about-licenses");
+  if (about && snap.local.attribution) {
+    about.textContent = snap.local.attribution;
+  }
   bind();
   bindLocal(preview, refreshLocal);
 }

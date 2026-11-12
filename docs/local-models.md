@@ -33,6 +33,7 @@ Weights and the llama.cpp runtime download into the Tauri app data directory, un
 | `qwen3-4b-q4` | `Qwen3-4B-Q4_K_M.gguf` (2,497,280,256) | `7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5` | Official `Qwen/Qwen3-4B-GGUF`, plus hf-mirror and ModelScope. |
 | `qwen3-1.7b-q4` | `Qwen3-1.7B-Q4_K_M.gguf` (1,107,409,472) | `b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897` | `unsloth/Qwen3-1.7B-GGUF`. The official Qwen GGUF repo publishes Q8_0 only. |
 | `silero-vad` | `silero_vad.onnx` (643,854) | `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6` | Same sherpa `asr-models` release. Installed with a speech model. |
+| `sensevoice-small-int8` | `model.int8.onnx` (239,233,841), `tokens.txt` (315,894) | `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51`, `f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc` | Optional. Hugging Face `csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17` and hf-mirror. Not the local default. |
 | `llama-cpp-b12292` | macOS `llama-b12292-bin-macos-arm64.tar.gz` (16,870,580) or Windows `llama-b12292-bin-win-cpu-x64.zip` (25,057,882) | `94b860a529a64aecfe20c4b9ccb9ca6fb4cf9126b019f3380ee02d7951ca11ef`, `12017843d67f560ce1bacf771dccdb189ff651a2dde684cbb49634c29df5b751` | GitHub `ggml-org/llama.cpp` tag `b12292`. |
 
 A model is installed only after every download matches its size and SHA-256 and the expected names are on disk. A mismatch deletes the partial file and leaves an error file. Downloads resume from `<name>.partial`. The install marker is `installed.json` in that model directory. Settings trusts the marker plus file sizes; it does not re-hash multi-gigabyte files on every open.
@@ -43,4 +44,4 @@ The Windows llama.cpp build is the CPU zip, so a machine without Vulkan or CUDA 
 
 Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT. The polish prompts keep the ckckck/OpenTypeless MIT attribution in `prompts/ATTRIBUTION.md`.
 
-SenseVoice is not offered in this milestone.
+SenseVoice-Small int8 is optional. It is not selected for a new install. The weights are the sherpa-onnx export of FunAudioLLM SenseVoice-Small (`model.int8.onnx` plus `tokens.txt`) and use the FunASR Model License. The About page names FunASR only after the files are installed and checksummed. Inverse text normalization stays on. ModelScope does not publish this export (checked 2026-11-12); Auto uses Hugging Face, then hf-mirror. The same bytes are inside the k2-fsa release tarball `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2`.

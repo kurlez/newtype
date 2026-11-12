@@ -107,6 +107,7 @@ pub struct LibraryView {
     pub active_asr: String,
     pub active_llm: String,
     pub downloading: String,
+    pub attribution: String,
     pub models: Vec<ModelRow>,
 }
 
@@ -139,6 +140,8 @@ pub fn view(
     let active_asr = catalog::active_id(Role::Asr, selected_asr, hardware);
     let active_llm = catalog::active_id(Role::Llm, selected_llm, hardware);
     let ready = readiness(root, hardware, selected_asr, selected_llm);
+    let sensevoice_installed = catalog::card(catalog::SENSEVOICE_ID)
+        .is_some_and(|item| installed(root, item, hardware.os));
     let mut models = Vec::new();
     for card in catalog::cards() {
         if !catalog::listed_on(card, hardware.os) {
@@ -180,6 +183,7 @@ pub fn view(
         active_asr,
         active_llm,
         downloading: downloading.to_string(),
+        attribution: catalog::attribution(sensevoice_installed),
         models,
     }
 }
@@ -603,6 +607,10 @@ mod tests {
         assert_eq!(shown.recommended_asr, "qwen3-asr-1.7b-q8");
         assert!(shown.disk_bytes == 0);
         assert!(shown.models.iter().any(|model| model.id == "qwen3-asr-0.6b-int8" && model.state == "missing"));
+        let sense = shown.models.iter().find(|model| model.id == catalog::SENSEVOICE_ID).expect("sensevoice card");
+        assert!(!sense.recommended);
+        assert_eq!(sense.state, "missing");
+        assert!(!shown.attribution.contains("FunASR"));
         let _ = fs::remove_dir_all(&dir);
     }
 

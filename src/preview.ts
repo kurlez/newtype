@@ -194,6 +194,8 @@ export const previewSnapshot: Snapshot = {
     activeAsr: "qwen3-asr-1.7b-q8",
     activeLlm: "qwen3-4b-q4",
     downloading: "",
+    attribution:
+      "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
     models: [
       {
         id: "qwen3-asr-1.7b-q8",
@@ -210,6 +212,23 @@ export const previewSnapshot: Snapshot = {
         message: "",
         recommended: true,
         active: true,
+        available: true,
+      },
+      {
+        id: "sensevoice-small-int8",
+        name: "SenseVoice-Small int8",
+        role: "asr",
+        license: "FunASR Model License (attribution required)",
+        languages: "Chinese, English, Japanese, Korean, Cantonese",
+        runtime: "sherpa-onnx, in process",
+        memory: "About 228 MB of weights. Lighter than Qwen3-ASR.",
+        notes: "Optional lightweight speech model. Not the local default.",
+        sizeBytes: 239549735,
+        state: "missing",
+        receivedBytes: 0,
+        message: "",
+        recommended: false,
+        active: false,
         available: true,
       },
       {
