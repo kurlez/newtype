@@ -24,8 +24,11 @@ use crate::pipeline::hotkey::{
     self, EngineEvent, HotkeyEngine, HotkeyMode, KeyEdge, TalkController, TalkEffect, TalkMode,
 };
 use crate::pipeline::insert;
-use crate::pipeline::polish::{self, PolishLevel};
-use crate::pipeline::router::{self, Block, Reachability, RouteInput, Slot};
+use crate::pipeline::egress::{self, NetMode};
+use crate::pipeline::polish::{self, FinishedText, PolishLevel};
+use crate::pipeline::probe;
+use crate::pipeline::router::{self, Block, PathLabel, Reachability, RouteDecision, RouteInput, RoutePreference, Slot};
+use crate::pipeline::session::{self, Outcome, Via};
 use crate::secrets;
 
 enum Control {
@@ -55,10 +58,29 @@ pub struct Dictation {
     log_path: String,
     mic_status: Arc<Mutex<String>>,
     phase: Mutex<String>,
+    reachability: Mutex<Reachability>,
+    notice: Mutex<String>,
+    probe_wake: Arc<AtomicBool>,
+    probe_epoch: AtomicU64,
+    locked: Mutex<Option<LockedSession>>,
     control: Sender<Control>,
     inbox: Mutex<Option<Receiver<Control>>>,
     cancel: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
+}
+
+struct LockedSession {
+    decision: RouteDecision,
+    preference: RoutePreference,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RouteEvent {
+    route_label: String,
+    route_detail: String,
+    route_notice: String,
+    connectivity: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -116,6 +138,8 @@ pub struct Snapshot {
     pub log_path: String,
     pub route_label: String,
     pub route_detail: String,
+    pub route_notice: String,
+    pub connectivity: String,
     pub phase: String,
     pub version: String,
     pub dev_key_store: bool,
@@ -176,6 +200,11 @@ impl Dictation {
             log_path: crate::diag::path().unwrap_or_default(),
             mic_status: Arc::new(Mutex::new("unknown".into())),
             phase: Mutex::new("idle".into()),
+            reachability: Mutex::new(Reachability::Unknown),
+            notice: Mutex::new(String::new()),
+            probe_wake: Arc::new(AtomicBool::new(true)),
+            probe_epoch: AtomicU64::new(0),
+            locked: Mutex::new(None),
             control,
             inbox: Mutex::new(Some(inbox)),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -185,6 +214,11 @@ impl Dictation {
 
     pub fn launch(app: AppHandle) {
         open_indicator(&app);
+        {
+            let state = app.state::<Dictation>();
+            apply_route_mode(&state, true);
+        }
+        spawn_probe(app.clone());
         let state = app.state::<Dictation>();
         let rx = state.inbox.lock().expect("inbox").take();
         let control = state.control.clone();
@@ -220,11 +254,13 @@ impl Dictation {
         let mut settings = self.settings.lock().expect("settings").clone();
         dictate_config::normalize(&mut settings);
         let effective = dictate_config::effective(&settings, hotkey::host_os());
+        let notice = self.notice.lock().expect("notice").clone();
+        let connectivity = connectivity_line(self);
         let (labels, chords, warnings, route_label, route_detail) = match &effective {
             Ok(effective) => {
                 let ready = readiness_of(self);
-                let decision = route_for(effective, ready);
-                let detail = route_detail(decision, ready);
+                let decision = route_for(self, effective, ready);
+                let detail = route_detail(effective.preference, decision, ready, &notice);
                 (
                     effective.hotkey_labels.clone(),
                     effective
@@ -266,6 +302,8 @@ impl Dictation {
             log_path: self.log_path.clone(),
             route_label,
             route_detail,
+            route_notice: notice,
+            connectivity,
             phase: self.phase.lock().expect("phase").clone(),
             version: version_of(app),
             dev_key_store: cfg!(not(any(target_os = "macos", target_os = "windows"))),
@@ -282,10 +320,11 @@ impl Dictation {
         match dictate_config::effective(&settings, hotkey::host_os()) {
             Ok(effective) => {
                 let ready = readiness_of(self);
-                let decision = route_for(&effective, ready);
+                let decision = route_for(self, &effective, ready);
+                let notice = self.notice.lock().expect("notice").clone();
                 (
                     decision.label.text().to_string(),
-                    route_detail(decision, ready),
+                    route_detail(effective.preference, decision, ready, &notice),
                 )
             }
             Err(err) => ("Cloud · 云端".into(), err),
@@ -334,12 +373,15 @@ fn preset_dto(preset: &Preset) -> PresetDto {
     }
 }
 
-fn route_for(effective: &dictate_config::Effective, ready: library::Readiness) -> router::RouteDecision {
+fn route_for(
+    state: &Dictation,
+    effective: &dictate_config::Effective,
+    ready: library::Readiness,
+) -> router::RouteDecision {
+    let reachability = *state.reachability.lock().expect("reachability");
     router::decide(RouteInput {
         preference: effective.preference,
-        // M3: replace Unknown with a debounced endpoint probe. Unknown keeps
-        // cloud-default on the cloud path even when local models are installed.
-        reachability: Reachability::Unknown,
+        reachability,
         cloud_configured: effective.asr_implemented,
         asr_implemented: effective.asr_implemented,
         local_asr_ready: ready.asr,
@@ -357,20 +399,50 @@ fn readiness_of(state: &Dictation) -> library::Readiness {
     )
 }
 
-fn route_detail(decision: router::RouteDecision, ready: library::Readiness) -> String {
-    if let Some(message) = router::block_message(decision.block) {
-        return message.to_string();
-    }
-    match decision.asr {
-        Slot::Local if decision.llm == Slot::None => {
-            "Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+fn route_detail(
+    preference: RoutePreference,
+    decision: router::RouteDecision,
+    ready: library::Readiness,
+    notice: &str,
+) -> String {
+    let mut text = if let Some(message) = router::block_message_for(decision.block, preference) {
+        message.to_string()
+    } else {
+        match decision.label {
+            PathLabel::Cloud if preference == RoutePreference::CloudOnly => {
+                "Cloud only. A failure does not switch to local models.".into()
+            }
+            PathLabel::Cloud if !ready.fallback_ready() => {
+                "Speech goes to the provider you configured. Offline fallback needs both local models installed.".into()
+            }
+            PathLabel::Cloud => {
+                "Speech goes to the provider you configured. If it stays unreachable, the next dictation uses local models.".into()
+            }
+            PathLabel::LocalAutoFallback if decision.llm == Slot::None => {
+                "Cloud is unreachable. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+            }
+            PathLabel::LocalAutoFallback => {
+                "Cloud is unreachable. Audio stays on this computer and uses the local models.".into()
+            }
+            PathLabel::LocalManual if decision.llm == Slot::None => {
+                "Local only. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+            }
+            PathLabel::LocalManual => {
+                "Local only. Audio stays on this computer, even when the cloud is reachable.".into()
+            }
+            PathLabel::StrictOffline if decision.llm == Slot::None => {
+                "Strict offline. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+            }
+            PathLabel::StrictOffline => {
+                "Strict offline. Audio stays on this computer. No cloud call, probe, update check, or model download runs.".into()
+            }
         }
-        Slot::Local => "Audio stays on this computer. Speech and rewrite use the installed local models.".into(),
-        Slot::Cloud if !ready.fallback_ready() => {
-            "Speech goes to the provider you configured. Offline fallback is not ready until both local models are installed.".into()
-        }
-        _ => "Speech goes to the provider you configured. The path name stays visible.".into(),
+    };
+    if decision.block == Block::None && !notice.is_empty() {
+        text.push(' ');
+        text.push_str(notice);
     }
+    text
 }
 
 impl Dictation {
@@ -588,6 +660,7 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                 app.state::<Dictation>()
                     .cancel
                     .store(true, Ordering::Relaxed);
+                *app.state::<Dictation>().locked.lock().expect("locked") = None;
                 talk.active = None;
                 if mic.take().is_some() {
                     started = None;
@@ -710,20 +783,36 @@ fn begin_recording(
         }
     };
     let ready = readiness_of(&state);
-    let decision = route_for(&effective, ready);
+    let decision = route_for(&state, &effective, ready);
     *route = decision.label.text().to_string();
-    if decision.block != Block::None || decision.asr == Slot::None {
+    *state.locked.lock().expect("locked") = Some(LockedSession {
+        decision,
+        preference: effective.preference,
+    });
+    crate::diag::record(&format!(
+        "route decision preference={} path={} label=\"{}\" reason={:?} block={:?}",
+        effective.preference.as_str(),
+        decision.label.kind(),
+        decision.label.text(),
+        decision.reason,
+        decision.block
+    ));
+    let hold = matches!(decision.block, Block::LocalNotReady | Block::CloudUnreachable);
+    if (decision.block != Block::None || decision.asr == Slot::None) && !hold {
         talk.active = None;
-        let message = router::block_message(decision.block).unwrap_or("Dictation cannot start.");
+        *state.locked.lock().expect("locked") = None;
+        let message = router::block_message_for(decision.block, effective.preference)
+            .unwrap_or("Dictation cannot start.");
         emit_phase(app, "error", route, message, 0, 0.0, "");
         show_indicator(app);
         schedule_hide(app, 3600);
         return;
     }
     let on_device = decision.asr == Slot::Local;
-    if !on_device {
+    if decision.asr == Slot::Cloud {
         if effective.asr_base.is_empty() || effective.asr_model.is_empty() {
             talk.active = None;
+            *state.locked.lock().expect("locked") = None;
             emit_phase(
                 app,
                 "error",
@@ -738,6 +827,7 @@ fn begin_recording(
         }
         if !secrets::has_key(&effective.asr_provider, &state.dev_secrets) {
             talk.active = None;
+            *state.locked.lock().expect("locked") = None;
             let store = state.secure_store.lock().expect("store").clone();
             let message = if store == "ready" {
                 "Save an API key for the speech provider. Audio is not sent until you do.".to_string()
@@ -749,7 +839,10 @@ fn begin_recording(
             return;
         }
     }
-    let recording_line = if on_device {
+    let recording_line = if hold {
+        router::block_message_for(decision.block, effective.preference)
+            .unwrap_or("This recording stays on this computer.")
+    } else if on_device {
         "Recording. Audio stays on this computer."
     } else {
         "Recording. Audio will be sent to your speech provider when you stop."
@@ -798,6 +891,7 @@ fn begin_recording(
         }
         Err(err) => {
             talk.active = None;
+            *state.locked.lock().expect("locked") = None;
             *state.mic_status.lock().expect("mic") = format!("unavailable: {err}");
             emit_phase(
                 app,
@@ -832,6 +926,7 @@ fn finish_recording(
     show_indicator(app);
     let clip = session.stop();
     if audio::is_silent(&clip.samples) {
+        *app.state::<Dictation>().locked.lock().expect("locked") = None;
         *busy = false;
         emit_phase(
             app,
@@ -845,7 +940,7 @@ fn finish_recording(
         schedule_hide(app, 1600);
         return;
     }
-    let outcome = transcribe_and_polish(app, clip, route.to_string());
+    let outcome = transcribe_and_polish(app, clip);
     if app
         .state::<Dictation>()
         .cancel
@@ -866,26 +961,17 @@ fn finish_recording(
     }
     match outcome {
         Ok(done) => {
-            let mut message = if done.used_fallback {
-                format!("Inserted the ruled transcript. {}", done.reason)
-            } else {
-                "Inserted.".into()
-            };
+            let mut message = done.message;
             if !done.text.is_empty() {
                 if let Err(err) = insert::insert_text(&done.text) {
                     message = format!("{message} Could not paste: {err} Copy it from history.");
                 }
             }
-            let phase = if done.used_fallback {
-                "fallback"
-            } else {
-                "inserted"
-            };
-            emit_phase(app, phase, route, &message, 0, 0.0, &done.text);
-            schedule_hide(app, 1800);
+            emit_phase(app, done.phase, &done.route, &message, 0, 0.0, &done.text);
+            schedule_hide(app, 2200);
         }
-        Err(err) => {
-            emit_phase(app, "error", route, &err, 0, 0.0, "");
+        Err(failed) => {
+            emit_phase(app, "error", &failed.route, &failed.message, 0, 0.0, "");
             schedule_hide(app, 4200);
         }
     }
@@ -894,169 +980,253 @@ fn finish_recording(
 
 struct Done {
     text: String,
-    used_fallback: bool,
-    reason: String,
+    route: String,
+    phase: &'static str,
+    message: String,
 }
 
-fn transcribe_and_polish(app: &AppHandle, clip: AudioClip, route: String) -> Result<Done, String> {
+struct ProcessError {
+    route: String,
+    message: String,
+}
+
+fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, ProcessError> {
     let state = app.state::<Dictation>();
     let settings = state.settings.lock().expect("settings").clone();
-    let effective = dictate_config::effective(&settings, hotkey::host_os())?;
-    let ready = readiness_of(&state);
-    let decision = route_for(&effective, ready);
-    if decision.asr == Slot::Local {
-        return transcribe_local(app, clip, &route, &effective, &settings);
-    }
-    if local_run::refuses_network(effective.preference) || decision.asr != Slot::Cloud {
-        let message = router::block_message(decision.block)
-            .unwrap_or("Audio was not sent.")
-            .to_string();
-        remember(app, &effective, &route, "local", "", "", "", true, &message);
-        return Err(message);
-    }
-    // M3 can retry this recording on the local engines after a cloud failure.
-    // `retry_same_audio_on_cloud_failure` stays false until that probe exists.
-    let _retry_on_local = false;
-    let key = secrets::get_key(&effective.asr_provider, &state.dev_secrets)?
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "Speech API key is missing.".to_string())?;
-    let wav = audio::encode_wav_16k(&clip);
-    let asr = CloudAsr {
-        base: effective.asr_base.clone(),
-        key,
-        model: effective.asr_model.clone(),
-        wire: effective.asr_wire,
-    };
-    let transcript = match asr.transcribe(&wav) {
-        Ok(text) => text,
+    let effective = match dictate_config::effective(&settings, hotkey::host_os()) {
+        Ok(effective) => effective,
         Err(err) => {
-            remember(
-                app,
-                &effective,
-                &route,
-                &format!("{} / {}", effective.asr_provider, effective.llm_provider),
-                "",
-                "",
-                "",
-                true,
-                &err,
-            );
-            return Err(err.to_string());
+            return Err(ProcessError {
+                route: "Cloud · 云端".into(),
+                message: err,
+            });
         }
     };
-    let app_context = front::front_app_name();
-    let llm_key = secrets::get_key(&effective.llm_provider, &state.dev_secrets)
-        .ok()
-        .flatten()
-        .filter(|value| !value.is_empty());
-    let finished = if !effective.llm_implemented || llm_key.is_none() {
-        let ruled = crate::pipeline::hotwords::apply(&transcript, &effective.hotwords);
-        polish::FinishedText {
-            raw: transcript,
-            ruled: ruled.clone(),
-            text: ruled,
-            used_fallback: true,
-            reason: "No rewrite model is configured, so the ruled transcript was inserted.".into(),
-        }
-    } else {
-        let llm = CloudLlm {
-            base: effective.llm_base.clone(),
-            key: llm_key.unwrap_or_default(),
-            model: effective.llm_model.clone(),
-            thinking: effective.thinking,
-        };
-        polish::finish_transcript(
-            &transcript,
-            &effective.hotwords,
-            effective.polish,
-            &app_context,
-            &llm,
-        )
-    };
-    remember(
-        app,
-        &effective,
-        &route,
-        &format!("{} / {}", effective.asr_provider, effective.llm_provider),
-        &finished.raw,
-        &finished.ruled,
-        &finished.text,
-        finished.used_fallback,
-        &finished.reason,
-    );
-    Ok(Done {
-        text: finished.text,
-        used_fallback: finished.used_fallback,
-        reason: finished.reason,
-    })
-}
-
-fn transcribe_local(
-    app: &AppHandle,
-    clip: AudioClip,
-    route: &str,
-    effective: &dictate_config::Effective,
-    settings: &crate::dictate_config::DictationSettings,
-) -> Result<Done, String> {
-    let state = app.state::<Dictation>();
+    let ready = readiness_of(&state);
+    let locked = state.locked.lock().expect("locked").take().unwrap_or(LockedSession {
+        decision: route_for(&state, &effective, ready),
+        preference: effective.preference,
+    });
+    let dev_secrets = state.dev_secrets.clone();
+    let engines = Arc::clone(&state.engines);
     let hardware = catalog::host_hardware();
     let asr_id = catalog::active_id(catalog::Role::Asr, &settings.local_asr_id, hardware);
     let llm_id = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
-    let llm_ready = library::engine_ready(state.engines.root(), &llm_id, hardware.os);
-    let engines = Arc::clone(&state.engines);
     drop(state);
-    let report = |message: &str| emit_phase(app, "processing", route, message, 0, 0.0, "");
-    match local_run::run(
-        &engines,
-        hardware.os,
-        clip,
-        &asr_id,
-        &llm_id,
-        llm_ready,
-        effective.polish,
-        &effective.hotwords,
-        &front::front_app_name(),
-        &report,
-    ) {
-        Ok(outcome) => {
-            let mut reason = outcome.finished.reason.clone();
-            if !outcome.note.is_empty() {
-                if !reason.is_empty() {
-                    reason.push(' ');
+
+    let wav = audio::encode_wav_16k(&clip);
+    let local_clip = AudioClip {
+        samples: clip.samples.clone(),
+        sample_rate: clip.sample_rate,
+    };
+    let engine_name = Arc::new(Mutex::new("local".to_string()));
+    let shown = Arc::new(Mutex::new(locked.decision.label.text().to_string()));
+    let app_event = app.clone();
+    let shown_event = Arc::clone(&shown);
+    let on_event = move |line: &str| {
+        crate::diag::record(line);
+        if line.contains("retrying the same") {
+            let label = PathLabel::LocalAutoFallback.text();
+            *shown_event.lock().expect("route") = label.to_string();
+            emit_phase(
+                &app_event,
+                "processing",
+                label,
+                "Cloud was unavailable. Using the local model for this recording.",
+                0,
+                0.0,
+                "",
+            );
+        }
+    };
+    let report_app = app.clone();
+    let report_route = Arc::clone(&shown);
+    let report = move |message: &str| {
+        let route = report_route.lock().expect("route").clone();
+        emit_phase(&report_app, "processing", &route, message, 0, 0.0, "");
+    };
+    let engine_for_audio = Arc::clone(&engine_name);
+    let engines_audio = Arc::clone(&engines);
+    let asr_for_audio = asr_id.clone();
+    let llm_for_audio = llm_id.clone();
+    let hotwords = effective.hotwords.clone();
+    let polish_level = effective.polish;
+    let llm_ready = ready.llm;
+    let local_audio = move |_wav: &[u8]| {
+        match local_run::run(
+            &engines_audio,
+            hardware.os,
+            AudioClip {
+                samples: local_clip.samples.clone(),
+                sample_rate: local_clip.sample_rate,
+            },
+            &asr_for_audio,
+            &llm_for_audio,
+            llm_ready,
+            polish_level,
+            &hotwords,
+            &front::front_app_name(),
+            &report,
+        ) {
+            Ok(outcome) => {
+                *engine_for_audio.lock().expect("engine") = outcome.engine;
+                let mut body = outcome.finished;
+                if !outcome.note.is_empty() {
+                    if !body.reason.is_empty() {
+                        body.reason.push(' ');
+                    }
+                    body.reason.push_str(&outcome.note);
                 }
-                reason.push_str(&outcome.note);
+                Ok(body)
             }
-            let provider = format!("local / {}", outcome.engine);
+            Err(err) => Err(err),
+        }
+    };
+    let engines_rewrite = engines;
+    let llm_for_rewrite = llm_id;
+    let hotwords_rewrite = effective.hotwords.clone();
+    let report_rewrite = {
+        let report_app = app.clone();
+        let report_route = Arc::clone(&shown);
+        move |message: &str| {
+            let route = report_route.lock().expect("route").clone();
+            emit_phase(&report_app, "processing", &route, message, 0, 0.0, "");
+        }
+    };
+    let local_rewrite = move |transcript: &str| {
+        local_run::rewrite(
+            &engines_rewrite,
+            &llm_for_rewrite,
+            transcript,
+            polish_level,
+            &hotwords_rewrite,
+            &front::front_app_name(),
+            &report_rewrite,
+        )
+    };
+    let asr_provider = effective.asr_provider.clone();
+    let llm_provider = effective.llm_provider.clone();
+    let asr_base = effective.asr_base.clone();
+    let asr_model = effective.asr_model.clone();
+    let asr_wire = effective.asr_wire;
+    let llm_base = effective.llm_base.clone();
+    let llm_model = effective.llm_model.clone();
+    let thinking = effective.thinking;
+    let llm_implemented = effective.llm_implemented;
+    let hotwords_cloud = effective.hotwords.clone();
+    let cloud_asr = move |audio: &[u8]| {
+        let key = secrets::get_key(&asr_provider, &dev_secrets)?
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Speech API key is missing.".to_string())?;
+        CloudAsr {
+            base: asr_base,
+            key,
+            model: asr_model,
+            wire: asr_wire,
+        }
+        .transcribe(audio)
+    };
+    let dev_secrets_llm = app.state::<Dictation>().dev_secrets.clone();
+    let cloud_rewrite = move |transcript: &str| -> Result<FinishedText, String> {
+        let key = secrets::get_key(&llm_provider, &dev_secrets_llm)
+            .ok()
+            .flatten()
+            .filter(|value| !value.is_empty());
+        if !llm_implemented || key.is_none() {
+            let ruled = crate::pipeline::hotwords::apply(transcript, &hotwords_cloud);
+            return Ok(FinishedText {
+                raw: transcript.to_string(),
+                ruled: ruled.clone(),
+                text: ruled,
+                used_fallback: true,
+                reason: "No rewrite model is configured, so the ruled transcript was inserted.".into(),
+            });
+        }
+        let llm = CloudLlm {
+            base: llm_base,
+            key: key.unwrap_or_default(),
+            model: llm_model,
+            thinking,
+        };
+        polish::attempt_transcript(
+            transcript,
+            &hotwords_cloud,
+            polish_level,
+            &front::front_app_name(),
+            &llm,
+        )
+    };
+    let words_for_rules = effective.hotwords.clone();
+    let outcome = session::dispatch(
+        locked.preference,
+        locked.decision,
+        ready.asr,
+        ready.llm,
+        &wav,
+        &on_event,
+        cloud_asr,
+        cloud_rewrite,
+        local_audio,
+        local_rewrite,
+        |text| crate::pipeline::hotwords::apply(text, &words_for_rules),
+    );
+    let route_now = shown.lock().expect("route").clone();
+    match outcome {
+        Outcome::Done(done) => {
+            let provider = match done.via {
+                Via::Cloud => format!("{} / {}", effective.asr_provider, effective.llm_provider),
+                Via::FallbackRewrite => format!("{} / local", effective.asr_provider),
+                Via::Local | Via::FallbackAudio => {
+                    format!("local / {}", engine_name.lock().expect("engine"))
+                }
+            };
+            let label = if done.via == Via::Local {
+                route_now
+            } else {
+                done.label.text().to_string()
+            };
+            let phase = if done.body.used_fallback || matches!(done.via, Via::FallbackAudio | Via::FallbackRewrite) {
+                "fallback"
+            } else {
+                "inserted"
+            };
             remember(
                 app,
-                effective,
-                route,
+                &effective,
+                &label,
                 &provider,
-                &outcome.finished.raw,
-                &outcome.finished.ruled,
-                &outcome.finished.text,
-                outcome.finished.used_fallback,
-                &reason,
+                &done.body.raw,
+                &done.body.ruled,
+                &done.body.text,
+                done.body.used_fallback,
+                &done.message,
+                done.keep_audio.then_some(wav.as_slice()),
             );
             Ok(Done {
-                text: outcome.finished.text,
-                used_fallback: outcome.finished.used_fallback,
-                reason,
+                text: done.body.text,
+                route: label,
+                phase,
+                message: done.message,
             })
         }
-        Err(err) => {
+        Outcome::Failed(failed) => {
+            let label = failed.label.text().to_string();
             remember(
                 app,
-                effective,
-                route,
-                "local",
-                "",
-                "",
-                "",
+                &effective,
+                &label,
+                "kept",
+                &failed.raw,
+                &failed.ruled,
+                &failed.raw,
                 true,
-                &err,
+                &failed.message,
+                failed.keep_audio.then_some(wav.as_slice()),
             );
-            Err(err)
+            Err(ProcessError {
+                route: label,
+                message: failed.message,
+            })
         }
     }
 }
@@ -1071,6 +1241,7 @@ fn remember(
     text: &str,
     used_fallback: bool,
     note: &str,
+    audio: Option<&[u8]>,
 ) {
     let state = app.state::<Dictation>();
     let entry = HistoryEntry {
@@ -1090,7 +1261,17 @@ fn remember(
         text: text.into(),
         used_fallback,
         note: note.into(),
+        audio_kept: audio.is_some(),
     };
+    if let Some(bytes) = audio {
+        let path = audio_file(&state.history_path, &entry.id);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(err) = std::fs::write(&path, bytes) {
+            crate::diag::record(&format!("could not keep the recording: {err}"));
+        }
+    }
     let mut history = state.history.lock().expect("history");
     history::push(&mut history, entry);
     let _ = history::save(&state.history_path, &history);
@@ -1238,8 +1419,10 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     *state.settings.lock().expect("settings") = settings.clone();
     log_applied_hotkeys(&previous, &settings);
     let _ = warnings;
-    crate::tray::refresh_menu(app);
-    Ok(state.snapshot(app))
+    apply_route_mode(&state, true);
+    drop(state);
+    publish_route(app);
+    Ok(app.state::<Dictation>().snapshot(app))
 }
 
 pub fn shutdown(app: &AppHandle) {
@@ -1258,11 +1441,10 @@ pub fn fallback_line(app: &AppHandle) -> String {
 }
 
 pub fn local_download(app: &AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {
+    let _ = confirm_network;
+    egress::authorize(egress::Purpose::ModelDownload)?;
     let state = app.state::<Dictation>();
     let settings = state.settings.lock().expect("settings").clone();
-    if settings.preference == "strictOffline" && !confirm_network {
-        return Err("Strict offline is on. Downloading contacts the model host you picked. Allow it once, or leave strict offline.".into());
-    }
     let mirror = Mirror::parse(&settings.local_mirror).unwrap_or(Mirror::Auto);
     let engines = Arc::clone(&state.engines);
     drop(state);
@@ -1509,9 +1691,13 @@ pub fn history(app: &AppHandle) -> Vec<HistoryEntry> {
 
 pub fn delete_history(app: &AppHandle, id: &str) -> Result<(), String> {
     let state = app.state::<Dictation>();
+    let audio = audio_file(&state.history_path, id);
     let mut history = state.history.lock().expect("history");
     history.retain(|entry| entry.id != id);
-    history::save(&state.history_path, &history)
+    let saved = history::save(&state.history_path, &history);
+    drop(history);
+    let _ = std::fs::remove_file(audio);
+    saved
 }
 
 pub fn copy_history(app: &AppHandle, id: &str) -> Result<(), String> {
@@ -1543,4 +1729,159 @@ pub fn probe_microphone(app: &AppHandle, device: &str) -> Result<String, String>
     };
     *app.state::<Dictation>().mic_status.lock().expect("mic") = "granted".into();
     Ok(format!("Microphone {heard} (level {level:.2})."))
+}
+
+fn audio_file(history_path: &std::path::Path, id: &str) -> std::path::PathBuf {
+    history_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("history-audio")
+        .join(format!("{id}.wav"))
+}
+
+fn apply_route_mode(state: &Dictation, cancel_downloads: bool) {
+    let settings = state.settings.lock().expect("settings").clone();
+    let preference = RoutePreference::parse(&settings.preference).unwrap_or(RoutePreference::CloudDefault);
+    let mode = match preference {
+        RoutePreference::CloudDefault | RoutePreference::CloudOnly => NetMode::Open,
+        RoutePreference::LocalOnly => NetMode::LocalOnly,
+        RoutePreference::StrictOffline => NetMode::StrictOffline,
+    };
+    let previous = egress::process_mode();
+    egress::set_mode(mode);
+    if mode == NetMode::Open && previous != NetMode::Open {
+        state.probe_epoch.fetch_add(1, Ordering::Relaxed);
+        *state.reachability.lock().expect("reachability") = Reachability::Unknown;
+        *state.notice.lock().expect("notice") = String::new();
+        state.probe_wake.store(true, Ordering::Relaxed);
+    } else if mode == NetMode::Open {
+        state.probe_wake.store(true, Ordering::Relaxed);
+    } else {
+        *state.notice.lock().expect("notice") = String::new();
+        if mode == NetMode::StrictOffline && cancel_downloads {
+            state.engines.cancel_download();
+        }
+    }
+    crate::diag::record(&format!("route mode {}", preference.as_str()));
+}
+
+fn connectivity_line(state: &Dictation) -> String {
+    match egress::process_mode() {
+        NetMode::StrictOffline => {
+            "Strict offline. No cloud calls, probes, update checks, or model downloads.".into()
+        }
+        NetMode::LocalOnly => "Local only. Connectivity probes are off.".into(),
+        NetMode::Open => match *state.reachability.lock().expect("reachability") {
+            Reachability::Unknown => "Checking the configured cloud provider.".into(),
+            Reachability::Reachable => "Cloud provider reachable.".into(),
+            Reachability::Unreachable => "Cloud provider unreachable.".into(),
+        },
+    }
+}
+
+fn notice_for(transition: probe::Transition, preference: RoutePreference, local_ready: bool) -> String {
+    match (transition, preference) {
+        (probe::Transition::Offline, RoutePreference::CloudDefault) if local_ready => {
+            "The cloud provider is unreachable. New dictations use the local model.".into()
+        }
+        (probe::Transition::Offline, RoutePreference::CloudDefault) => {
+            "The cloud provider is unreachable, and the local speech model is not installed. Recordings stay on this computer.".into()
+        }
+        (probe::Transition::Offline, RoutePreference::CloudOnly) => {
+            "The cloud provider is unreachable. Cloud only will not use local models.".into()
+        }
+        (probe::Transition::Online, RoutePreference::CloudDefault) => {
+            "The cloud provider is back. The next dictation uses cloud.".into()
+        }
+        (probe::Transition::Online, RoutePreference::CloudOnly) => "The cloud provider is reachable again.".into(),
+        _ => String::new(),
+    }
+}
+
+fn publish_route(app: &AppHandle) {
+    let snap = app.state::<Dictation>().snapshot(app);
+    let _ = app.emit(
+        "dictation://route",
+        RouteEvent {
+            route_label: snap.route_label,
+            route_detail: snap.route_detail,
+            route_notice: snap.route_notice,
+            connectivity: snap.connectivity,
+        },
+    );
+    crate::tray::refresh_menu(app);
+}
+
+fn spawn_probe(app: AppHandle) {
+    let wake = Arc::clone(&app.state::<Dictation>().probe_wake);
+    crate::pipeline::netwatch::spawn(Arc::clone(&wake));
+    std::thread::Builder::new()
+        .name("newtype-probe".into())
+        .spawn(move || {
+            let mut debounce = probe::Debounce::new();
+            let config = probe::DebounceConfig::standard();
+            let mut next = Instant::now();
+            let mut seen_epoch = 0u64;
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                let state = app.state::<Dictation>();
+                let epoch = state.probe_epoch.load(Ordering::Relaxed);
+                if epoch != seen_epoch {
+                    seen_epoch = epoch;
+                    debounce.reset();
+                    *state.reachability.lock().expect("reachability") = Reachability::Unknown;
+                }
+                let poked = state.probe_wake.swap(false, Ordering::Relaxed);
+                let due = Instant::now() >= next;
+                if !poked && !due {
+                    drop(state);
+                    continue;
+                }
+                next = Instant::now() + probe::INTERVAL;
+                if egress::process_mode() != NetMode::Open {
+                    drop(state);
+                    continue;
+                }
+                let settings = state.settings.lock().expect("settings").clone();
+                drop(state);
+                let urls = match dictate_config::effective(&settings, hotkey::host_os()) {
+                    Ok(effective) => probe::remote_bases(
+                        &effective.asr_base,
+                        &effective.llm_base,
+                        effective.asr_implemented,
+                        effective.llm_implemented,
+                    ),
+                    Err(_) => Vec::new(),
+                };
+                let sample = if urls.is_empty() {
+                    Ok(true)
+                } else {
+                    probe::ping(&urls)
+                };
+                let Ok(up) = sample else {
+                    continue;
+                };
+                let before = debounce.verdict();
+                let transition = debounce.observe(up, Instant::now(), &config);
+                let after = debounce.verdict();
+                if before == after && transition == probe::Transition::None {
+                    continue;
+                }
+                {
+                    let state = app.state::<Dictation>();
+                    *state.reachability.lock().expect("reachability") = after;
+                    if transition != probe::Transition::None {
+                        let preference = RoutePreference::parse(&settings.preference)
+                            .unwrap_or(RoutePreference::CloudDefault);
+                        let ready = readiness_of(&state).asr;
+                        *state.notice.lock().expect("notice") = notice_for(transition, preference, ready);
+                    }
+                }
+                crate::diag::record(&format!(
+                    "route probe {before:?} -> {after:?} transition={transition:?}"
+                ));
+                publish_route(&app);
+            }
+        })
+        .expect("probe thread");
 }

@@ -140,7 +140,11 @@ pub fn finish_transcript(
     app_context: &str,
     llm: &dyn LlmComplete,
 ) -> FinishedText {
-    finish_with(PromptAudience::Cloud, transcript, words, level, app_context, llm)
+    fold_transport(
+        attempt_transcript(transcript, words, level, app_context, llm),
+        transcript,
+        words,
+    )
 }
 
 pub fn finish_local(
@@ -150,27 +154,69 @@ pub fn finish_local(
     app_context: &str,
     llm: &dyn LlmComplete,
 ) -> FinishedText {
-    finish_with(PromptAudience::Local, transcript, words, level, app_context, llm)
+    fold_transport(
+        attempt_local(transcript, words, level, app_context, llm),
+        transcript,
+        words,
+    )
 }
 
-fn finish_with(
+/// Cloud rewrite. `Err` is a transport failure or timeout, which the router
+/// can retry locally. A bad answer is `Ok` with the ruled transcript.
+pub fn attempt_transcript(
+    transcript: &str,
+    words: &[Hotword],
+    level: PolishLevel,
+    app_context: &str,
+    llm: &dyn LlmComplete,
+) -> Result<FinishedText, String> {
+    attempt(PromptAudience::Cloud, transcript, words, level, app_context, llm)
+}
+
+pub fn attempt_local(
+    transcript: &str,
+    words: &[Hotword],
+    level: PolishLevel,
+    app_context: &str,
+    llm: &dyn LlmComplete,
+) -> Result<FinishedText, String> {
+    attempt(PromptAudience::Local, transcript, words, level, app_context, llm)
+}
+
+fn fold_transport(result: Result<FinishedText, String>, transcript: &str, words: &[Hotword]) -> FinishedText {
+    match result {
+        Ok(finished) => finished,
+        Err(reason) => {
+            let ruled = hotwords::apply(transcript, words);
+            FinishedText {
+                raw: transcript.to_string(),
+                ruled: ruled.clone(),
+                text: ruled,
+                used_fallback: true,
+                reason,
+            }
+        }
+    }
+}
+
+fn attempt(
     audience: PromptAudience,
     transcript: &str,
     words: &[Hotword],
     level: PolishLevel,
     app_context: &str,
     llm: &dyn LlmComplete,
-) -> FinishedText {
+) -> Result<FinishedText, String> {
     let raw = transcript.to_string();
     let ruled = hotwords::apply(transcript, words);
     if ruled.trim().is_empty() {
-        return FinishedText {
+        return Ok(FinishedText {
             raw,
             ruled,
             text: String::new(),
             used_fallback: false,
             reason: "Nothing to insert after cleanup.".into(),
-        };
+        });
     }
     let messages = render_messages(audience, level, &ruled, words, app_context);
     let request = LlmRequest {
@@ -180,28 +226,22 @@ fn finish_with(
     };
     match llm.complete(&request) {
         Ok(output) => match accept_output(&ruled, &prepare_output(&output), level) {
-            Ok(text) => FinishedText {
+            Ok(text) => Ok(FinishedText {
                 raw,
                 ruled,
                 text,
                 used_fallback: false,
                 reason: String::new(),
-            },
-            Err(reason) => FinishedText {
+            }),
+            Err(reason) => Ok(FinishedText {
                 raw,
                 ruled: ruled.clone(),
                 text: ruled,
                 used_fallback: true,
                 reason,
-            },
+            }),
         },
-        Err(reason) => FinishedText {
-            raw,
-            ruled: ruled.clone(),
-            text: ruled,
-            used_fallback: true,
-            reason,
-        },
+        Err(reason) => Err(reason),
     }
 }
 

@@ -149,9 +149,10 @@ pub fn normalize(settings: &mut DictationSettings) {
     if settings.polish_level.is_empty() {
         settings.polish_level = "polish".into();
     }
-    if settings.preference.is_empty() {
-        settings.preference = RoutePreference::CloudDefault.as_str().into();
-    }
+    settings.preference = RoutePreference::parse(&settings.preference)
+        .unwrap_or(RoutePreference::CloudDefault)
+        .as_str()
+        .to_string();
     if settings.thinking.is_empty() {
         settings.thinking = "auto".into();
     }
@@ -487,5 +488,30 @@ mod tests {
         assert_eq!(settings.translate_hotkey, "AltRight+ShiftRight");
         assert!(assign_hotkey(&mut settings, "dictate", "", OsKind::Mac).is_err());
         assert_eq!(settings.dictate_hotkey, "AltRight");
+    }
+
+    #[test]
+    fn saved_alt_right_hotkeys_and_cloud_default_still_load() {
+        let mut parsed: DictationSettings = serde_json::from_str(
+            r#"{"preference":"cloudDefault","dictateHotkey":"AltRight","translateHotkey":"AltRight+ShiftRight","commandHotkey":"AltRight+Enter"}"#,
+        )
+        .unwrap();
+        normalize(&mut parsed);
+        assert_eq!(parsed.preference, "cloudDefault");
+        assert_eq!(parsed.dictate_hotkey, "AltRight");
+        let loaded = effective(&parsed, OsKind::Mac).unwrap();
+        assert_eq!(loaded.preference, RoutePreference::CloudDefault);
+        assert!(loaded.hotkey_labels[0].contains("Alt") || loaded.hotkey_labels[0].contains("Option"));
+        let auto: DictationSettings = serde_json::from_str(r#"{"preference":"auto"}"#).unwrap();
+        assert_eq!(
+            RoutePreference::parse(&auto.preference),
+            Some(RoutePreference::CloudDefault)
+        );
+        let mut cloud_only = DictationSettings::default();
+        cloud_only.preference = "cloudOnly".into();
+        assert_eq!(
+            effective(&cloud_only, OsKind::Windows).unwrap().preference,
+            RoutePreference::CloudOnly
+        );
     }
 }

@@ -60,7 +60,7 @@ export async function mount(previewMode: boolean): Promise<void> {
   root.innerHTML = `
     <header>
       <h1>newtype</h1>
-      <p id="tagline">Cloud dictation by default. Local speech and rewrite stay on this computer when you choose them.</p>
+      <p id="tagline">Cloud when the provider is reachable. Auto uses local models if it is not, and strict offline never leaves this computer.</p>
     </header>
     <div id="dictate"></div>
     <section aria-labelledby="updates-heading">
@@ -115,6 +115,29 @@ export async function mount(previewMode: boolean): Promise<void> {
   }
   const { listen } = await import("@tauri-apps/api/event");
   await listen<UpdateState>("update://state", (event) => renderUpdate(event.payload));
+  await listen<{ routeLabel: string; routeDetail: string; routeNotice: string; connectivity: string }>("dictation://route", (event) => {
+    snap.routeLabel = event.payload.routeLabel;
+    snap.routeDetail = event.payload.routeDetail;
+    snap.routeNotice = event.payload.routeNotice;
+    snap.connectivity = event.payload.connectivity;
+    const banner = document.querySelector("#route-banner");
+    if (banner) {
+      banner.textContent = snap.routeLabel;
+    }
+    const detail = document.querySelector("#route-detail");
+    if (detail) {
+      detail.textContent = snap.routeDetail;
+    }
+    const connectivity = document.querySelector("#connectivity");
+    if (connectivity) {
+      connectivity.textContent = snap.connectivity;
+    }
+    const routeNotice = document.querySelector<HTMLElement>("#route-notice");
+    if (routeNotice) {
+      routeNotice.textContent = snap.routeNotice;
+      routeNotice.hidden = snap.routeNotice.length === 0;
+    }
+  });
   await listen<CaptureEvent>("dictation://capture", (event) => {
     const mode = event.payload.mode as HotkeyModeName;
     if (!editors[mode]) {
@@ -199,14 +222,17 @@ function paint(): void {
     <section>
       <h2>Path</h2>
       <p class="banner" id="route-banner">${escapeHtml(snap.routeLabel)}</p>
+      <p class="status" id="connectivity">${escapeHtml(snap.connectivity)}</p>
       <p class="status" id="route-detail">${escapeHtml(snap.routeDetail)}</p>
+      <p class="status" id="route-notice" ${snap.routeNotice ? "" : "hidden"}>${escapeHtml(snap.routeNotice)}</p>
       <p class="status">Hotkey listener: ${escapeHtml(snap.listener)}</p>
       <p class="status">Log file: ${escapeHtml(snap.logPath || "not open yet")}</p>
       ${snap.secureStore === "ready" ? "" : `<p class="status warn">Credential store: ${escapeHtml(snap.secureStore)}</p>`}
       ${radios("preference", [
-        ["cloudDefault", "Cloud default", "Use the configured provider. Automatic offline switching is not on yet."],
-        ["localOnly", "Local only", "Record, recognize, and rewrite on this computer. Audio is not sent."],
-        ["strictOffline", "Strict offline", "Same as local. Downloads stay off unless you allow one."],
+        ["cloudDefault", "Auto", "Cloud when the provider answers. If it stays unreachable, use local models, then return to cloud after the connection is stable."],
+        ["cloudOnly", "Cloud only", "Always the configured provider. A failure does not use local models."],
+        ["localOnly", "Local only", "Always on this computer. Coming back online does not switch to cloud."],
+        ["strictOffline", "Strict offline", "On this computer, and no outbound network: no cloud calls, probes, update checks, or model downloads."],
       ], settings.preference)}
     </section>
     ${localPanel(snap.local, settings.preference)}
@@ -302,6 +328,7 @@ function bind(): void {
     input.addEventListener("change", () => {
       if (input.checked) {
         snap.settings.preference = input.value;
+        void save();
       }
     });
   }
@@ -886,7 +913,9 @@ function hotwordRow(word: Hotword, index: number): string {
 function historyRow(entry: HistoryEntry): string {
   const when = new Date(entry.createdAtMs).toLocaleString();
   const flag = entry.usedFallback ? " · ruled fallback" : "";
-  return `<li><p><strong>${escapeHtml(entry.text || "(empty)")}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(entry.appVersion)} · ${escapeHtml(entry.route)}${flag}</p><div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">Copy</button><button type="button" data-delete="${escapeHtml(entry.id)}">Delete</button></div></li>`;
+  const kept = entry.audioKept ? " · recording saved" : "";
+  const note = entry.note ? `<p class="muted">${escapeHtml(entry.note)}</p>` : "";
+  return `<li><p><strong>${escapeHtml(entry.text || "(empty)")}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(entry.appVersion)} · ${escapeHtml(entry.route)}${flag}${kept}</p>${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">Copy</button><button type="button" data-delete="${escapeHtml(entry.id)}">Delete</button></div></li>`;
 }
 
 function radios(name: string, choices: Array<[string, string, string]>, selected: string): string {

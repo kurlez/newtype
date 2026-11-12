@@ -3,8 +3,8 @@
 //! This module does not import the cloud client. A local or strict-offline
 //! preference must not be able to send audio by calling into here.
 //!
-//! Automatic offline fallback (M3) is a router input, not this file. Cloud
-//! failures are not retried here.
+//! Automatic offline fallback and same-recording retry are decided before
+//! this file is called. Nothing here opens a cloud connection.
 
 use super::audio::{self, AudioClip};
 use super::engines::Engines;
@@ -95,6 +95,19 @@ pub fn run(
     })
 }
 
+pub fn rewrite(
+    hub: &Engines,
+    llm_id: &str,
+    transcript: &str,
+    level: PolishLevel,
+    words: &[Hotword],
+    app_context: &str,
+    report: &dyn Fn(&str),
+) -> Result<polish::FinishedText, String> {
+    let model = LocalModel { hub, id: llm_id, report };
+    polish::attempt_local(transcript, words, level, app_context, &model)
+}
+
 fn silero_path(hub: &Engines) -> std::path::PathBuf {
     library::model_dir(hub.root(), "silero-vad").join("silero_vad.onnx")
 }
@@ -120,5 +133,6 @@ mod tests {
         assert!(refuses_network(RoutePreference::LocalOnly));
         assert!(refuses_network(RoutePreference::StrictOffline));
         assert!(!refuses_network(RoutePreference::CloudDefault));
+        assert!(!refuses_network(RoutePreference::CloudOnly));
     }
 }

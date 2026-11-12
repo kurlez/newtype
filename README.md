@@ -1,8 +1,8 @@
 # newtype
 
-Menu-bar voice input for macOS (Apple Silicon) and Windows. This build dictates in the focused app with a cloud speech model and a cloud rewrite model. Choosing local or strict offline runs Qwen3-ASR and a Qwen3 rewrite model on the computer instead. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
+Menu-bar voice input for macOS (Apple Silicon) and Windows. Auto is the default: dictation uses the configured cloud provider, switches to the local models when that provider stays unreachable, and returns to cloud after the connection holds. Cloud only never uses the local models. Local only stays on this computer. Strict offline also blocks probes, update checks, and model downloads. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
 
-Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Automatic offline switching is not in this build. Translation, command mode, and Volcengine speech are still partial.
+Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Translation, command mode, and Volcengine speech are still partial.
 
 ## Version scheme
 

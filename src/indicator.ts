@@ -62,6 +62,7 @@ function render(event: PhaseEvent): void {
     return;
   }
   bar.dataset.phase = event.phase;
+  bar.dataset.path = pathKind(event.route);
   phase.textContent = label(event.phase, event.elapsedMs);
   route.textContent = event.route;
   message.textContent = event.text ? `${event.message} ${event.text}` : event.message;
@@ -72,6 +73,20 @@ function render(event: PhaseEvent): void {
     meter.innerHTML = "";
   }
   void escapeHtml;
+}
+
+function pathKind(route: string): string {
+  const lower = route.toLowerCase();
+  if (lower.includes("fallback") || lower.includes("回落")) {
+    return "fallback";
+  }
+  if (lower.includes("offline") || lower.includes("离线")) {
+    return "strict";
+  }
+  if (lower.includes("local") || lower.includes("本地")) {
+    return "local";
+  }
+  return "cloud";
 }
 
 function label(phase: string, elapsedMs: number): string {
@@ -85,7 +100,7 @@ function label(phase: string, elapsedMs: number): string {
     case "inserted":
       return "Inserted";
     case "fallback":
-      return "Inserted · ruled text";
+      return "Inserted";
     case "error":
       return "Error";
     case "silence":

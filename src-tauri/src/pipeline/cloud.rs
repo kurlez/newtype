@@ -581,10 +581,7 @@ fn message_text(value: &Value) -> Option<String> {
 }
 
 fn client(timeout: std::time::Duration) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|err| format!("Could not build the HTTP client: {err}"))
+    super::egress::blocking_client(super::egress::Purpose::Cloud, timeout)
 }
 
 fn user_agent() -> String {
@@ -668,5 +665,37 @@ mod tests {
             redact("bearer sk-test failed", "sk-test"),
             "bearer [redacted] failed"
         );
+    }
+
+    #[test]
+    fn strict_offline_and_local_only_do_not_open_a_cloud_request() {
+        let started = std::time::Instant::now();
+        let guard = crate::pipeline::egress::ModeGuard::strict();
+        let err = transcribe(
+            "http://127.0.0.1:9/v1",
+            "secret-key",
+            "gpt-transcribe",
+            AsrWire::Transcriptions,
+            b"RIFF",
+        )
+        .unwrap_err();
+        assert!(err.contains("Strict offline"), "{err}");
+        assert!(!err.contains("secret-key"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(guard);
+
+        let _local = crate::pipeline::egress::ModeGuard::local_only();
+        let err = complete(
+            "http://127.0.0.1:9/v1",
+            "secret-key",
+            "gpt-6-luna",
+            Thinking::Off,
+            "system",
+            "user",
+            32,
+        )
+        .unwrap_err();
+        assert!(err.contains("Local only"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 }

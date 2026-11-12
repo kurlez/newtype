@@ -176,7 +176,17 @@ pub async fn set_channel(app: &AppHandle, channel: &str) -> Result<StateDto, Str
     Ok(check(app, true).await)
 }
 
+pub fn outbound_allowed() -> Result<(), String> {
+    crate::pipeline::egress::authorize(crate::pipeline::egress::Purpose::UpdateCheck)
+}
+
 pub async fn check(app: &AppHandle, manual: bool) -> StateDto {
+    if let Err(message) = outbound_allowed() {
+        if manual {
+            fail(app, &message);
+        }
+        return snapshot(app);
+    }
     let state = app.state::<AppState>();
     if state
         .busy
@@ -398,5 +408,18 @@ pub async fn apply(app: &AppHandle) -> Result<StateDto, String> {
             publish(app);
             Err(message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_offline_blocks_update_checks() {
+        let _guard = crate::pipeline::egress::ModeGuard::strict();
+        let err = outbound_allowed().unwrap_err();
+        assert!(err.contains("Strict offline"));
+        assert!(err.contains("Update checks"));
     }
 }
