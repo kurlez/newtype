@@ -1,0 +1,255 @@
+{
+  "created_unix": 1794459571.2183301,
+  "disk_free_bytes_at_start": 49225359360,
+  "hardware": {
+    "system": "macOS-15.8.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu": "Apple M2 Pro (Virtual)",
+    "logical_cpus": 5,
+    "physical_cpus": "5",
+    "memsize_bytes": 15032385536,
+    "swap": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+  },
+  "note": "GitHub-hosted macOS arm64 runners have 7 GB RAM and 3 vCPUs. These numbers are not a 16 GB Mac measurement.",
+  "clips": [
+    {
+      "file": "zh-short.wav",
+      "role": "short Mandarin utterance",
+      "duration_s": 3.66,
+      "reference": "我觉得这毫无道理；显然不公平。",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "file": "zh-en-short.wav",
+      "role": "short Mandarin with an English token",
+      "duration_s": 3.3,
+      "reference": "他称，他制作了一个 WiFi 门铃。",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "file": "zh-long.wav",
+      "role": "longer Mandarin read speech",
+      "duration_s": 18.38,
+      "reference": "报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争、不断增长的暴力或走向混乱。",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "file": "zh-en-long.wav",
+      "role": "longer Mandarin with an English name",
+      "duration_s": 18.04,
+      "reference": "\"布什政府发言人戈登·约翰德罗 (Gordon Johndroe) 称朝鲜的承诺是\"朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步\"。\"",
+      "license": "CC-BY-4.0"
+    }
+  ],
+  "swap_before": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+  "llama_1_7b_q8": {
+    "runtime": "llama.cpp",
+    "tag": "b12292",
+    "model": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+    "files": {
+      "decoder": "Qwen3-ASR-1.7B-Q8_0.gguf",
+      "mmproj": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf"
+    },
+    "ctx_size": 2048,
+    "cache_ram_mib": 0,
+    "gpu_layers": 99,
+    "parallel_slots": 1,
+    "sha256": {
+      "decoder": "58e22d0532d4eacaf034cfac17a6fed159f37c41390c710186783be439d1fc57",
+      "mmproj": "46c1d533af3f354ceb37ce855dbceff7da7fa7cf1e6a523df3b13440bd164c0d"
+    },
+    "load_ready_s": 19.048,
+    "swap_after_load": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+    "runs": [
+      {
+        "file": "zh-short.wav",
+        "phase": "warmup",
+        "seconds": 3.732,
+        "language": "Chinese",
+        "text": "我觉得这毫无道理，显然不公平。",
+        "raw": "language Chinese<asr_text>我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-short.wav",
+        "phase": "warm-1",
+        "audio_s": 3.66,
+        "seconds": 1.71,
+        "rtf": 0.4671,
+        "language": "Chinese",
+        "text": "我觉得这毫无道理，显然不公平。",
+        "raw": "language Chinese<asr_text>我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-short.wav",
+        "phase": "warm-2",
+        "audio_s": 3.66,
+        "seconds": 1.849,
+        "rtf": 0.5051,
+        "language": "Chinese",
+        "text": "我觉得这毫无道理，显然不公平。",
+        "raw": "language Chinese<asr_text>我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-en-short.wav",
+        "phase": "warm-1",
+        "audio_s": 3.3,
+        "seconds": 2.905,
+        "rtf": 0.8804,
+        "language": "Chinese",
+        "text": "他称，他制作了一个WiFi门铃。",
+        "raw": "language Chinese<asr_text>他称，他制作了一个WiFi门铃。"
+      },
+      {
+        "file": "zh-en-short.wav",
+        "phase": "warm-2",
+        "audio_s": 3.3,
+        "seconds": 2.497,
+        "rtf": 0.7567,
+        "language": "Chinese",
+        "text": "他称，他制作了一个WiFi门铃。",
+        "raw": "language Chinese<asr_text>他称，他制作了一个WiFi门铃。"
+      },
+      {
+        "file": "zh-long.wav",
+        "phase": "warm-1",
+        "audio_s": 18.38,
+        "seconds": 7.952,
+        "rtf": 0.4327,
+        "language": "Chinese",
+        "text": "报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。",
+        "raw": "language Chinese<asr_text>报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。"
+      },
+      {
+        "file": "zh-long.wav",
+        "phase": "warm-2",
+        "audio_s": 18.38,
+        "seconds": 5.272,
+        "rtf": 0.2868,
+        "language": "Chinese",
+        "text": "报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。",
+        "raw": "language Chinese<asr_text>报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。"
+      },
+      {
+        "file": "zh-en-long.wav",
+        "phase": "warm-1",
+        "audio_s": 18.04,
+        "seconds": 8.577,
+        "rtf": 0.4754,
+        "language": "Chinese",
+        "text": "布什政府发言人戈登·约翰德罗称，朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。",
+        "raw": "language Chinese<asr_text>布什政府发言人戈登·约翰德罗称，朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。"
+      },
+      {
+        "file": "zh-en-long.wav",
+        "phase": "warm-2",
+        "audio_s": 18.04,
+        "seconds": 5.112,
+        "rtf": 0.2833,
+        "language": "Chinese",
+        "text": "布什政府发言人戈登·约翰德罗称，朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。",
+        "raw": "language Chinese<asr_text>布什政府发言人戈登·约翰德罗称，朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。"
+      }
+    ],
+    "peak_rss_mb": 4420.8,
+    "swap_after": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+    "log_lines": [
+      "0.17.546.644 W resolve_fused_ops: layer 0 is assigned to device MTL0 but Flash Attention is assigned to device CPU (usually due to missing support)",
+      "0.17.546.655 W resolve_fused_ops: Flash Attention not supported, set to disabled",
+      "0.17.769.881 W init_audio: audio input is in experimental stage and may have reduced quality:",
+      "0.17.769.932 I srv    load_model: loaded multimodal model, '/Users/runner/work/newtype/newtype/spikes/qwen3-asr-mac/.cache/mmproj-Qwen3-ASR-1.7B-Q8_0.gguf'",
+      "0.18.641.268 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'",
+      "0.19.296.562 W warmup: WARNING: flash attention not supported by MTL0, memory usage will increase",
+      "0.19.297.218 W warmup: WARNING: the mmproj graph uses unsupported operators by the backend",
+      "0.19.297.218 W warmup:          list of unsupported ops (backend=MTL0):",
+      "0.19.297.300 W warmup: flash attention is disabled"
+    ]
+  },
+  "sherpa_0_6b_int8": {
+    "runtime": "sherpa-onnx",
+    "tag": "v2.0.1",
+    "model": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+    "model_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
+    "model_sha256": "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
+    "model_dir_name": "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+    "pip_returncode": 0,
+    "stderr_tail": "",
+    "load_s": 1.649,
+    "peak_rss_mb": 2622.9,
+    "ru_maxrss_raw": 2750283776,
+    "runs": [
+      {
+        "file": "zh-short.wav",
+        "phase": "warmup",
+        "seconds": 0.46,
+        "text": "我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-short.wav",
+        "phase": "warm-1",
+        "audio_s": 3.66,
+        "seconds": 0.446,
+        "rtf": 0.1219,
+        "text": "我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-short.wav",
+        "phase": "warm-2",
+        "audio_s": 3.66,
+        "seconds": 0.456,
+        "rtf": 0.1246,
+        "text": "我觉得这毫无道理，显然不公平。"
+      },
+      {
+        "file": "zh-en-short.wav",
+        "phase": "warm-1",
+        "audio_s": 3.3,
+        "seconds": 0.535,
+        "rtf": 0.1622,
+        "text": "他称：“他只走了一个WiFi门铃。”"
+      },
+      {
+        "file": "zh-en-short.wav",
+        "phase": "warm-2",
+        "audio_s": 3.3,
+        "seconds": 0.484,
+        "rtf": 0.1467,
+        "text": "他称：“他只走了一个WiFi门铃。”"
+      },
+      {
+        "file": "zh-long.wav",
+        "phase": "warm-1",
+        "audio_s": 18.38,
+        "seconds": 1.824,
+        "rtf": 0.0992,
+        "text": "报告警告称：“没有人能保证，目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。”"
+      },
+      {
+        "file": "zh-long.wav",
+        "phase": "warm-2",
+        "audio_s": 18.38,
+        "seconds": 1.732,
+        "rtf": 0.0942,
+        "text": "报告警告称：“没有人能保证，目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。”"
+      },
+      {
+        "file": "zh-en-long.wav",
+        "phase": "warm-1",
+        "audio_s": 18.04,
+        "seconds": 1.739,
+        "rtf": 0.0964,
+        "text": "布什政府发言人戈登·约翰德罗称：“朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。”"
+      },
+      {
+        "file": "zh-en-long.wav",
+        "phase": "warm-2",
+        "audio_s": 18.04,
+        "seconds": 1.767,
+        "rtf": 0.098,
+        "text": "布什政府发言人戈登·约翰德罗称：“朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。”"
+      }
+    ],
+    "swap_after": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)",
+    "mode": "python-wheel-resident"
+  },
+  "swap_after_all": "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+}

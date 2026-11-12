@@ -1,18 +1,22 @@
 # M-S1: Qwen3-ASR-1.7B on Apple Silicon
 
 - Date: 2026-11-12
-- Status: spike recommendation. The 16 GB Mac gate is not closed by the GitHub Actions run.
+- Status: spike recommendation. On the measured virtual M2 Pro, 1.7B misses the latency gate and 0.6B int8 meets it. A native 16 GB Mac has not been measured.
 - Product context: PRD v0.2 milestone M-S1. Mac tries Qwen3-ASR-1.7B; if that fails the gate, that Mac uses Qwen3-ASR-0.6B int8 via sherpa-onnx. Windows v1 stays on 0.6B int8.
 
 ## Recommendation
 
-**GO for Qwen3-ASR-1.7B on Mac, shipped as a llama.cpp Metal sidecar. Do not ship it as a bundled Python/MLX runtime.**
+**NO-GO for making Qwen3-ASR-1.7B the Mac default, on the machine this repo actually measured.**
 
-**NO-GO for the MLX plan as the way the app runs 1.7B.** MLX is fast enough in a published measurement, and it is the wrong runtime to embed. It needs a second, pinned Python stack. The PRD already treats that as a fragile dependency. The OpenLess TextStream package cited in the PRD is also not 1.7B: its manifest downloads `Qwen/Qwen3-ASR-0.6B`.
+That machine is a GitHub-hosted **virtual M2 Pro, 5 CPUs, 14 GiB RAM**, macOS 15.8.2 (Actions run [43158339221](https://github.com/kurlez/newtype/actions/runs/43158339221)). With the model already loaded, llama.cpp `b12292` Q8_0 took **5.1 s and 5.3 s** for the two ~18 s clips on the second pass, and **8.0 s and 8.6 s** on the first pass. The gate is under about 2 s for a typical utterance of that length, and over about 4 s is a no-go. This run is on the no-go side of that line. Peak RSS was **4.4 GB**. Swap stayed at 0 (the VM reports a 0 MB swap file, so this is not proof a 16 GB Mac would not swap).
 
-**0.6B int8 via sherpa-onnx stays the fallback and the Windows v1 engine.** That path is real on both macOS arm64 and Windows x64. There is still no official sherpa-onnx 1.7B release.
+**GO for Qwen3-ASR-0.6B int8 via sherpa-onnx on that same machine.** The same four clips, model kept loaded, finished in **0.45–0.53 s** for the short ones and **1.73–1.77 s** for the ~18 s ones. Load was 1.6 s. Peak RSS was **2.6 GB**. That is the engine that meets the gate here, and it is the Windows v1 engine already.
 
-This is not a finished measurement on Wenfeng's 16 GB Mac. The latency and memory evidence that clears the gate is a third-party run on an M5 with 32 GB, quoted below and labeled as such. The workflow in this repo runs on a GitHub-hosted M1 with 7 GB of RAM. Those two machines are not interchangeable. If the 16 GB machine later takes more than about 4 seconds for a normal utterance, or starts swapping, that machine drops to 0.6B int8. Nothing in this spike changes Windows.
+**NO-GO for shipping 1.7B as a bundled Python/MLX runtime**, separate from the latency result. MLX needs a pinned CPython stack. The OpenLess TextStream package the PRD cited is not 1.7B: its manifest downloads `Qwen/Qwen3-ASR-0.6B` (1,876,091,704 bytes).
+
+**Keep llama.cpp as the optional 1.7B implementation, and do not treat this VM as the last word on a native 16 GB Mac.** On this runner Metal refused Flash Attention and a large part of the audio-encoder graph (`mmproj` ops unsupported on `MTL0`), and the server log still says audio is experimental. A third party measured the same stack, an older build (`b11246`), at 1.40 s for 17 s of audio on a native M5 with 32 GB. Re-run `spikes/qwen3-asr-mac/bench.py` on the real 16 GB Mac before anyone flips the default back to 1.7B. Until that run is under 2 s, the model card says 0.6B.
+
+Nothing here changes Windows. There is still no official sherpa-onnx 1.7B release.
 
 ## Gate
 
@@ -112,7 +116,7 @@ License: sherpa-onnx is Apache-2.0. The Qwen3-ASR weights are Apache-2.0. Name b
 
 `spikes/qwen3-asr-mac/bench.py` is not linked into the Tauri binary. `.github/workflows/build.yml` is unchanged. `.github/workflows/qwen3-asr-mac-bench.yml` is `workflow_dispatch` only, plus one push of the bench script on the spike branch so this run can happen before the file exists on `main`. GitHub shows the Run workflow button after the file is on the default branch. It runs on `macos-15`.
 
-`macos-14` was retired on 2026-11-02. As of the GitHub-hosted runner table read on 2026-11-12, `macos-15` / `macos-26` / `macos-latest` for arm64 are an **M1, 3 vCPU, 7 GB RAM, 14 GB SSD**. That is a different computer from a 16 GB Mac, and 7 GB is tight for a 2.35 GiB model plus the OS. An out-of-memory result there is a fact about the runner. It is not, by itself, a no-go for 16 GB.
+`macos-14` was retired on 2026-11-02. The public runner table read the same day lists arm64 `macos-15` as an M1 with 3 vCPUs, 7 GB RAM, and a 14 GB disk. **This private-repo job did not get that shape.** `sysctl` on the runner reported Apple M2 Pro (Virtual), 5 CPUs, `hw.memsize` = 15,032,385,536 (14 GiB), and 49 GB free on disk. It is still not a native 16 GB Mac.
 
 The script pins llama.cpp `b12292` and sherpa-onnx `2.0.1`. For 1.7B it serves `llama-server` with `-c 2048`, `-ngl 99`, `--cache-ram 0` (the default prompt cache is 8192 MiB and would not fit), `--no-warmup`, and `--reasoning off`. It times two warm HTTP transcriptions after one discarded warmup. For 0.6B it prefers the `sherpa-onnx` 2.0.1 Python wheel so the model stays loaded; the wheel is a benchmark harness, not a product dependency. If the wheel does not install, it times `sherpa-onnx-offline`, and those times include the load.
 
@@ -129,7 +133,40 @@ Clips are four FLEURS `cmn_hans_cn` validation utterances, CC-BY-4.0, converted 
 
 ### Numbers from the Actions run
 
-Filled from the workflow artifact when that run finishes. Until that paragraph exists, this document has **no** first-party latency, RTF, RSS, or transcript numbers. Do not copy the M5 table above into a hardware recommendation as if we had measured it.
+Run [43158339221](https://github.com/kurlez/newtype/actions/runs/43158339221), 2026-11-12. llama.cpp `b12292`, `--parallel 1`, `-c 2048`, `-ngl 99`, `--cache-ram 0`. sherpa-onnx 2.0.1 Python wheel, recognizer kept alive. Times below are the second warm pass, after one warmup on the short clip and one earlier warm pass. The raw JSON is `docs/spikes/qwen3-asr-mac-gha-results.json`.
+
+| Clip | Audio | 1.7B Q8_0 warm-2 | RTF | 0.6B int8 warm-2 | RTF |
+|---|---|---|---|---|---|
+| `zh-short.wav` | 3.66 s | 1.85 s | 0.51 | 0.46 s | 0.12 |
+| `zh-en-short.wav` | 3.30 s | 2.50 s | 0.76 | 0.48 s | 0.15 |
+| `zh-long.wav` | 18.38 s | 5.27 s | 0.29 | 1.73 s | 0.09 |
+| `zh-en-long.wav` | 18.04 s | 5.11 s | 0.28 | 1.77 s | 0.10 |
+
+First warm pass on the long clips, still with the model loaded, was slower: 7.95 s and 8.58 s for 1.7B, 1.82 s and 1.74 s for 0.6B. Server ready took 19.0 s for 1.7B. sherpa load took 1.65 s.
+
+| | 1.7B llama.cpp Q8_0 | 0.6B sherpa int8 |
+|---|---|---|
+| Peak RSS | 4421 MB | 2623 MB |
+| Swap before and after | 0 (VM reports a 0 MB swap file) | same |
+
+Transcripts, second warm pass, next to the FLEURS reference. This is four lines, not a CER.
+
+| Clip | Reference | 1.7B | 0.6B |
+|---|---|---|---|
+| short | 我觉得这毫无道理；显然不公平。 | 我觉得这毫无道理，显然不公平。 | 我觉得这毫无道理，显然不公平。 |
+| short, with English | 他称，他制作了一个 WiFi 门铃。 | 他称，他制作了一个WiFi门铃。 | 他称：“他只走了一个WiFi门铃。” |
+| long | 报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争、不断增长的暴力或走向混乱。 | 报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。 | 报告警告称：“没有人能保证，目前在伊拉克采取的任何行动能够阻止宗派战争不断增长的暴力或走向混乱。” |
+| long, with a name | 布什政府发言人戈登·约翰德罗 (Gordon Johndroe) …重要一步。 | 布什政府发言人戈登·约翰德罗称，朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。 | 布什政府发言人戈登·约翰德罗称：“朝鲜的承诺是朝着实现朝鲜半岛可核查的无核化目标迈出的重要一步。” |
+
+On the one mixed short line, 1.7B kept 制作了 and 0.6B heard 只走了. Both kept WiFi and the Chinese form of the spokesperson's name. 1.7B dropped the parenthetical Latin spelling. That is a spot check, not a claim that 1.7B wins a test set.
+
+The server log on this build is why the 1.7B times should not be read as Metal at full speed:
+
+- `Flash Attention not supported, set to disabled` (`MTL0` vs CPU)
+- `the mmproj graph uses unsupported operators by the backend` and `the performance will be suboptimal`
+- `audio input is in experimental stage`
+
+An earlier run on the same workflow, with llama-server's automatic 4 slots instead of `--parallel 1`, was the same story (18 s clip, second pass 3.9 s and 5.4 s, peak RSS 4.4 GB). One slot did not fix the latency. The JSON in-tree is the one-slot run.
 
 ## Integration
 
@@ -137,9 +174,10 @@ Keep the provider split the PRD already sketched. Retarget the Mac 1.7B variant.
 
 ```text
 macOS, local path:
-  1.7B weights present and this machine passed the 16 GB check
+  1.7B weights present AND a native run of bench.py on this Mac
+  was under about 2 s for an ~18 s clip
       -> llama-server sidecar
-  otherwise
+  otherwise, including every machine until that run exists
       -> sherpa-onnx 0.6B int8, in process
 
 Windows, local path:
@@ -180,7 +218,7 @@ Weights are not in the `.dmg` or the NSIS installer.
 
 Mirrors for the sherpa archive: the GitHub release above, plus a copy on Hugging Face or ModelScope if we publish one. The GGUF pair lives on Hugging Face (`ggml-org/Qwen3-ASR-1.7B-GGUF`). hf-mirror is the right second URL for that pair. Do not invent a ModelScope URL for the GGUF until one is verified. Download failure deletes the partial file and does not mark the model installed. Opening Settings reads the directory and does not load weights and does not start `llama-server`.
 
-The model card should show: 1.7B Q8_0, Apache-2.0, Mac only, llama.cpp Metal, about 2.4 GB on disk, about 3.5 GB resident once loaded (the M5 figure, until we measure 16 GB), not streaming. The 0.6B card says sherpa-onnx, both desktops, about 0.9 GB on disk. On a Mac that has not passed the 16 GB check, the 0.6B card is the recommended fallback and the 1.7B card is optional.
+The model card should show: 1.7B Q8_0, Apache-2.0, Mac only, llama.cpp Metal, about 2.4 GB on disk, not the default until a native Mac clears 2 s. On the virtual M2 Pro this spike measured, resident memory was 4.4 GB; a third-party native M5 reported 3.4 GB. The 0.6B card says sherpa-onnx, both desktops, about 0.9 GB on disk, and it is the recommended local ASR until that native run exists.
 
 ### Provider seam
 
@@ -197,7 +235,7 @@ Only one local ASR is loaded. The sidecar and the sherpa recognizer are not both
 - No change to `build.yml`, the updater, or the installer contents.
 - No Python in the app.
 - No sherpa 1.7B integration.
-- No claim that a 7 GB CI runner is the go/no-go machine.
+- No claim that the virtual M2 Pro Actions runner is a native 16 GB Mac. The no-go above is for that runner. The native machine still gets its own run of the same script.
 - No CER on a public test set. Four FLEURS lines are a smoke test. The PRD's "CER not worse than 0.6B on the same machine" still wants a longer set on the 16 GB Mac. The bench stores the reference text next to the hypothesis so that comparison can be computed when the run exists.
 
 ## Sources
