@@ -34,6 +34,7 @@ export interface DictationSettings {
   targetLanguage: string;
   historyRetention: string;
   windowTranslucent: boolean;
+  groqRateLimitFallback: boolean;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
 }

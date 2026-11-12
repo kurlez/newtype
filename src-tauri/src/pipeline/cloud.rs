@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 
 use super::asr::AsrProvider;
+use super::failover::{self, ProviderError};
 use super::polish::{LlmComplete, LlmRequest};
 
 pub const VERIFIED_ON: &str = "2026-11-12";
@@ -407,19 +408,30 @@ pub fn transcribe(
     prompt: &str,
     wav: &[u8],
 ) -> Result<String, String> {
-    let base = normalize_base(base)?;
+    transcribe_detailed(base, key, model, wire, prompt, wav).map_err(|err| err.message)
+}
+
+pub fn transcribe_detailed(
+    base: &str,
+    key: &str,
+    model: &str,
+    wire: AsrWire,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
+    let base = normalize_base(base).map_err(ProviderError::plain)?;
     if model.trim().is_empty() {
-        return Err("Speech model id is empty.".into());
+        return Err(ProviderError::plain("Speech model id is empty."));
     }
     match wire {
-        AsrWire::Unfinished => Err(
-            "This provider's speech API is not implemented. Pick another speech provider.".into(),
-        ),
+        AsrWire::Unfinished => Err(ProviderError::plain(
+            "This provider's speech API is not implemented. Pick another speech provider.",
+        )),
         AsrWire::Transcriptions => transcribe_file(&base, key, model, prompt, wav),
         AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, prompt, wav),
-        AsrWire::Volcengine => Err(
-            "Volcengine speech is sent by the openspeech adapter, not this HTTP client.".into(),
-        ),
+        AsrWire::Volcengine => Err(ProviderError::plain(
+            "Volcengine speech is sent by the openspeech adapter, not this HTTP client.",
+        )),
     }
 }
 
@@ -432,23 +444,33 @@ pub fn complete(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let base = normalize_base(base)?;
+    complete_detailed(base, key, model, thinking, system, user, max_tokens).map_err(|err| err.message)
+}
+
+pub fn complete_detailed(
+    base: &str,
+    key: &str,
+    model: &str,
+    thinking: Thinking,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, ProviderError> {
+    let base = normalize_base(base).map_err(ProviderError::plain)?;
     if model.trim().is_empty() {
-        return Err("Rewrite model id is empty.".into());
+        return Err(ProviderError::plain("Rewrite model id is empty."));
     }
     let max_tokens = budgeted_max_tokens(thinking, max_tokens);
     let body = chat_body(model, system, user, max_tokens, thinking);
     match post_chat(&base, key, &body, LLM_TIMEOUT) {
         Ok(text) => Ok(text),
-        Err(err) if err.status == 400 => {
+        Err(err) if err.status == 400 && !failover::is_rate_limit(err.status, &err.code) => {
             if let Some(retry) = retry_body(&body, thinking) {
-                return post_chat(&base, key, &retry, LLM_TIMEOUT)
-                    .map(|text| text)
-                    .map_err(|retry_err| redact(&retry_err.message, key));
+                return post_chat(&base, key, &retry, LLM_TIMEOUT).map_err(|retry_err| retry_err.into_error(key));
             }
-            Err(redact(&err.message, key))
+            Err(err.into_error(key))
         }
-        Err(err) => Err(redact(&err.message, key)),
+        Err(err) => Err(err.into_error(key)),
     }
 }
 
@@ -509,14 +531,42 @@ pub fn list_model_ids(base: &str, key: &str) -> Result<Vec<String>, String> {
 
 struct HttpFailure {
     status: u16,
+    code: String,
+    retry_after_secs: Option<u64>,
     message: String,
 }
 
-fn transcribe_file(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
+impl HttpFailure {
+    fn new(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: String::new(),
+            retry_after_secs: None,
+            message: message.into(),
+        }
+    }
+
+    fn into_error(self, key: &str) -> ProviderError {
+        ProviderError {
+            status: self.status,
+            code: self.code,
+            retry_after_secs: self.retry_after_secs,
+            message: redact(&self.message, key),
+        }
+    }
+}
+
+fn transcribe_file(
+    base: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
     let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
         .file_name("speech.wav")
         .mime_str("audio/wav")
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| ProviderError::plain(err.to_string()))?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("model", model.to_string())
         .text("response_format", "json")
@@ -524,35 +574,18 @@ fn transcribe_file(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8])
     if !prompt.trim().is_empty() {
         form = form.text("prompt", prompt.to_string());
     }
-    let response = client(ASR_TIMEOUT)?
+    let response = client(ASR_TIMEOUT)
+        .map_err(ProviderError::plain)?
         .post(format!("{base}/audio/transcriptions"))
         .bearer_auth(key)
         .header("user-agent", user_agent())
         .multipart(form)
         .send()
-        .map_err(|err| redact(&format!("Speech request failed: {err}"), key))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| redact(&format!("Could not read the transcript: {err}"), key))?;
-    if !status.is_success() {
-        return Err(redact(
-            &format!("Speech request failed ({status}). {}", clip(&body)),
-            key,
-        ));
-    }
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|_| "The transcript response was not JSON.".to_string())?;
-    parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "The transcript response had no text.".to_string())
+        .map_err(|err| ProviderError::plain(redact(&format!("Speech request failed: {err}"), key)))?;
+    read_provider_text(response, key, "Speech", "transcript")
 }
 
-fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
+fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, ProviderError> {
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
     let mut content = Vec::new();
     if !prompt.trim().is_empty() {
@@ -574,43 +607,80 @@ fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &
         "stream": false,
         "asr_options": {"enable_itn": false}
     });
-    post_chat(base, key, &body, ASR_TIMEOUT).map_err(|err| redact(&err.message, key))
+    post_chat(base, key, &body, ASR_TIMEOUT).map_err(|err| err.into_error(key))
 }
 
 fn post_chat(base: &str, key: &str, body: &Value, timeout: std::time::Duration) -> Result<String, HttpFailure> {
     let response = client(timeout)
-        .map_err(|err| HttpFailure {
-            status: 0,
-            message: err,
-        })?
+        .map_err(|err| HttpFailure::new(0, err))?
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
         .header("user-agent", user_agent())
         .json(body)
         .send()
-        .map_err(|err| HttpFailure {
-            status: 0,
-            message: format!("Rewrite request failed: {err}"),
-        })?;
+        .map_err(|err| HttpFailure::new(0, format!("Rewrite request failed: {err}")))?;
+    let retry_after_secs = retry_after_secs(&response);
     let status = response.status();
-    let text = response.text().map_err(|err| HttpFailure {
-        status: status.as_u16(),
-        message: format!("Could not read the rewrite: {err}"),
-    })?;
+    let text = response
+        .text()
+        .map_err(|err| HttpFailure::new(status.as_u16(), format!("Could not read the rewrite: {err}")))?;
     if !status.is_success() {
         return Err(HttpFailure {
             status: status.as_u16(),
+            code: failover::error_code(&text),
+            retry_after_secs,
             message: format!("Rewrite request failed ({}). {}", status, clip(&text)),
         });
     }
-    let parsed: Value = serde_json::from_str(&text).map_err(|_| HttpFailure {
-        status: status.as_u16(),
-        message: "The rewrite response was not JSON.".into(),
+    let parsed: Value = serde_json::from_str(&text).map_err(|_| {
+        HttpFailure::new(status.as_u16(), "The rewrite response was not JSON.")
     })?;
-    message_text(&parsed).ok_or_else(|| HttpFailure {
-        status: status.as_u16(),
-        message: "The rewrite response had no text.".into(),
-    })
+    message_text(&parsed).ok_or_else(|| HttpFailure::new(status.as_u16(), "The rewrite response had no text."))
+}
+
+fn read_provider_text(
+    response: reqwest::blocking::Response,
+    key: &str,
+    step: &str,
+    noun: &str,
+) -> Result<String, ProviderError> {
+    let retry_after_secs = retry_after_secs(&response);
+    let status = response.status();
+    let body = response.text().map_err(|err| {
+        ProviderError::plain(redact(
+            &format!("Could not read the {noun}: {err}"),
+            key,
+        ))
+    })?;
+    if !status.is_success() {
+        return Err(ProviderError {
+            status: status.as_u16(),
+            code: failover::error_code(&body),
+            retry_after_secs,
+            message: redact(
+                &format!("{step} request failed ({status}). {}", clip(&body)),
+                key,
+            ),
+        });
+    }
+    let parsed: Value = serde_json::from_str(&body).map_err(|_| {
+        ProviderError::plain(format!("The {noun} response was not JSON."))
+    })?;
+    parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ProviderError::plain(format!("The {noun} response had no text.")))
+}
+
+fn retry_after_secs(response: &reqwest::blocking::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(failover::parse_retry_after)
 }
 
 fn retry_body(body: &Value, thinking: Thinking) -> Option<Value> {

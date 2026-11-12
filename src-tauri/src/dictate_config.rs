@@ -69,6 +69,9 @@ pub struct DictationSettings {
     /// Windows main window uses Mica, Acrylic, or a Win10 alpha fallback.
     #[serde(default = "default_window_translucent")]
     pub window_translucent: bool,
+    /// When Groq returns 429, 503, or rate_limit_exceeded, retry that step on OpenAI.
+    #[serde(default = "default_window_translucent")]
+    pub groq_rate_limit_fallback: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -102,6 +105,7 @@ impl Default for DictationSettings {
             target_language: "English".into(),
             history_retention: Retention::Month.as_str().into(),
             window_translucent: true,
+            groq_rate_limit_fallback: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -437,6 +441,7 @@ mod tests {
         assert_eq!(parsed.asr_provider, "groq");
         assert_eq!(parsed.llm_provider, "groq");
         assert_eq!(parsed.thinking, "low");
+        assert!(parsed.groq_rate_limit_fallback);
         assert_eq!(
             parsed.providers["groq"].asr_model,
             "whisper-large-v3-turbo"

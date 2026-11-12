@@ -337,6 +337,7 @@ function paint(): void {
         </select>
       </label>
       <p class="status">${presetCostLine(settings)}</p>
+      ${groqFallbackControl(settings)}
       ${keyStatus(settings)}
       <p class="status">Model ids were checked ${escapeHtml(snap.verifiedOn)}. The fields stay editable. Load models asks the provider what this key can see.</p>
       ${snap.devKeyStore ? `<p class="status warn">This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.</p>` : `<p class="status">API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.</p>`}
@@ -417,6 +418,10 @@ function paint(): void {
 }
 
 function bind(): void {
+  document.querySelector("#groq-openai-fallback")?.addEventListener("change", (event) => {
+    snap.settings.groqRateLimitFallback = (event.target as HTMLInputElement).checked;
+    void save();
+  });
   document.querySelector("#cloud-preset")?.addEventListener("change", (event) => {
     const id = (event.target as HTMLSelectElement).value;
     if (id) {
@@ -544,6 +549,10 @@ function readForm(): void {
   const translucent = document.querySelector<HTMLInputElement>("#window-translucent");
   if (translucent) {
     settings.windowTranslucent = translucent.checked;
+  }
+  const groqFallback = document.querySelector<HTMLInputElement>("#groq-openai-fallback");
+  if (groqFallback) {
+    settings.groqRateLimitFallback = groqFallback.checked;
   }
   settings.thinking = document.querySelector<HTMLSelectElement>("#thinking")?.value ?? settings.thinking;
   writeProvider(settings, settings.asrProvider, true);
@@ -1258,7 +1267,7 @@ function historyRow(entry: HistoryEntry): string {
     : "";
   const hit = dictionaryHitLine(entry);
   const hitLine = hit ? `<p class="status">${escapeHtml(hit)}</p>` : "";
-  return `<li><p><strong>${escapeHtml(entry.text || ui("(empty)", "（空）"))}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.appVersion)}${flag}${kept}</p>${hitLine}${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button>${rerun}<button type="button" data-delete="${escapeHtml(entry.id)}">${ui("Delete", "删除")}</button></div></li>`;
+  return `<li><p><strong>${escapeHtml(entry.text || ui("(empty)", "（空）"))}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.provider)} · ${escapeHtml(entry.appVersion)}${flag}${kept}</p>${hitLine}${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button>${rerun}<button type="button" data-delete="${escapeHtml(entry.id)}">${ui("Delete", "删除")}</button></div></li>`;
 }
 
 function lastResultCard(): string {
@@ -1268,7 +1277,7 @@ function lastResultCard(): string {
     return `<section class="last-result" id="last-result"><h2>${title}</h2><p class="status">${ui("No history yet.", "还没有历史。")}</p></section>`;
   }
   const hit = dictionaryHitLine(entry);
-  return `<section class="last-result" id="last-result"><h2>${title}</h2><p class="last-text">${escapeHtml(entry.text || ui("(empty)", "（空）"))}</p><p class="muted">${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)}</p>${hit ? `<p class="status">${escapeHtml(hit)}</p>` : ""}<div class="row"><button type="button" class="primary" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button></div></section>`;
+  return `<section class="last-result" id="last-result"><h2>${title}</h2><p class="last-text">${escapeHtml(entry.text || ui("(empty)", "（空）"))}</p><p class="muted">${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.provider)}</p>${hit ? `<p class="status">${escapeHtml(hit)}</p>` : ""}<div class="row"><button type="button" class="primary" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button></div></section>`;
 }
 
 function dictionaryHitLine(entry: HistoryEntry): string {
@@ -1322,7 +1331,7 @@ function visibleHistory(): HistoryEntry[] {
     return history;
   }
   return history.filter((entry) =>
-    `${entry.text} ${entry.raw} ${entry.mode} ${entry.route} ${entry.note}`.toLowerCase().includes(query),
+    `${entry.text} ${entry.raw} ${entry.mode} ${entry.route} ${entry.provider} ${entry.note}`.toLowerCase().includes(query),
   );
 }
 
@@ -1407,6 +1416,14 @@ function applyBundle(id: string): void {
   ensure(snap.settings, bundle.llmProvider).llmModel = bundle.llmModel;
   paint();
   void save();
+}
+
+function groqFallbackControl(settings: DictationSettings): string {
+  if (settings.asrProvider !== "groq" && settings.llmProvider !== "groq") {
+    return "";
+  }
+  const checked = settings.groqRateLimitFallback !== false ? "checked" : "";
+  return `<label class="choice"><input type="checkbox" id="groq-openai-fallback" ${checked} /><span>${ui("On Groq rate limit, fall back to OpenAI", "Groq 触发限流时改用 OpenAI")}<small>${ui("Uses gpt-transcribe for speech and gpt-4o-mini for rewrite. Requires an OpenAI key. The next dictation tries Groq again.", "语音用 gpt-transcribe，改写用 gpt-4o-mini。需要 OpenAI 密钥。下一次仍先试 Groq。")}</small></span></label>`;
 }
 
 function presetCostLine(settings: DictationSettings): string {

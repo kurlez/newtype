@@ -14,7 +14,8 @@ use crate::permissions::{self, PermissionSnapshot};
 use crate::pipeline::asr::AsrProvider;
 use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::catalog::{self, Mirror};
-use crate::pipeline::cloud::{self, AsrWire, CloudAsr, CloudLlm, Preset};
+use crate::pipeline::cloud::{self, AsrWire, CloudAsr, Preset, Thinking};
+use crate::pipeline::failover::{self, ProviderError};
 use crate::pipeline::volcengine::{self, VolcAuth};
 use crate::pipeline::engines::Engines;
 use crate::pipeline::library::{self, LibraryView};
@@ -27,7 +28,7 @@ use crate::pipeline::hotkey::{
 };
 use crate::pipeline::insert;
 use crate::pipeline::egress::{self, NetMode};
-use crate::pipeline::polish::{FinishedText, PolishLevel};
+use crate::pipeline::polish::{FinishedText, LlmComplete, LlmRequest, PolishLevel};
 use crate::pipeline::probe;
 use crate::pipeline::rewrite::{self, Audience};
 use crate::pipeline::selection;
@@ -74,6 +75,8 @@ pub struct Dictation {
     cancel: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     focus_target: Mutex<Option<focus::FocusTarget>>,
+    /// Groq Retry-After, in unix millis. Zero means try Groq on the next request.
+    groq_cooldown_until_ms: Arc<AtomicU64>,
 }
 
 struct LockedSession {
@@ -246,6 +249,7 @@ impl Dictation {
             cancel: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(1)),
             focus_target: Mutex::new(None),
+            groq_cooldown_until_ms: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1185,6 +1189,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let hardware = catalog::host_hardware();
     let asr_id = catalog::active_id(catalog::Role::Asr, &settings.local_asr_id, hardware);
     let llm_id = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
+    let groq_cooldown = Arc::clone(&state.groq_cooldown_until_ms);
     drop(state);
 
     let wav = audio::encode_wav_16k(&clip);
@@ -1294,74 +1299,212 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         .get("volcengine")
         .map(|config| config.volc_app_id.clone())
         .unwrap_or_default();
-    let cloud_asr = move |audio: &[u8]| {
-        if asr_wire == AsrWire::Volcengine {
-            let speech_key = secrets::get_key("volcengine-speech", &dev_secrets)
-                .ok()
-                .flatten()
-                .filter(|value| !value.is_empty())
-                .or_else(|| secrets::get_key(&asr_provider, &dev_secrets).ok().flatten())
-                .unwrap_or_default();
-            let token = secrets::get_key("volcengine-token", &dev_secrets)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            return volcengine::transcribe_wav(
-                &VolcAuth {
-                    api_key: speech_key,
-                    app_id: volc_app_id.clone(),
-                    token,
-                },
-                &speech_hint,
-                audio,
-            );
+    let asr_served = Arc::new(Mutex::new(asr_provider.clone()));
+    let rate_fallback = settings.groq_rate_limit_fallback;
+    let openai_base = settings
+        .providers
+        .get("openai")
+        .map(|config| config.base.clone())
+        .filter(|base| !base.trim().is_empty())
+        .unwrap_or_else(|| {
+            cloud::preset("openai")
+                .map(|preset| preset.default_base.to_string())
+                .unwrap_or_default()
+        });
+    let cloud_asr = {
+        let asr_served = Arc::clone(&asr_served);
+        let dev_secrets = dev_secrets.clone();
+        let cooldown = Arc::clone(&groq_cooldown);
+        let speech_hint = speech_hint.clone();
+        let openai_base = openai_base.clone();
+        move |audio: &[u8]| {
+            if asr_provider != "groq" {
+                if asr_wire == AsrWire::Volcengine {
+                    let speech_key = secrets::get_key("volcengine-speech", &dev_secrets)
+                        .ok()
+                        .flatten()
+                        .filter(|value| !value.is_empty())
+                        .or_else(|| secrets::get_key(&asr_provider, &dev_secrets).ok().flatten())
+                        .unwrap_or_default();
+                    let token = secrets::get_key("volcengine-token", &dev_secrets)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    return volcengine::transcribe_wav(
+                        &VolcAuth {
+                            api_key: speech_key,
+                            app_id: volc_app_id.clone(),
+                            token,
+                        },
+                        &speech_hint,
+                        audio,
+                    );
+                }
+                let key = match secrets::get_key(&asr_provider, &dev_secrets) {
+                    Ok(key) => key,
+                    Err(err) => return Err(err),
+                };
+                let Some(key) = key.filter(|value| !value.is_empty()) else {
+                    return Err("Speech API key is missing.".into());
+                };
+                return CloudAsr {
+                    base: asr_base.clone(),
+                    key,
+                    model: asr_model.clone(),
+                    wire: asr_wire,
+                    prompt: speech_hint.clone(),
+                }
+                .transcribe(audio);
+            }
+            let primary = || {
+                if asr_wire == AsrWire::Volcengine {
+                    let speech_key = secrets::get_key("volcengine-speech", &dev_secrets)
+                        .ok()
+                        .flatten()
+                        .filter(|value| !value.is_empty())
+                        .or_else(|| secrets::get_key(&asr_provider, &dev_secrets).ok().flatten())
+                        .unwrap_or_default();
+                    let token = secrets::get_key("volcengine-token", &dev_secrets)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    return volcengine::transcribe_wav(
+                        &VolcAuth {
+                            api_key: speech_key,
+                            app_id: volc_app_id.clone(),
+                            token,
+                        },
+                        &speech_hint,
+                        audio,
+                    )
+                    .map_err(ProviderError::plain);
+                }
+                let key = secrets::get_key(&asr_provider, &dev_secrets)
+                    .map_err(ProviderError::plain)?
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ProviderError::plain("Speech API key is missing."))?;
+                cloud::transcribe_detailed(&asr_base, &key, &asr_model, asr_wire, &speech_hint, audio)
+            };
+            let openai = || {
+                let key = secrets::get_key("openai", &dev_secrets)
+                    .map_err(ProviderError::plain)?
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ProviderError::plain("OpenAI API key is missing."))?;
+                let model = cloud::preset("openai")
+                    .map(|preset| preset.default_asr)
+                    .unwrap_or("gpt-transcribe");
+                cloud::transcribe_detailed(
+                    &openai_base,
+                    &key,
+                    model,
+                    AsrWire::Transcriptions,
+                    &speech_hint,
+                    audio,
+                )
+            };
+            let openai_ready = secrets::has_key("openai", &dev_secrets);
+            match step_with_fallback(
+                "asr",
+                &asr_provider,
+                rate_fallback,
+                openai_ready,
+                &cooldown,
+                primary,
+                openai,
+            ) {
+                Ok((text, served)) => {
+                    *asr_served.lock().expect("asr provider") = served;
+                    Ok(text)
+                }
+                Err(err) => Err(err),
+            }
         }
-        let key = secrets::get_key(&asr_provider, &dev_secrets)?
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "Speech API key is missing.".to_string())?;
-        CloudAsr {
-            base: asr_base,
-            key,
-            model: asr_model,
-            wire: asr_wire,
-            prompt: speech_hint.clone(),
-        }
-        .transcribe(audio)
     };
     let dev_secrets_llm = app.state::<Dictation>().dev_secrets.clone();
     let job_cloud = locked.job.clone();
-    let cloud_rewrite = move |transcript: &str| -> Result<FinishedText, String> {
-        let key = secrets::get_key(&llm_provider, &dev_secrets_llm)
-            .ok()
-            .flatten()
-            .filter(|value| !value.is_empty());
-        if !llm_implemented || key.is_none() {
-            if job_cloud.needs_capable_local() {
-                return Err("No rewrite model is configured for this mode.".into());
+    let llm_served = Arc::new(Mutex::new(llm_provider.clone()));
+    let cloud_rewrite = {
+        let llm_served = Arc::clone(&llm_served);
+        let cooldown = Arc::clone(&groq_cooldown);
+        let openai_base = openai_base.clone();
+        move |transcript: &str| -> Result<FinishedText, String> {
+            let run = |base: &str, key: &str, model: &str, thinking: Thinking| {
+                let slot = Arc::new(Mutex::new(None));
+                let llm = DetailedLlm {
+                    base: base.to_string(),
+                    key: key.to_string(),
+                    model: model.to_string(),
+                    thinking,
+                    error: Arc::clone(&slot),
+                };
+                match rewrite::attempt_job(
+                    Audience::Cloud,
+                    &job_cloud,
+                    transcript,
+                    &hotwords_cloud,
+                    &front::front_app_name(),
+                    &llm,
+                ) {
+                    Ok(body) => Ok(body),
+                    Err(message) => Err(slot
+                        .lock()
+                        .expect("llm error")
+                        .clone()
+                        .unwrap_or_else(|| ProviderError::plain(message))),
+                }
+            };
+            let primary = || {
+                let key = secrets::get_key(&llm_provider, &dev_secrets_llm)
+                    .ok()
+                    .flatten()
+                    .filter(|value| !value.is_empty());
+                if !llm_implemented || key.is_none() {
+                    if job_cloud.needs_capable_local() {
+                        return Err(ProviderError::plain(
+                            "No rewrite model is configured for this mode.",
+                        ));
+                    }
+                    let ruled = crate::pipeline::hotwords::apply(transcript, &hotwords_cloud);
+                    return Ok(FinishedText {
+                        raw: transcript.to_string(),
+                        ruled: ruled.clone(),
+                        text: ruled,
+                        used_fallback: true,
+                        reason: "No rewrite model is configured, so the ruled transcript was inserted."
+                            .into(),
+                    });
+                }
+                run(&llm_base, &key.unwrap_or_default(), &llm_model, thinking)
+            };
+            let openai = || {
+                let key = secrets::get_key("openai", &dev_secrets_llm)
+                    .ok()
+                    .flatten()
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| ProviderError::plain("OpenAI API key is missing."))?;
+                let model = cloud::preset("openai")
+                    .map(|preset| preset.default_llm)
+                    .unwrap_or("gpt-4o-mini");
+                let thinking = cloud::thinking_for("openai", model, "auto", "");
+                run(&openai_base, &key, model, thinking)
+            };
+            let openai_ready = secrets::has_key("openai", &dev_secrets_llm);
+            match step_with_fallback(
+                "polish",
+                &llm_provider,
+                rate_fallback,
+                openai_ready,
+                &cooldown,
+                primary,
+                openai,
+            ) {
+                Ok((body, served)) => {
+                    *llm_served.lock().expect("llm provider") = served;
+                    Ok(body)
+                }
+                Err(err) => Err(err),
             }
-            let ruled = crate::pipeline::hotwords::apply(transcript, &hotwords_cloud);
-            return Ok(FinishedText {
-                raw: transcript.to_string(),
-                ruled: ruled.clone(),
-                text: ruled,
-                used_fallback: true,
-                reason: "No rewrite model is configured, so the ruled transcript was inserted.".into(),
-            });
         }
-        let llm = CloudLlm {
-            base: llm_base,
-            key: key.unwrap_or_default(),
-            model: llm_model,
-            thinking,
-        };
-        rewrite::attempt_job(
-            Audience::Cloud,
-            &job_cloud,
-            transcript,
-            &hotwords_cloud,
-            &front::front_app_name(),
-            &llm,
-        )
     };
     let words_for_rules = effective.hotwords.clone();
     let outcome = session::dispatch(
@@ -1381,8 +1524,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     match outcome {
         Outcome::Done(done) => {
             let provider = match done.via {
-                Via::Cloud => format!("{} / {}", effective.asr_provider, effective.llm_provider),
-                Via::FallbackRewrite => format!("{} / local", effective.asr_provider),
+                Via::Cloud => format!(
+                    "{} / {}",
+                    asr_served.lock().expect("asr provider"),
+                    llm_served.lock().expect("llm provider")
+                ),
+                Via::FallbackRewrite => {
+                    format!("{} / local", asr_served.lock().expect("asr provider"))
+                }
                 Via::Local | Via::FallbackAudio => {
                     format!("local / {}", engine_name.lock().expect("engine"))
                 }
@@ -1446,6 +1595,67 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                 message: failed.message,
             })
         }
+    }
+}
+
+struct DetailedLlm {
+    base: String,
+    key: String,
+    model: String,
+    thinking: Thinking,
+    error: Arc<Mutex<Option<ProviderError>>>,
+}
+
+impl LlmComplete for DetailedLlm {
+    fn complete(&self, request: &LlmRequest) -> Result<String, String> {
+        match cloud::complete_detailed(
+            &self.base,
+            &self.key,
+            &self.model,
+            self.thinking,
+            &request.system,
+            &request.user,
+            request.max_tokens,
+        ) {
+            Ok(text) => Ok(text),
+            Err(err) => {
+                let message = err.message.clone();
+                *self.error.lock().expect("llm error") = Some(err);
+                Err(message)
+            }
+        }
+    }
+}
+
+fn step_with_fallback<T>(
+    step: &str,
+    provider: &str,
+    enabled: bool,
+    openai_ready: bool,
+    cooldown: &AtomicU64,
+    primary: impl FnOnce() -> Result<T, ProviderError>,
+    openai: impl FnOnce() -> Result<T, ProviderError>,
+) -> Result<(T, String), String> {
+    let mut until = cooldown.load(Ordering::Relaxed);
+    let mut log = Vec::new();
+    let result = failover::with_openai_fallback(
+        step,
+        provider,
+        enabled,
+        openai_ready,
+        now_ms(),
+        &mut until,
+        primary,
+        openai,
+        &mut log,
+    );
+    cooldown.store(until, Ordering::Relaxed);
+    for line in &log {
+        crate::diag::record(line);
+    }
+    match result {
+        Ok(outcome) => Ok((outcome.value, outcome.provider)),
+        Err(err) => Err(err.message),
     }
 }
 

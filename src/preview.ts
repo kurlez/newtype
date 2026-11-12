@@ -20,6 +20,7 @@ export const previewSnapshot: Snapshot = {
     targetLanguage: "English",
     historyRetention: "month",
     windowTranslucent: true,
+    groqRateLimitFallback: true,
     providers: {
       openai: {
         asrModel: "gpt-transcribe",
