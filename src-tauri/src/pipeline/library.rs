@@ -260,13 +260,26 @@ pub fn install(
     cancel: &AtomicBool,
     mut progress: impl FnMut(InstallEvent),
 ) -> Result<(), String> {
+    // The dependency walk must not be generic over the callback. Each `&mut`
+    // layer would be a new type and the compiler recurses until it gives up.
+    install_with(root, id, os, preference, cancel, &mut progress)
+}
+
+fn install_with(
+    root: &Path,
+    id: &str,
+    os: OsKind,
+    preference: Mirror,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(InstallEvent),
+) -> Result<(), String> {
     let card = catalog::card(id).ok_or_else(|| format!("Unknown model \"{id}\"."))?;
     if os != OsKind::Other && !catalog::runnable_on(card, os) {
         return Err(format!("{} is not available on this operating system.", card.name));
     }
     for dep in card.depends_on {
         if !engine_ready(root, dep, os) {
-            install(root, dep, os, preference, cancel, &mut progress)?;
+            install_with(root, dep, os, preference, cancel, progress)?;
         }
     }
     let files = catalog::files_for(id, os)?;
