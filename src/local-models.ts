@@ -1,3 +1,4 @@
+import { ui } from "./i18n";
 import { confirmSkip } from "./skipWarning";
 import { escapeHtml, type LocalLibrary, type LocalProgress, type Snapshot } from "./types";
 
@@ -35,6 +36,7 @@ export function localPanel(local: LocalLibrary, preference: string): string {
     <p class="status">${escapeHtml(local.hardwareSummary)}</p>
     <p class="status">Disk used by local models: ${escapeHtml(formatBytes(local.diskBytes))}. Opening this page does not load the weights.</p>
     ${strict}
+    ${rewriteWarning(local, preference)}
     <label class="field">Download source
       <select id="local-mirror">
         ${["auto", "huggingface", "hf-mirror", "modelscope", "github"].map((value) => `<option value="${value}" ${local.mirror === value ? "selected" : ""}>${escapeHtml(mirrorLabel(value))}</option>`).join("")}
@@ -49,6 +51,17 @@ export function localPanel(local: LocalLibrary, preference: string): string {
     <progress id="local-bar" hidden max="1" value="0"></progress>
     ${rows}
   </section>`;
+}
+
+function rewriteWarning(local: LocalLibrary, preference: string): string {
+  const localMode = preference === "localOnly" || preference === "strictOffline";
+  if (!localMode || local.llmReady) {
+    return "";
+  }
+  const label = local.recommendedLlm === "qwen3-1.7b-q4"
+    ? ui("Install Qwen3 1.7B Q4_K_M and llama.cpp", "安装 Qwen3 1.7B Q4_K_M 和 llama.cpp")
+    : ui("Install Qwen3 4B Q4_K_M and llama.cpp", "安装 Qwen3 4B Q4_K_M 和 llama.cpp");
+  return `<p class="status warn">${ui("Local polish model is not installed, so only rule cleanup ran.", "本地润色模型未安装，只做了规则清理")}</p><div class="row"><button type="button" class="primary" id="local-rewrite">${escapeHtml(label)}</button></div>`;
 }
 
 function confirmNetwork(): boolean | null {
@@ -67,6 +80,15 @@ export function bindLocal(preview: boolean, reloadLocal: () => Promise<void>): v
   document.querySelector("#local-mirror")?.addEventListener("change", (event) => {
     const mirror = (event.target as HTMLSelectElement).value;
     void run(preview, reloadLocal, () => call("local_set_mirror", { mirror }));
+  });
+  document.querySelector("#local-rewrite")?.addEventListener("click", () => {
+    const host = document.querySelector("#local-models");
+    const llm = host?.getAttribute("data-llm") ?? "";
+    const allow = confirmNetwork();
+    if (allow === null || !llm) {
+      return;
+    }
+    void startDownload(preview, reloadLocal, [llm], allow);
   });
   document.querySelector("#local-recommended")?.addEventListener("click", () => {
     const host = document.querySelector("#local-models");

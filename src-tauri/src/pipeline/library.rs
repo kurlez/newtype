@@ -195,9 +195,11 @@ pub fn skip_warning() -> &'static str {
     "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。 This reminder stays until both are installed."
 }
 
-pub fn fallback_menu(ready: bool) -> &'static str {
-    if ready {
+pub fn fallback_menu(asr_ready: bool, llm_ready: bool) -> &'static str {
+    if asr_ready && llm_ready {
         "Local fallback: ready"
+    } else if !llm_ready {
+        "Local fallback: rewrite model missing"
     } else {
         "Local fallback: not ready"
     }
@@ -640,7 +642,9 @@ mod tests {
         assert!(warning.contains("speech"));
         assert!(warning.contains("rewrite"));
         assert!(warning.contains("断网"));
-        assert_eq!(fallback_menu(true), "Local fallback: ready");
-        assert_eq!(fallback_menu(false), "Local fallback: not ready");
+        assert_eq!(fallback_menu(true, true), "Local fallback: ready");
+        assert_eq!(fallback_menu(true, false), "Local fallback: rewrite model missing");
+        assert_eq!(fallback_menu(false, false), "Local fallback: rewrite model missing");
+        assert_eq!(fallback_menu(false, true), "Local fallback: not ready");
     }
 }

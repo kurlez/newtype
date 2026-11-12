@@ -16,6 +16,7 @@ pub(crate) mod egress;
 pub(crate) mod engines;
 pub(crate) mod extract;
 pub(crate) mod failover;
+pub(crate) mod fillers;
 pub(crate) mod focus;
 pub(crate) mod front;
 pub(crate) mod history;

@@ -1464,7 +1464,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                             "No rewrite model is configured for this mode.",
                         ));
                     }
-                    let ruled = crate::pipeline::hotwords::apply(transcript, &hotwords_cloud);
+                    let ruled = crate::pipeline::polish::fallback_ruled(transcript, &hotwords_cloud);
                     return Ok(FinishedText {
                         raw: transcript.to_string(),
                         ruled: ruled.clone(),
@@ -1518,7 +1518,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         cloud_rewrite,
         local_audio,
         local_rewrite,
-        |text| crate::pipeline::hotwords::apply(text, &words_for_rules),
+        |text| crate::pipeline::polish::fallback_ruled(text, &words_for_rules),
     );
     let route_now = shown.lock().expect("route").clone();
     match outcome {
@@ -1898,7 +1898,8 @@ pub fn shutdown(app: &AppHandle) {
 
 pub fn fallback_line(app: &AppHandle) -> String {
     let state = app.state::<Dictation>();
-    library::fallback_menu(readiness_of(&state).fallback_ready()).into()
+    let ready = readiness_of(&state);
+    library::fallback_menu(ready.asr, ready.llm).into()
 }
 
 pub fn local_download(app: &AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {

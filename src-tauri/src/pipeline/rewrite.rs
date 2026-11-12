@@ -56,7 +56,7 @@ fn attempt_translate(
     llm: &dyn LlmComplete,
 ) -> Result<FinishedText, String> {
     let raw = transcript.to_string();
-    let ruled = hotwords::apply(transcript, words);
+    let ruled = polish::ruled_text(transcript, words);
     if ruled.trim().is_empty() {
         return Ok(empty(&raw, &ruled, "Nothing to translate."));
     }
@@ -98,7 +98,7 @@ fn attempt_command(
     llm: &dyn LlmComplete,
 ) -> Result<FinishedText, String> {
     let raw = instruction.to_string();
-    let ruled = hotwords::apply(instruction, words);
+    let ruled = polish::ruled_text(instruction, words);
     if ruled.trim().is_empty() {
         return Ok(empty(&raw, &ruled, "No instruction was heard."));
     }
@@ -306,7 +306,7 @@ fn empty(raw: &str, ruled: &str, reason: &str) -> FinishedText {
 }
 
 fn fallback(transcript: &str, words: &[Hotword], reason: String) -> FinishedText {
-    let ruled = hotwords::apply(transcript, words);
+    let ruled = polish::fallback_ruled(transcript, words);
     FinishedText {
         raw: transcript.to_string(),
         ruled: ruled.clone(),
