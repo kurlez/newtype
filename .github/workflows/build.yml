@@ -37,7 +37,7 @@ jobs:
 
       - name: Require Apple Silicon
         if: runner.os == 'macOS'
-        run: rustc -vV | grep -q 'host: aarch64-apple-darwin'
+        run: "rustc -vV | grep -q 'host: aarch64-apple-darwin'"
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -154,7 +154,7 @@ jobs:
         run: |
           if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$NEWTYPE_RELEASES_TOKEN" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Updater publish skipped::Add TAURI_SIGNING_PRIVATE_KEY and NEWTYPE_RELEASES_TOKEN, then replace the placeholder public key. See SETUP.md."
+            echo "::notice title=Updater publish skipped::Publishing needs TAURI_SIGNING_PRIVATE_KEY and NEWTYPE_RELEASES_TOKEN. See SETUP.md."
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi

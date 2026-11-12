@@ -51,7 +51,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIyNDk2NkY3RDNFREM0OTkKUldTWnhPM1Q5MlpKSXNkRmkrMGRNanpTNnkvbUF6Wk52NGo3YUVvNng1Wkhud1RPUDZheFpjZ0IK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNGODM4OTUwRDExRTNERjIKUldUeVBSN1JVSW1EUHpEclJaQ0N6U2JsMkxtdm1Ja0RiUmZlQ1VIdHdudUNDNnlZTlNRWlloWGwK",
       "endpoints": [
         "https://github.com/kurlez/newtype-releases/releases/download/dev/latest.json"
       ],

@@ -96,11 +96,14 @@ test("stable channel publishes on the version tag", () => {
   }
 });
 
-test("the committed placeholder pubkey decodes to a minisign public key", () => {
-  const pubkey = readFileSync(
+test("the embedded updater pubkey is real and is not the placeholder", () => {
+  const placeholder = readFileSync(
     path.join(root, "src-tauri/placeholder-updater-pubkey.txt"),
     "utf8",
-  );
-  const decoded = decodeTauriKey(pubkey);
-  assert.match(decoded, /minisign public key/);
+  ).trim();
+  const conf = JSON.parse(readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
+  const pubkey = conf.plugins.updater.pubkey.trim();
+  assert.notEqual(pubkey, placeholder);
+  assert.match(decodeTauriKey(pubkey), /minisign public key/);
+  assert.match(decodeTauriKey(placeholder), /minisign public key/);
 });

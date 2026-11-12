@@ -20,17 +20,19 @@ This writes:
 
 The password is whatever you passed to `-p`. You will store it as a second secret. If you omit `-p`, the command prompts for one.
 
-## 2. Put the public key in the app
+## 2. Public key in the app
 
-Replace `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` with the full contents of `$HOME/.tauri/newtype.key.pub` (one base64 line).
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json` is the public half of the key stored in `TAURI_SIGNING_PRIVATE_KEY`. Leave it in place.
 
-Leave `src-tauri/placeholder-updater-pubkey.txt` unchanged. The publish job compares the two. While they match, it refuses to publish, because the private key for that placeholder was never saved.
+`src-tauri/placeholder-updater-pubkey.txt` is the original placeholder, whose private key was never saved. The publish job refuses to upload while `plugins.updater.pubkey` still equals that file. Do not edit the placeholder file, and do not paste it back into `tauri.conf.json`.
 
-Commit and push the `tauri.conf.json` change. The first build that contains your public key is the first build that can verify updates you sign. Anything installed earlier, including a build that still has the placeholder key, will reject those updates and has to be installed again by hand.
+Anything installed from a build that still contained the placeholder key cannot verify updates signed with the real key. Install a build from this public key onward.
 
-## 3. Add repository secrets
+## 3. Repository secrets
 
-On the private source repository **kurlez/newtype** (Settings → Secrets and variables → Actions), add:
+`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are already set on **kurlez/newtype**. The remaining required secret is `NEWTYPE_RELEASES_TOKEN` (step 4). Publishing stays skipped until that token exists.
+
+On the private source repository **kurlez/newtype** (Settings → Secrets and variables → Actions), the full set is:
 
 | Secret | Required | Value |
 | --- | --- | --- |
