@@ -299,6 +299,7 @@ pub struct CloudAsr {
     pub key: String,
     pub model: String,
     pub wire: AsrWire,
+    pub prompt: String,
 }
 
 impl AsrProvider for CloudAsr {
@@ -307,7 +308,7 @@ impl AsrProvider for CloudAsr {
     }
 
     fn transcribe(&self, wav: &[u8]) -> Result<String, String> {
-        transcribe(&self.base, &self.key, &self.model, self.wire, wav)
+        transcribe(&self.base, &self.key, &self.model, self.wire, &self.prompt, wav)
     }
 }
 
@@ -337,6 +338,7 @@ pub fn transcribe(
     key: &str,
     model: &str,
     wire: AsrWire,
+    prompt: &str,
     wav: &[u8],
 ) -> Result<String, String> {
     let base = normalize_base(base)?;
@@ -347,8 +349,8 @@ pub fn transcribe(
         AsrWire::Unfinished => Err(
             "This provider's speech API is not implemented. Pick another speech provider.".into(),
         ),
-        AsrWire::Transcriptions => transcribe_file(&base, key, model, wav),
-        AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, wav),
+        AsrWire::Transcriptions => transcribe_file(&base, key, model, prompt, wav),
+        AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, prompt, wav),
     }
 }
 
@@ -440,15 +442,18 @@ struct HttpFailure {
     message: String,
 }
 
-fn transcribe_file(base: &str, key: &str, model: &str, wav: &[u8]) -> Result<String, String> {
+fn transcribe_file(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
     let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
         .file_name("speech.wav")
         .mime_str("audio/wav")
         .map_err(|err| err.to_string())?;
-    let form = reqwest::blocking::multipart::Form::new()
+    let mut form = reqwest::blocking::multipart::Form::new()
         .text("model", model.to_string())
         .text("response_format", "json")
         .part("file", part);
+    if !prompt.trim().is_empty() {
+        form = form.text("prompt", prompt.to_string());
+    }
     let response = client(ASR_TIMEOUT)?
         .post(format!("{base}/audio/transcriptions"))
         .bearer_auth(key)
@@ -477,19 +482,24 @@ fn transcribe_file(base: &str, key: &str, model: &str, wav: &[u8]) -> Result<Str
         .ok_or_else(|| "The transcript response had no text.".to_string())
 }
 
-fn transcribe_dashscope(base: &str, key: &str, model: &str, wav: &[u8]) -> Result<String, String> {
+fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
+    let mut content = Vec::new();
+    if !prompt.trim().is_empty() {
+        content.push(json!({"type": "text", "text": format!("Terms to spell exactly: {prompt}")}));
+    }
+    content.push(json!({
+        "type": "input_audio",
+        "input_audio": {
+            "data": format!("data:audio/wav;base64,{encoded}"),
+            "format": "wav"
+        }
+    }));
     let body = json!({
         "model": model,
         "messages": [{
             "role": "user",
-            "content": [{
-                "type": "input_audio",
-                "input_audio": {
-                    "data": format!("data:audio/wav;base64,{encoded}"),
-                    "format": "wav"
-                }
-            }]
+            "content": content
         }],
         "stream": false,
         "asr_options": {"enable_itn": false}
@@ -676,6 +686,7 @@ mod tests {
             "secret-key",
             "gpt-transcribe",
             AsrWire::Transcriptions,
+            "",
             b"RIFF",
         )
         .unwrap_err();

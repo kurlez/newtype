@@ -301,6 +301,11 @@ textarea {
 
 .hotword {
   margin: 8px 0;
+  align-items: center;
+}
+
+.hotword.hidden {
+  display: none;
 }
 
 .hotword input,

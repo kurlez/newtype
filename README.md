@@ -2,7 +2,7 @@
 
 Menu-bar voice input for macOS (Apple Silicon) and Windows. Auto is the default: dictation uses the configured cloud provider, switches to the local models when that provider stays unreachable, and returns to cloud after the connection holds. Cloud only never uses the local models. Local only stays on this computer. Strict offline also blocks probes, update checks, and model downloads. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
 
-Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Translation, command mode, and Volcengine speech are still partial.
+Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Translate and command use the same router as dictation. A local rewrite model below 4B does not translate or run commands. Volcengine speech is still partial.
 
 ## Version scheme
 

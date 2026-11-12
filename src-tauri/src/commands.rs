@@ -136,6 +136,36 @@ pub fn dictation_copy_history(app: AppHandle, id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+pub fn dictation_reinsert_history(app: AppHandle, id: String) -> Result<(), String> {
+    crate::dictation::reinsert_history(&app, &id)
+}
+
+#[tauri::command]
+pub fn dictation_clear_history(app: AppHandle) -> Result<(), String> {
+    crate::dictation::clear_history(&app)
+}
+
+#[tauri::command]
+pub async fn dictation_rerun_history(app: AppHandle, id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::dictation::rerun_history(&app, &id))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub fn dictation_export_dictionary(app: AppHandle) -> Result<String, String> {
+    crate::dictation::export_dictionary(&app)
+}
+
+#[tauri::command]
+pub fn dictation_import_dictionary(
+    app: AppHandle,
+    body: String,
+) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::import_dictionary(&app, &body)
+}
+
+#[tauri::command]
 pub fn dictation_microphones() -> Result<Vec<String>, String> {
     crate::dictation::microphones()
 }

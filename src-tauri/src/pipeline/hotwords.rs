@@ -9,7 +9,7 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "hotwords",
         status: "ready",
-        note: "Alias and regex replacement run before the model. Phonetic matching is not in this build.",
+        note: "Terms are sent as a cloud speech hint and listed in the rewrite prompt. Alias and regex replacement still run before the model.",
     }
 }
 
@@ -122,6 +122,102 @@ pub fn apply(text: &str, words: &[Hotword]) -> String {
     current
 }
 
+/// Spellings passed to a cloud speech model as a hint. Alias replacement
+/// still runs after recognition, before the rewrite.
+pub fn asr_hint(words: &[Hotword]) -> String {
+    let mut parts = Vec::new();
+    for word in words {
+        let canonical = word.canonical.trim();
+        if !canonical.is_empty() {
+            parts.push(canonical.to_string());
+        }
+    }
+    parts.join(", ").chars().take(800).collect()
+}
+
+pub fn export_json(words: &[Hotword]) -> Result<String, String> {
+    let terms: Vec<serde_json::Value> = words
+        .iter()
+        .map(|word| {
+            serde_json::json!({
+                "term": word.canonical,
+                "replacements": word.aliases,
+                "pattern": word.pattern,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "version": 1,
+        "terms": terms,
+    }))
+    .map_err(|err| err.to_string())
+}
+
+pub fn import_json(body: &str) -> Result<Vec<Hotword>, HotwordError> {
+    let parsed: serde_json::Value = serde_json::from_str(body.trim()).map_err(|err| HotwordError {
+        message: format!("Dictionary file is not JSON: {err}"),
+    })?;
+    let list = if let Some(terms) = parsed.get("terms").and_then(|value| value.as_array()) {
+        terms
+    } else if let Some(terms) = parsed.as_array() {
+        terms
+    } else {
+        return Err(HotwordError {
+            message: "Dictionary file needs a terms array.".into(),
+        });
+    };
+    let mut words = Vec::new();
+    for item in list {
+        let canonical = string_field(item, &["term", "canonical"]);
+        let aliases = string_list(item, &["replacements", "aliases"]);
+        let pattern = string_field(item, &["pattern"]);
+        if canonical.trim().is_empty() && aliases.is_empty() && pattern.trim().is_empty() {
+            continue;
+        }
+        words.push(Hotword {
+            canonical,
+            aliases,
+            pattern,
+        });
+    }
+    validate(&words)?;
+    Ok(words)
+}
+
+fn string_field(item: &serde_json::Value, keys: &[&str]) -> String {
+    for key in keys {
+        if let Some(value) = item.get(*key).and_then(|value| value.as_str()) {
+            return value.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+fn string_list(item: &serde_json::Value, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(value) = item.get(*key) {
+            if let Some(text) = value.as_str() {
+                return text
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            if let Some(list) = value.as_array() {
+                return list
+                    .iter()
+                    .filter_map(|part| part.as_str())
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
+}
+
 pub fn prompt_block(words: &[Hotword]) -> String {
     let mut lines = Vec::new();
     for word in words {
@@ -219,5 +315,22 @@ mod tests {
         assert!(block.contains("- Token"));
         assert!(block.contains("cloud code → Claude Code"));
         assert!(validate(&words).is_ok());
+        assert_eq!(asr_hint(&words), "Token, Claude Code");
+    }
+
+    #[test]
+    fn dictionary_json_round_trips_and_rejects_a_bad_pattern() {
+        let words = vec![word("Claude Code", &["cloud code", "扣的 code"], "")];
+        let json = export_json(&words).unwrap();
+        assert!(json.contains("\"term\""));
+        assert!(json.contains("replacements"));
+        let loaded = import_json(&json).unwrap();
+        assert_eq!(loaded, words);
+        let legacy = r#"[{"canonical":"API","aliases":"a p i","pattern":""}]"#;
+        let from_legacy = import_json(legacy).unwrap();
+        assert_eq!(from_legacy[0].canonical, "API");
+        assert_eq!(from_legacy[0].aliases, vec!["a p i".to_string()]);
+        assert!(import_json(r#"{"terms":[{"term":"X","pattern":"("}]}"#).is_err());
+        assert!(import_json("not json").is_err());
     }
 }

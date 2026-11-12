@@ -246,6 +246,44 @@ pub fn encode_wav_16k(clip: &AudioClip) -> Vec<u8> {
     body
 }
 
+pub fn decode_wav(bytes: &[u8]) -> Result<AudioClip, String> {
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("The saved recording is not a WAV file.".into());
+    }
+    let mut rate = TARGET_RATE;
+    let mut offset = 12usize;
+    let mut data: Option<&[u8]> = None;
+    while offset + 8 <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap_or([0; 4])) as usize;
+        let start = offset + 8;
+        let end = start.saturating_add(size).min(bytes.len());
+        if id == b"fmt " && end >= start + 16 {
+            rate = u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap_or([0; 4]));
+        }
+        if id == b"data" {
+            data = Some(&bytes[start..end]);
+            break;
+        }
+        offset = end + (size % 2);
+    }
+    let data = data.ok_or_else(|| "The saved recording has no audio data.".to_string())?;
+    let mut samples = Vec::with_capacity(data.len() / 2);
+    let mut index = 0;
+    while index + 1 < data.len() {
+        let value = i16::from_le_bytes([data[index], data[index + 1]]);
+        samples.push(value as f32 / i16::MAX as f32);
+        index += 2;
+    }
+    if rate == 0 {
+        rate = TARGET_RATE;
+    }
+    Ok(AudioClip {
+        samples,
+        sample_rate: rate,
+    })
+}
+
 fn resample_16k(samples: &[f32], rate: u32) -> Vec<f32> {
     if samples.is_empty() || rate == 0 {
         return Vec::new();
@@ -284,6 +322,10 @@ mod tests {
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
         assert_eq!(wav.len(), 44 + 8);
+        let decoded = decode_wav(&wav).unwrap();
+        assert_eq!(decoded.sample_rate, 16_000);
+        assert_eq!(decoded.samples.len(), 4);
+        assert!((decoded.samples[1] - 0.5).abs() < 0.01);
     }
 
     #[test]

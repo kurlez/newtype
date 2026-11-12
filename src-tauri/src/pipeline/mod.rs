@@ -25,8 +25,11 @@ pub(crate) mod local_run;
 pub(crate) mod netwatch;
 pub(crate) mod polish;
 pub(crate) mod probe;
+pub(crate) mod rewrite;
 pub(crate) mod router;
+pub(crate) mod selection;
 pub(crate) mod session;
+pub(crate) mod task;
 pub(crate) mod vad;
 
 #[cfg(test)]

@@ -10,8 +10,10 @@ use crate::pipeline::hotkey::{
     self, binding_error, binding_warnings, HotkeyMode, OsKind, TalkMode,
 };
 use crate::pipeline::hotwords::{self, Hotword};
+use crate::pipeline::history::Retention;
 use crate::pipeline::polish::PolishLevel;
 use crate::pipeline::router::RoutePreference;
+use crate::pipeline::task;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
@@ -57,6 +59,10 @@ pub struct DictationSettings {
     pub local_asr_id: String,
     pub local_llm_id: String,
     pub local_idle_minutes: u32,
+    /// Translation target. Missing values from older files load as English.
+    pub target_language: String,
+    /// `forever`, `year`, `month`, `week`, `day`, or `off`.
+    pub history_retention: String,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -83,6 +89,8 @@ impl Default for DictationSettings {
             local_asr_id: String::new(),
             local_llm_id: String::new(),
             local_idle_minutes: 5,
+            target_language: "English".into(),
+            history_retention: Retention::Month.as_str().into(),
             providers,
             hotwords: Vec::new(),
         }
@@ -121,6 +129,8 @@ pub struct Effective {
     pub warnings: Vec<String>,
     pub hotwords: Vec<Hotword>,
     pub microphone: String,
+    pub target_language: String,
+    pub history_retention: Retention,
 }
 
 pub fn load(path: &Path) -> DictationSettings {
@@ -162,6 +172,8 @@ pub fn normalize(settings: &mut DictationSettings) {
     if settings.local_idle_minutes == 0 || settings.local_idle_minutes > 120 {
         settings.local_idle_minutes = 5;
     }
+    settings.target_language = task::normalize_target(&settings.target_language);
+    settings.history_retention = Retention::parse(&settings.history_retention).as_str().into();
     fill_missing_providers(settings);
     for preset in cloud::presets() {
         if let Some(config) = settings.providers.get_mut(preset.id) {
@@ -228,6 +240,8 @@ pub fn assign_hotkey(
 
 pub fn validate(settings: &DictationSettings, os: OsKind) -> Result<Vec<String>, String> {
     hotwords::validate(&settings.hotwords).map_err(|err| err.to_string())?;
+    task::validate_target(&settings.target_language)?;
+    let _ = Retention::parse(&settings.history_retention);
     let effective = effective(settings, os)?;
     Ok(effective.warnings)
 }
@@ -302,6 +316,8 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
         warnings,
         hotwords: settings.hotwords.clone(),
         microphone: settings.microphone.clone(),
+        target_language: task::normalize_target(&settings.target_language),
+        history_retention: Retention::parse(&settings.history_retention),
     })
 }
 
@@ -513,5 +529,33 @@ mod tests {
             effective(&cloud_only, OsKind::Windows).unwrap().preference,
             RoutePreference::CloudOnly
         );
+        assert_eq!(parsed.target_language, "English");
+        assert_eq!(parsed.history_retention, "month");
+        assert_eq!(
+            effective(&parsed, OsKind::Windows).unwrap().target_language,
+            "English"
+        );
+    }
+
+    #[test]
+    fn a_saved_target_language_round_trips_and_a_blank_one_is_english() {
+        let mut settings = DictationSettings::default();
+        settings.target_language = "日本語".into();
+        settings.history_retention = "week".into();
+        let dir = std::env::temp_dir().join(format!("newtype-target-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictation.json");
+        save(&path, &settings).unwrap();
+        let loaded = load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded.target_language, "日本語");
+        assert_eq!(loaded.history_retention, "week");
+        assert_eq!(loaded.dictate_hotkey, "");
+        let effective = effective(&loaded, OsKind::Windows).unwrap();
+        assert_eq!(effective.hotkey_labels[0], "Right Ctrl");
+        assert_eq!(effective.hotkey_labels[1], "Right Ctrl + Right Shift");
+        assert_eq!(effective.hotkey_labels[2], "Right Ctrl + Enter");
+        settings.target_language = "bad\nlang".into();
+        assert!(validate(&settings, OsKind::Mac).is_err());
     }
 }
