@@ -1,8 +1,8 @@
 # newtype
 
-Menu-bar voice input for macOS (Apple Silicon) and Windows. This repository is milestone 0: the tray app, a settings window, and in-app updates. Speech recognition, the language model, hotkeys, and text insertion are module stubs only.
+Menu-bar voice input for macOS (Apple Silicon) and Windows. This build dictates in the focused app with a cloud speech model and a cloud rewrite model. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
 
-The product notes live outside this repository. The behavior below is the release and update contract for this milestone.
+Local speech models, offline auto-switch, translation, and command mode are not in this build. The router can already name those paths. Silero VAD is not linked. Volcengine speech and the DashScope WebSocket message model are marked partial in the settings window.
 
 ## Version scheme
 
@@ -33,6 +33,7 @@ Requirements: Node 22, Rust stable (see `rust-toolchain.toml`), and the platform
 ```bash
 npm install
 npm test
+cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run app:dev
 ```
 
@@ -94,7 +95,7 @@ The `.dmg` is not notarized and is not Developer ID signed.
 3. 在 Finder 中右键（或按住 Control 点击）该应用 → **打开**，再在对话框里点 **打开**。
 4. 如果已经双击失败：打开 **系统设置 → 隐私与安全性**，找到被拦截的提示，点 **仍要打开**。可能需要管理员密码。
 
-CI ad-hoc signs every macOS build unless `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` are all set. Ad-hoc signing changes the code hash every build. A stable self-signed identity is the mitigation for Accessibility and Microphone grants surviving an update. That has not been verified on a real Mac. Hardened runtime stays off. This milestone does not request those permissions. Details and the certificate steps are in [SETUP.md](SETUP.md).
+CI ad-hoc signs every macOS build unless `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` are all set. Ad-hoc signing changes the code hash every build. A stable self-signed identity is the mitigation for Accessibility and Microphone grants surviving an update. That has not been verified on a real Mac. Hardened runtime stays off. This build requests the microphone and, on macOS, Accessibility. Details and the certificate steps are in [SETUP.md](SETUP.md).
 
 ### Windows
 
@@ -103,11 +104,71 @@ The NSIS installer is per-user and is not Authenticode signed.
 1. Run the `-setup.exe`.
 2. If SmartScreen shows “Windows protected your PC”, click **More info**, then **Run anyway**.
 
+## Dictation
+
+The hotkey starts and stops a recording. macOS defaults to Right Option. Windows defaults to Right Ctrl. Translate is Right Option + Right Shift, or Right Ctrl + Right Shift. Command is that modifier plus Enter. Left and right modifiers are different keys. Toggle is the default. Hold-to-talk is in settings. Escape cancels. Translate and command are registered and do not record.
+
+Saving a key writes it to the macOS Keychain or Windows Credential Manager. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
+
+Speech is sent only after you stop, to the provider you picked. The rewrite uses temperature 0 and turns thinking off where that model allows it. If the rewrite fails, times out, or looks like an answer, the text after hot-word replacement is pasted instead. Paste uses the clipboard and then restores the previous clipboard text. On macOS that is Command+V. On Windows it is Ctrl+V.
+
+### Providers and model ids
+
+Checked against vendor docs on 2026-11-12. The settings fields are not locked to these ids. **Load models** calls `GET /v1/models` with the saved key.
+
+| Provider | Speech | Rewrite | In this build |
+| --- | --- | --- | --- |
+| OpenAI (default) | `gpt-transcribe` | `gpt-6-luna` (also `gpt-6.1-sol`, `gpt-6-astra`) | Ready. File transcription and chat completions. `gpt-6-luna` accepts `reasoning_effort: none`. Astra and Sol do not, so they use `low` and omit temperature. |
+| Groq | `whisper-large-v3` (turbo is the faster option) | `openai/gpt-oss-20b` | Ready and OpenAI-compatible. Whisper is weaker for Chinese. gpt-oss cannot use `none`. `qwen/qwen3.8-27b` is optional and can. |
+| DashScope · 通义 | `qwen3-asr-flash` | `qwen3.8-flash` (also `qwen3.8-max`) | Partial. HTTP chat with input audio. You paste the workspace base URL. The WebSocket message model is not implemented. |
+| Volcengine · 火山 | not set | `doubao-seed-2-1-lite-260915` (pro: `doubao-seed-2-1-pro-260915`) | Partial. The Ark chat API is implemented, with `thinking.type` disabled. Openspeech WebSocket speech is not. `doubao-seed-asr-1-0` is not used. |
+| OpenAI-compatible | you type it | you type it | Ready. `https`, or `http` on localhost. |
+
+`whisper-1` and `gpt-4o-transcribe` are deprecated and are not suggested. `qwen-audio-3.1-asr-flash-message` and `qwen3.7-plus` were not in the model list that was checked, so they are not suggested either.
+
+### Prompts
+
+`prompts/v2-polish.system.txt` is the default. `prompts/v1-literal.system.txt` is the literal level. Both keep the MIT attribution to ckckck/OpenTypeless in `prompts/ATTRIBUTION.md`. The transcript is untrusted data inside `<transcript>`. Hot words are replaced before the model and also listed in the prompt. No prompt text is copied from Open-Less/openless.
+
+### Tests
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+```
+
+That covers hot-word replacement, left/right hotkeys, routing, and the rewrite fallback. It does not call a provider.
+
+To run the 15 cleanup cases from the literal prompt against a configured provider:
+
+```bash
+export NEWTYPE_PROMPT_API_KEY='your key'
+# optional
+export NEWTYPE_PROMPT_BASE='https://api.openai.com/v1'
+export NEWTYPE_PROMPT_MODEL='gpt-6-luna'
+export NEWTYPE_PROMPT_LEVEL='both'   # or literal, or polish
+export NEWTYPE_PROMPT_CASES='10,13,14,15'
+
+cargo test --manifest-path src-tauri/Cargo.toml --lib prompt_harness -- --nocapture
+```
+
+CI does not set `NEWTYPE_PROMPT_API_KEY`, so `prompt_harness` returns without a network call. A missing key is a skip, not a failure.
+
+### What you still have to try on a real Mac or Windows machine
+
+This environment cannot grant Accessibility, open a microphone, or paste into another app.
+
+- Right Option (Mac) and Right Ctrl (Windows) start recording without also firing the left key. Hold-to-talk releases cleanly.
+- The floating indicator shows recording, processing, and error, and names Cloud or the local path.
+- The first launch asks for the microphone. macOS also needs Accessibility, and some versions need Input Monitoring before the hotkey tap runs.
+- Dictation pastes into the focused app and the previous clipboard comes back.
+- A rewrite timeout still inserts the hot-word text.
+- After an update, check whether Microphone and Accessibility survived. Ad-hoc signing can drop them.
+
 ## Layout
 
-`src-tauri/src/pipeline/` holds the later pipeline (ASR, VAD, hot words, LLM, router, hotkeys, text insertion, history). None of those register a hotkey, open the microphone, or insert text. The settings window lists them as stubs.
+`src-tauri/src/pipeline/` is the dictation path: cloud speech, hot words, prompts, the router, hotkeys, paste, and history. `prompts/` holds the versioned prompts. VAD remains a stub for the later local path.
 
-The tray menu shows the full version, the commit, and **Check for updates**. The About section in the window shows the same version and commit.
+The tray menu shows the path, **Start or stop dictation**, the full version, the commit, and **Check for updates**. The window shows the same version and commit.
 
 ## Setup checklist
 

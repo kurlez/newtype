@@ -53,6 +53,10 @@ jobs:
       - name: Test version and release scripts
         run: npm test
 
+      - name: Test the dictation pipeline
+        working-directory: src-tauri
+        run: cargo test --lib
+
       - name: Updater signing key
         shell: bash
         env:

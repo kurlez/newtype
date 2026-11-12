@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "newtype",
-        "width": 480,
-        "height": 760,
-        "minWidth": 400,
-        "minHeight": 560,
+        "width": 560,
+        "height": 860,
+        "minWidth": 420,
+        "minHeight": 640,
         "resizable": true,
         "center": true,
         "visible": true
@@ -29,7 +29,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "shortDescription": "AI voice input",
-    "longDescription": "newtype is a menu-bar voice input app. This build is the shell and the updater.",
+    "longDescription": "newtype is a menu-bar voice input app. This build dictates through a cloud speech model and a rewrite model.",
     "category": "Productivity",
     "icon": [
       "icons/32x32.png",
@@ -41,7 +41,8 @@
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": false,
-      "minimumSystemVersion": "12.0"
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist"
     },
     "windows": {
       "nsis": {

@@ -1,7 +1,7 @@
 use crate::pipeline;
 use crate::updater::{self, StateDto};
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(Serialize)]
 pub struct PipelineModule {
@@ -28,6 +28,119 @@ pub async fn check_for_updates(app: AppHandle) -> StateDto {
 #[tauri::command]
 pub async fn apply_update(app: AppHandle) -> Result<StateDto, String> {
     updater::apply(&app).await
+}
+
+#[tauri::command]
+pub fn dictation_snapshot(app: AppHandle) -> crate::dictation::Snapshot {
+    app.state::<crate::dictation::Dictation>().snapshot(&app)
+}
+
+#[tauri::command]
+pub fn dictation_save(
+    app: AppHandle,
+    settings: crate::dictate_config::DictationSettings,
+) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::save_settings(&app, settings)
+}
+
+#[tauri::command]
+pub fn dictation_set_key(app: AppHandle, provider: String, key: String) -> Result<(), String> {
+    crate::dictation::set_key(&app, &provider, &key)
+}
+
+#[tauri::command]
+pub fn dictation_clear_key(app: AppHandle, provider: String) -> Result<(), String> {
+    crate::dictation::clear_key(&app, &provider)
+}
+
+#[tauri::command]
+pub async fn dictation_test_connection(app: AppHandle, provider: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::dictation::test_connection(&app, &provider))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn dictation_list_models(app: AppHandle, provider: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::dictation::list_models(&app, &provider))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub fn dictation_request_access(app: AppHandle, kind: String) -> Result<String, String> {
+    match kind.as_str() {
+        "accessibility" => {
+            let granted = crate::permissions::prompt_accessibility()?;
+            Ok(if granted {
+                "Accessibility is granted.".into()
+            } else {
+                "Accessibility is not granted yet. Use the button to open System Settings, enable newtype, then come back.".into()
+            })
+        }
+        "microphone" => crate::dictation::probe_microphone(&app, ""),
+        other => Err(format!("Unknown permission \"{other}\".")),
+    }
+}
+
+#[tauri::command]
+pub fn dictation_open_privacy(kind: String) -> Result<(), String> {
+    crate::permissions::open_privacy(&kind)
+}
+
+#[tauri::command]
+pub fn dictation_capture_hotkey(app: AppHandle, mode: String) -> Result<(), String> {
+    crate::dictation::begin_capture(&app, &mode)
+}
+
+#[tauri::command]
+pub fn dictation_cancel_capture(app: AppHandle) {
+    crate::dictation::cancel_capture(&app);
+}
+
+#[tauri::command]
+pub fn dictation_record_toggle(app: AppHandle) {
+    crate::dictation::toggle(&app);
+}
+
+#[tauri::command]
+pub fn dictation_cancel(app: AppHandle) {
+    crate::dictation::cancel(&app);
+}
+
+#[tauri::command]
+pub fn dictation_history(app: AppHandle) -> Vec<crate::pipeline::history::HistoryEntry> {
+    crate::dictation::history(&app)
+}
+
+#[tauri::command]
+pub fn dictation_delete_history(app: AppHandle, id: String) -> Result<(), String> {
+    crate::dictation::delete_history(&app, &id)
+}
+
+#[tauri::command]
+pub fn dictation_copy_history(app: AppHandle, id: String) -> Result<(), String> {
+    crate::dictation::copy_history(&app, &id)
+}
+
+#[tauri::command]
+pub fn dictation_microphones() -> Result<Vec<String>, String> {
+    crate::dictation::microphones()
+}
+
+#[tauri::command]
+pub fn dictation_probe_microphone(app: AppHandle, device: String) -> Result<String, String> {
+    crate::dictation::probe_microphone(&app, &device)
+}
+
+#[tauri::command]
+pub fn dictation_reset_models(app: AppHandle) -> Result<crate::dictation::Snapshot, String> {
+    let mut settings = app
+        .state::<crate::dictation::Dictation>()
+        .snapshot(&app)
+        .settings;
+    crate::dictate_config::reset_models(&mut settings);
+    crate::dictation::save_settings(&app, settings)
 }
 
 #[tauri::command]

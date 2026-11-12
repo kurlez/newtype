@@ -27,6 +27,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
                 });
             }
             "quit" => app.exit(0),
+            "dictate" => crate::dictation::toggle(app),
             _ => {}
         });
     builder = builder.icon(tray_icon());
@@ -40,10 +41,11 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
 
 pub fn refresh(app: &AppHandle, state: &StateDto) {
     let key = format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
         state.phase,
         state.full_version,
-        state.available_version.as_deref().unwrap_or("")
+        state.available_version.as_deref().unwrap_or(""),
+        crate::dictation::route_label(app)
     );
     let mut last = LAST_MENU.lock().expect("tray menu key");
     if *last == key {
@@ -58,6 +60,10 @@ pub fn refresh(app: &AppHandle, state: &StateDto) {
         let _ = tray.set_menu(Some(menu));
         let _ = tray.set_tooltip(Some(format!("newtype {}", state.full_version)));
     }
+}
+
+pub fn refresh_menu(app: &AppHandle) {
+    refresh(app, &updater::snapshot(app));
 }
 
 pub fn reveal(app: &AppHandle) {
@@ -86,6 +92,14 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         false,
         None::<&str>,
     )?;
+    let route = MenuItem::with_id(
+        app,
+        "route",
+        format!("Path: {}", crate::dictation::route_label(app)),
+        false,
+        None::<&str>,
+    )?;
+    let dictate = MenuItem::with_id(app, "dictate", "Start or stop dictation", true, None::<&str>)?;
     let check = MenuItem::with_id(app, "check", "Check for updates", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep_a = PredefinedMenuItem::separator(app)?;
@@ -99,13 +113,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         Menu::with_items(
             app,
             &[
-                &open, &version, &commit, &sep_a, &check, &apply, &sep_b, &quit,
+                &open, &version, &commit, &route, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
             ],
         )
     } else {
         Menu::with_items(
             app,
-            &[&open, &version, &commit, &sep_a, &check, &sep_b, &quit],
+            &[&open, &version, &commit, &route, &dictate, &sep_a, &check, &sep_b, &quit],
         )
     }
 }

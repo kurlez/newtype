@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Settings window for the newtype shell.",
-  "windows": ["main"],
+  "windows": ["main", "indicator"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -15,6 +15,24 @@
     "allow-set-channel",
     "allow-check-for-updates",
     "allow-apply-update",
-    "allow-pipeline-status"
+    "allow-pipeline-status",
+    "allow-dictation-snapshot",
+    "allow-dictation-save",
+    "allow-dictation-set-key",
+    "allow-dictation-clear-key",
+    "allow-dictation-test-connection",
+    "allow-dictation-list-models",
+    "allow-dictation-request-access",
+    "allow-dictation-open-privacy",
+    "allow-dictation-capture-hotkey",
+    "allow-dictation-cancel-capture",
+    "allow-dictation-record-toggle",
+    "allow-dictation-cancel",
+    "allow-dictation-history",
+    "allow-dictation-delete-history",
+    "allow-dictation-copy-history",
+    "allow-dictation-microphones",
+    "allow-dictation-probe-microphone",
+    "allow-dictation-reset-models"
   ]
 }
