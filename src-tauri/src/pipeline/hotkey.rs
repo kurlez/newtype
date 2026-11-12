@@ -86,6 +86,8 @@ pub enum EngineEvent {
     ExtraKeys,
     Escape,
     Captured(String),
+    /// Keys seen so far. The chord is saved only on `Captured`.
+    CaptureProgress(String),
     /// Escape while a new chord is being recorded. This is not a dictation cancel.
     CaptureCancelled,
 }
@@ -190,10 +192,11 @@ impl HotkeyEngine {
                 self.active = None;
                 vec![EngineEvent::CaptureCancelled]
             }
+            KeyEdge::Down(KeyId::Other) | KeyEdge::Up(KeyId::Other) => Vec::new(),
             KeyEdge::Down(key) => {
                 self.captured.insert(key);
                 self.down.insert(key);
-                Vec::new()
+                vec![EngineEvent::CaptureProgress(canonical(&self.captured))]
             }
             KeyEdge::Up(key) => {
                 self.down.remove(&key);
@@ -201,6 +204,8 @@ impl HotkeyEngine {
                     let chord = std::mem::take(&mut self.captured);
                     self.capturing = false;
                     vec![EngineEvent::Captured(canonical(&chord))]
+                } else if !self.captured.is_empty() {
+                    vec![EngineEvent::CaptureProgress(canonical(&self.captured))]
                 } else {
                     Vec::new()
                 }
@@ -271,7 +276,9 @@ impl TalkController {
                     TalkEffect::Ignore
                 }
             }
-            EngineEvent::Captured(_) | EngineEvent::CaptureCancelled => TalkEffect::Ignore,
+            EngineEvent::Captured(_)
+            | EngineEvent::CaptureProgress(_)
+            | EngineEvent::CaptureCancelled => TalkEffect::Ignore,
         }
     }
 
@@ -577,6 +584,102 @@ pub fn key_label(key: KeyId, os: OsKind) -> String {
     }
 }
 
+/// AltGr on Windows injects a left Ctrl (extended scan `0x1D` / `0x21D`) next to Right Alt.
+/// Real Left Ctrl uses scan `0x1D` and is not extended. Right Ctrl is a different virtual key.
+pub fn is_altgr_synthetic_ctrl(vk: u32, scan: u32, flags: u32) -> bool {
+    const EXTENDED: u32 = 0x01;
+    let ctrl = vk == 0xA2 || vk == 0x11;
+    if !ctrl {
+        return false;
+    }
+    let extended = flags & EXTENDED != 0;
+    let body = scan & 0xFF;
+    extended && (body == 0x1D || scan == 0x021D)
+}
+
+/// Map one low-level Windows key event. Synthetic AltGr Ctrl is dropped.
+pub fn edge_from_windows(vk: u32, scan: u32, flags: u32, key_up: bool) -> Option<KeyEdge> {
+    if is_altgr_synthetic_ctrl(vk, scan, flags) {
+        return None;
+    }
+    let key = key_from_windows_detail(vk, scan, flags);
+    if key == KeyId::Other && vk == 0 {
+        return None;
+    }
+    let released = key_up || flags & 0x80 != 0;
+    Some(if released { KeyEdge::Up(key) } else { KeyEdge::Down(key) })
+}
+
+fn key_from_windows_detail(vk: u32, scan: u32, flags: u32) -> KeyId {
+    const EXTENDED: u32 = 0x01;
+    match vk {
+        0x10 => {
+            if scan & 0xFF == 0x36 {
+                KeyId::ShiftRight
+            } else {
+                KeyId::ShiftLeft
+            }
+        }
+        0x11 => {
+            if flags & EXTENDED != 0 {
+                KeyId::ControlRight
+            } else {
+                KeyId::ControlLeft
+            }
+        }
+        0x12 => {
+            if flags & EXTENDED != 0 {
+                KeyId::AltRight
+            } else {
+                KeyId::AltLeft
+            }
+        }
+        other => key_from_windows_vk(other),
+    }
+}
+
+/// DOM `KeyboardEvent.code`. `alt` is true when the event's Alt flag is set,
+/// which is how a webview reports the synthetic Ctrl that rides with AltGr.
+pub fn edge_from_code(code: &str, down: bool, alt: bool) -> Option<KeyEdge> {
+    if code == "ControlLeft" && alt {
+        return None;
+    }
+    let key = match code {
+        "AltRight" => KeyId::AltRight,
+        "AltLeft" => KeyId::AltLeft,
+        "ControlRight" => KeyId::ControlRight,
+        "ControlLeft" => KeyId::ControlLeft,
+        "ShiftRight" => KeyId::ShiftRight,
+        "ShiftLeft" => KeyId::ShiftLeft,
+        "MetaRight" | "OSRight" => KeyId::MetaRight,
+        "MetaLeft" | "OSLeft" => KeyId::MetaLeft,
+        "Enter" | "NumpadEnter" => KeyId::Enter,
+        "Space" => KeyId::Space,
+        "Escape" => KeyId::Escape,
+        other => code_to_key(other)?,
+    };
+    Some(if down { KeyEdge::Down(key) } else { KeyEdge::Up(key) })
+}
+
+fn code_to_key(code: &str) -> Option<KeyId> {
+    if let Some(rest) = code.strip_prefix("Key") {
+        let mut chars = rest.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            if ch.is_ascii_alphabetic() {
+                return Some(KeyId::Letter(ch.to_ascii_uppercase() as u8));
+            }
+        }
+    }
+    if let Some(rest) = code.strip_prefix('F') {
+        if let Ok(number) = rest.parse::<u8>() {
+            if (1..=12).contains(&number) {
+                return Some(KeyId::Function(number));
+            }
+        }
+    }
+    None
+}
+
 /// Windows virtual-key codes. `VK_CONTROL` (0x11) is not treated as Right Ctrl.
 pub fn key_from_windows_vk(code: u32) -> KeyId {
     match code {
@@ -792,9 +895,10 @@ mod tests {
     fn capture_records_the_side_that_was_pressed() {
         let mut engine = HotkeyEngine::default();
         engine.set_capture(true);
-        assert!(engine
-            .on_edge(KeyEdge::Down(KeyId::ControlRight))
-            .is_empty());
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::ControlRight)),
+            vec![EngineEvent::CaptureProgress("ControlRight".into())]
+        );
         assert_eq!(
             engine.on_edge(KeyEdge::Up(KeyId::ControlRight)),
             vec![EngineEvent::Captured("ControlRight".into())]
@@ -824,9 +928,18 @@ mod tests {
         engine.on_edge(KeyEdge::Up(KeyId::AltRight));
 
         engine.set_capture(true);
-        assert_eq!(engine.on_edge(KeyEdge::Down(KeyId::AltRight)), Vec::new());
-        assert_eq!(engine.on_edge(KeyEdge::Down(KeyId::ShiftRight)), Vec::new());
-        assert_eq!(engine.on_edge(KeyEdge::Up(KeyId::ShiftRight)), Vec::new());
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::CaptureProgress("AltRight".into())]
+        );
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::ShiftRight)),
+            vec![EngineEvent::CaptureProgress("AltRight+ShiftRight".into())]
+        );
+        assert_eq!(
+            engine.on_edge(KeyEdge::Up(KeyId::ShiftRight)),
+            vec![EngineEvent::CaptureProgress("AltRight+ShiftRight".into())]
+        );
         assert_eq!(
             engine.on_edge(KeyEdge::Up(KeyId::AltRight)),
             vec![EngineEvent::Captured("AltRight+ShiftRight".into())]
@@ -932,5 +1045,69 @@ mod tests {
             TalkEffect::Stop
         );
         assert!(translate.active.is_none());
+    }
+
+    #[test]
+    fn altgr_synthetic_ctrl_is_ignored_and_real_left_ctrl_is_kept() {
+        assert!(is_altgr_synthetic_ctrl(0xA2, 0x021D, 0x01));
+        assert!(is_altgr_synthetic_ctrl(0xA2, 0x1D, 0x01));
+        assert!(is_altgr_synthetic_ctrl(0x11, 0x021D, 0x01 | 0x80));
+        assert!(!is_altgr_synthetic_ctrl(0xA2, 0x1D, 0));
+        assert!(!is_altgr_synthetic_ctrl(0xA3, 0x1D, 0x01));
+        assert!(!is_altgr_synthetic_ctrl(0xA5, 0x38, 0x01));
+        assert!(edge_from_windows(0xA2, 0x021D, 0x01, false).is_none());
+        assert_eq!(
+            edge_from_windows(0xA2, 0x1D, 0, false),
+            Some(KeyEdge::Down(KeyId::ControlLeft))
+        );
+        assert_eq!(
+            edge_from_code("ControlLeft", true, true),
+            None
+        );
+        assert_eq!(
+            edge_from_code("AltRight", true, false),
+            Some(KeyEdge::Down(KeyId::AltRight))
+        );
+    }
+
+    #[test]
+    fn capture_alt_right_ignores_altgr_ctrl_then_that_chord_starts_dictation() {
+        let steps = [
+            (false, 0xA2u32, 0x021Du32, 0x01u32),
+            (false, 0xA5, 0x38, 0x01),
+            (true, 0xA5, 0x38, 0x01 | 0x80),
+            (true, 0xA2, 0x021D, 0x01 | 0x80),
+        ];
+        let mut engine = HotkeyEngine::default();
+        engine.set_capture(true);
+        let mut last = Vec::new();
+        for (up, vk, scan, flags) in steps {
+            if let Some(edge) = edge_from_windows(vk, scan, flags, up) {
+                last = engine.on_edge(edge);
+            }
+        }
+        assert_eq!(last, vec![EngineEvent::Captured("AltRight".into())]);
+
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, parse_chord("AltRight").unwrap()),
+            (HotkeyMode::Translate, parse_chord("AltRight+ShiftRight").unwrap()),
+            (HotkeyMode::Command, parse_chord("AltRight+Enter").unwrap()),
+        ]);
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        let mut with_enter = HotkeyEngine::default();
+        with_enter.set_capture(true);
+        assert!(matches!(
+            with_enter.on_edge(KeyEdge::Down(KeyId::AltRight))[0],
+            EngineEvent::CaptureProgress(_)
+        ));
+        with_enter.on_edge(KeyEdge::Down(KeyId::Enter));
+        with_enter.on_edge(KeyEdge::Up(KeyId::Enter));
+        assert_eq!(
+            with_enter.on_edge(KeyEdge::Up(KeyId::AltRight)),
+            vec![EngineEvent::Captured("AltRight+Enter".into())]
+        );
     }
 }

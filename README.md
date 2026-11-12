@@ -37,7 +37,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run app:dev
 ```
 
-`npm run app:dev` is the supported dev command. It stamps the running app as `0.1.0-dev.0+<commit>`. Closing the window leaves the process in the menu bar (macOS) or the system tray (Windows). Quit is on that menu.
+`npm run app:dev` is the supported dev command. It stamps the running app as `0.1.0-dev.0+<commit>`. The window opens on launch and stays in the taskbar and Alt+Tab. Closing it minimizes the window. Quit is on the tray menu.
 
 A local installer needs the updater signing key in the environment, because update artifacts are signed at bundle time. `.env` files are not read.
 
@@ -173,7 +173,7 @@ This environment cannot grant Accessibility, open a microphone, or paste into an
 
 `src-tauri/src/pipeline/` is the dictation path: cloud speech, hot words, prompts, the router, hotkeys, paste, and history. `prompts/` holds the versioned prompts. VAD remains a stub for the later local path.
 
-The tray menu shows the path, **Start or stop dictation**, the full version, the commit, and **Check for updates**. The window shows the same version and commit.
+The tray menu starts with **History** and **Show last result**, then the path, **Start or stop dictation**, the full version, the commit, and **Check for updates**. The window opens on History. The window shows the same version and commit.
 
 ## Setup checklist
 

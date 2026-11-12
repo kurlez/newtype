@@ -15,6 +15,7 @@ pub(crate) mod download;
 pub(crate) mod egress;
 pub(crate) mod engines;
 pub(crate) mod extract;
+pub(crate) mod focus;
 pub(crate) mod front;
 pub(crate) mod history;
 pub(crate) mod hotkey;

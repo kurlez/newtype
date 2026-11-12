@@ -143,6 +143,8 @@ export interface HistoryEntry {
   usedFallback: boolean;
   note: string;
   audioKept: boolean;
+  dictionaryApplied?: string[];
+  dictionaryPossible?: string[];
 }
 
 export interface PhaseEvent {

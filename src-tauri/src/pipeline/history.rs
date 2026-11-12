@@ -35,6 +35,11 @@ pub struct HistoryEntry {
     /// finished on device. Older history files omit the field.
     #[serde(default)]
     pub audio_kept: bool,
+    /// Filled when history is shown. Not stored; older files omit it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dictionary_applied: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dictionary_possible: Vec<String>,
 }
 
 pub fn load(path: &Path) -> Vec<HistoryEntry> {
@@ -141,6 +146,8 @@ mod tests {
             used_fallback: false,
             note: String::new(),
             audio_kept: false,
+            dictionary_applied: Vec::new(),
+            dictionary_possible: Vec::new(),
         }
     }
 

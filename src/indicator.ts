@@ -112,6 +112,8 @@ function label(phase: string, elapsedMs: number): string {
       return "Cancelled";
     case "withheld":
       return "Not inserted";
+    case "copied":
+      return "Copied";
     default:
       return "Idle";
   }

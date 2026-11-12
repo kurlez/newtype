@@ -19,6 +19,7 @@ use crate::pipeline::volcengine::{self, VolcAuth};
 use crate::pipeline::engines::Engines;
 use crate::pipeline::library::{self, LibraryView};
 use crate::pipeline::local_run;
+use crate::pipeline::focus::{self, InsertOutcome};
 use crate::pipeline::front;
 use crate::pipeline::history::{self, HistoryEntry};
 use crate::pipeline::hotkey::{
@@ -72,6 +73,7 @@ pub struct Dictation {
     inbox: Mutex<Option<Receiver<Control>>>,
     cancel: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
+    focus_target: Mutex<Option<focus::FocusTarget>>,
 }
 
 struct LockedSession {
@@ -229,6 +231,7 @@ impl Dictation {
             inbox: Mutex::new(Some(inbox)),
             cancel: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(1)),
+            focus_target: Mutex::new(None),
         })
     }
 
@@ -509,13 +512,21 @@ fn spawn_listener(
         .name("newtype-hotkey".into())
         .spawn(move || {
             let mut engine = HotkeyEngine::default();
+            let suppress_hook_until = AtomicU64::new(0);
             let (mut seen, mut capturing) = {
                 let share = hotkeys.lock().expect("hotkeys");
                 engine.set_bindings(share.bindings.clone());
                 engine.set_capture(share.capture);
                 (share.generation, share.capture)
             };
-            let mut on_edge = move |edge: KeyEdge| {
+            let hook_app = app.clone();
+            let on_edge = move |edge: KeyEdge| {
+                if !crate::key_feed::from_webview() {
+                    let until = suppress_hook_until.load(Ordering::Relaxed);
+                    if !capturing && now_ms() < until {
+                        return;
+                    }
+                }
                 {
                     let share = hotkeys.lock().expect("hotkeys");
                     if share.generation != seen {
@@ -538,6 +549,16 @@ fn spawn_listener(
                     capturing = false;
                     let mut share = hotkeys.lock().expect("hotkeys");
                     share.capture = false;
+                    if crate::key_feed::from_webview() {
+                        suppress_hook_until.store(now_ms().saturating_add(400), Ordering::Relaxed);
+                    }
+                }
+                let starting = events.iter().any(|event| matches!(event, EngineEvent::Pressed(_)));
+                if starting {
+                    let phase = hook_app.state::<Dictation>().phase.lock().expect("phase").clone();
+                    if phase != "recording" && phase != "processing" {
+                        focus::remember(&hook_app.state::<Dictation>().focus_target, false);
+                    }
                 }
                 for engine_event in events {
                     crate::diag::record(&format!("hotkey {engine_event:?}"));
@@ -546,9 +567,10 @@ fn spawn_listener(
             };
             set_listener(&app, &listener, "Listening for the right-hand Control key.");
             crate::diag::record("hotkey listener starting");
+            crate::key_feed::install(on_edge);
             #[cfg(windows)]
             {
-                if let Err(err) = crate::win_hotkey::run(on_edge) {
+                if let Err(err) = crate::win_hotkey::run() {
                     let message = format!("Hotkey listener is not running. {err}");
                     set_listener(&app, &listener, &message);
                     crate::diag::record(&message);
@@ -567,7 +589,7 @@ fn spawn_listener(
                         _ => None,
                     };
                     if let Some(edge) = edge {
-                        on_edge(edge);
+                        crate::key_feed::push(edge, false);
                     }
                 });
                 if let Err(err) = listen_result {
@@ -622,6 +644,23 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         hotkey: chord,
                         label,
                         phase: "pending".into(),
+                    },
+                );
+            }
+            Control::Engine(EngineEvent::CaptureProgress(chord)) => {
+                let state = app.state::<Dictation>();
+                let mode = state.hotkeys.lock().expect("hotkeys").capture_mode.clone();
+                drop(state);
+                let label = hotkey::parse_chord(&chord)
+                    .map(|parsed| hotkey::chord_label(&parsed, hotkey::host_os()))
+                    .unwrap_or_else(|_| chord.clone());
+                let _ = app.emit(
+                    "dictation://capture",
+                    CaptureEvent {
+                        mode,
+                        hotkey: chord,
+                        label,
+                        phase: "listening".into(),
                     },
                 );
             }
@@ -791,6 +830,8 @@ fn begin_recording(
         return;
     }
     let state = app.state::<Dictation>();
+    focus::remember(&state.focus_target, true);
+    focus::log_saved(&state.focus_target);
     state.cancel.store(false, Ordering::Relaxed);
     let settings = state.settings.lock().expect("settings").clone();
     let effective = match dictate_config::effective(&settings, hotkey::host_os()) {
@@ -1026,12 +1067,21 @@ fn finish_recording(
     match outcome {
         Ok(done) => {
             let mut message = done.message;
+            let mut phase = done.phase;
             if done.insert && !done.text.is_empty() {
-                if let Err(err) = insert::insert_text(&done.text) {
-                    message = format!("{message} Could not paste: {err} Copy it from history.");
+                match deliver_text(app, &done.text) {
+                    Delivered::Pasted => {}
+                    Delivered::Copied(notice) => {
+                        message = notice;
+                        phase = "copied";
+                    }
+                    Delivered::Failed(err) => {
+                        message = format!("{message} Could not paste: {err} Copy it from history.");
+                        phase = "error";
+                    }
                 }
             }
-            emit_phase(app, done.phase, &done.route, &message, 0, 0.0, &done.text);
+            emit_phase(app, phase, &done.route, &message, 0, 0.0, &done.text);
             schedule_hide(app, 2200);
         }
         Err(failed) => {
@@ -1377,6 +1427,8 @@ fn remember(
         used_fallback,
         note: note.into(),
         audio_kept: audio.is_some(),
+        dictionary_applied: Vec::new(),
+        dictionary_possible: Vec::new(),
     };
     if let Some(bytes) = audio {
         let path = audio_file(&state.history_path, &entry.id);
@@ -1396,6 +1448,26 @@ fn remember(
         let _ = std::fs::remove_file(audio_file(&state.history_path, &id));
     }
     let _ = saved;
+}
+
+enum Delivered {
+    Pasted,
+    Copied(String),
+    Failed(String),
+}
+
+fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
+    let target = app
+        .state::<Dictation>()
+        .focus_target
+        .lock()
+        .expect("focus")
+        .clone();
+    match focus::insert_with_target(text, target.as_ref()) {
+        InsertOutcome::Pasted => Delivered::Pasted,
+        InsertOutcome::Copied => Delivered::Copied(focus::notice().to_string()),
+        InsertOutcome::Failed(err) => Delivered::Failed(err),
+    }
 }
 
 fn bump(app: &AppHandle) -> u64 {
@@ -1457,9 +1529,8 @@ fn show_indicator(app: &AppHandle) {
             return;
         }
         place(&window);
-        if window.show().is_err() {
-            crate::diag::record("indicator window could not be shown");
-        }
+        crate::overlay::configure_indicator(&window);
+        crate::overlay::show_without_activating(&window);
     } else {
         crate::diag::record("indicator window could not be created");
     }
@@ -1526,7 +1597,7 @@ fn open_indicator(app: &AppHandle) {
     .initialization_script("window.__newtypeIndicator = true;")
     .build();
     if let Ok(window) = built {
-        let _ = window.set_focusable(false);
+        crate::overlay::configure_indicator(&window);
     }
 }
 
@@ -1839,12 +1910,45 @@ pub fn begin_capture(app: &AppHandle, mode: &str) -> Result<(), String> {
     if !matches!(mode, "dictate" | "translate" | "command") {
         return Err("Unknown hotkey.".into());
     }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
     let state = app.state::<Dictation>();
     let mut share = state.hotkeys.lock().expect("hotkeys");
     share.capture = true;
     share.capture_mode = mode.to_string();
     share.generation = share.generation.wrapping_add(1);
     Ok(())
+}
+
+pub fn capture_key(app: &AppHandle, code: &str, down: bool, alt: bool) {
+    let capturing = app
+        .state::<Dictation>()
+        .hotkeys
+        .lock()
+        .expect("hotkeys")
+        .capture;
+    if !capturing {
+        return;
+    }
+    let Some(edge) = hotkey::edge_from_code(code, down, alt) else {
+        return;
+    };
+    crate::key_feed::push(edge, true);
+}
+
+pub fn is_busy(app: &AppHandle) -> bool {
+    app.try_state::<Dictation>()
+        .and_then(|state| state.phase.lock().ok().map(|phase| phase.clone()))
+        .is_some_and(|phase| phase == "recording" || phase == "processing")
+}
+
+pub fn remember_focus(app: &AppHandle) {
+    if let Some(state) = app.try_state::<Dictation>() {
+        focus::remember(&state.focus_target, false);
+    }
 }
 
 pub fn cancel_capture(app: &AppHandle) {
@@ -1881,11 +1985,15 @@ fn command_block(job: &Job, decision: RouteDecision, llm_id: &str) -> Option<Str
 }
 
 pub fn history(app: &AppHandle) -> Vec<HistoryEntry> {
-    app.state::<Dictation>()
-        .history
-        .lock()
-        .expect("history")
-        .clone()
+    let state = app.state::<Dictation>();
+    let words = state.settings.lock().expect("settings").hotwords.clone();
+    let mut entries = state.history.lock().expect("history").clone();
+    for entry in &mut entries {
+        let hit = crate::pipeline::hotwords::analyze(&entry.raw, &words);
+        entry.dictionary_applied = hit.applied;
+        entry.dictionary_possible = hit.possible;
+    }
+    entries
 }
 
 pub fn delete_history(app: &AppHandle, id: &str) -> Result<(), String> {
@@ -1927,7 +2035,17 @@ pub fn reinsert_history(app: &AppHandle, id: &str) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("That history entry has no text to insert.".into());
     }
-    insert::insert_text(&text)
+    let target = app
+        .state::<Dictation>()
+        .focus_target
+        .lock()
+        .expect("focus")
+        .clone();
+    match focus::insert_with_target(&text, target.as_ref()) {
+        InsertOutcome::Pasted => Ok(()),
+        InsertOutcome::Copied => Err(focus::notice().to_string()),
+        InsertOutcome::Failed(err) => Err(err),
+    }
 }
 
 pub fn export_dictionary(app: &AppHandle) -> Result<String, String> {
@@ -1936,10 +2054,11 @@ pub fn export_dictionary(app: &AppHandle) -> Result<String, String> {
 }
 
 pub fn import_dictionary(app: &AppHandle, body: &str) -> Result<Snapshot, String> {
-    let words = crate::pipeline::hotwords::import_json(body).map_err(|err| err.to_string())?;
+    let incoming = crate::pipeline::hotwords::import_any(body).map_err(|err| err.to_string())?;
     let state = app.state::<Dictation>();
     let mut settings = state.settings.lock().expect("settings").clone();
-    settings.hotwords = words;
+    settings.hotwords = crate::pipeline::hotwords::merge(&settings.hotwords, &incoming);
+    crate::pipeline::hotwords::validate(&settings.hotwords).map_err(|err| err.to_string())?;
     drop(state);
     save_settings(app, settings)
 }
@@ -1989,7 +2108,11 @@ pub fn rerun_history(app: &AppHandle, id: &str) -> Result<String, String> {
     match transcribe_and_polish(app, clip) {
         Ok(done) => {
             if done.insert && !done.text.is_empty() {
-                insert::insert_text(&done.text)?;
+                match deliver_text(app, &done.text) {
+                    Delivered::Pasted => {}
+                    Delivered::Copied(notice) => return Ok(notice),
+                    Delivered::Failed(err) => return Err(err),
+                }
             }
             Ok(done.message)
         }
