@@ -504,22 +504,9 @@ fn relax_runtime(dir: &Path) {
         return;
     };
     make_executable(&binary);
-    #[cfg(target_os = "macos")]
-    {
-        walk(dir, &mut |path| {
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
-            if name.ends_with(".dylib") || name == "llama-server" {
-                let _ = std::process::Command::new("/usr/bin/xattr")
-                    .args(["-d", "com.apple.quarantine"])
-                    .arg(path)
-                    .status();
-                let _ = std::process::Command::new("/usr/bin/codesign")
-                    .args(["--force", "--sign", "-"])
-                    .arg(path)
-                    .status();
-            }
-        });
-    }
+    // macOS: one identity for llama-server and every sibling Mach-O.
+    // Windows: the executable bit is a no-op and there is nothing to sign.
+    super::codesign::sign_runtime_tree(dir);
 }
 
 fn make_executable(path: &Path) {

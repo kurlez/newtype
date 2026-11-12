@@ -9,6 +9,7 @@ pub(crate) mod asr_text;
 pub(crate) mod audio;
 pub(crate) mod catalog;
 pub(crate) mod checksum;
+pub(crate) mod codesign;
 pub(crate) mod cloud;
 pub(crate) mod download;
 pub(crate) mod egress;
