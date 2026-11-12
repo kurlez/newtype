@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-12: Rule cleanup removes Chinese and English filler words when the local rewrite model is missing, fails, or is rejected, and again after a local polish. Local-only and strict offline show that the polish model is missing, with a button to install Qwen3 1.7B on Windows (4B stays the Mac default at 16 GB). The tray says when the rewrite model is missing. The log records `cleanup rules` and not the text.
 - 2026-11-12: A Groq rate limit (HTTP 429, 503, or `rate_limit_exceeded`) retries that speech or rewrite step once on OpenAI when an OpenAI key is saved. The next dictation tries Groq again, unless Groq sent Retry-After. History records the provider that answered. The setting is on by default.
 - 2026-11-12: A new install uses Groq whisper-large-v3-turbo and openai/gpt-oss-20b (reasoning effort low). Groq + GPT-4o mini is a separate preset and keeps the Groq and OpenAI keys apart. OpenAI's suggested models are gpt-transcribe and gpt-4o-mini. A saved provider and its model ids stay as they are. Preset prices are about $1.8, $2.5, and $8 per month at 200 dictations a day.
 - 2026-11-12: Hotkey capture suspends matching and records the whole chord, including Right Alt + Slash. The main window on Windows can use Mica, Acrylic, or a light Windows 10 transparency, and the settings page hides the vertical scrollbar.

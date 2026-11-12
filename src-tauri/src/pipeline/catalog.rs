@@ -189,7 +189,7 @@ pub fn cards() -> &'static [Card] {
             languages: "Multilingual rewrite",
             runtime: "llama.cpp llama-server",
             memory: "About 2.5 GB on disk. Thinking is forced off.",
-            notes: "Default local rewrite model at 16 GB and above. Official Qwen GGUF.",
+            notes: "Default local rewrite model on a Mac at 16 GB and above. Official Qwen GGUF.",
             platforms: MAC_WIN,
             depends_on: &["llama-cpp-b12292"],
         },
@@ -201,7 +201,7 @@ pub fn cards() -> &'static [Card] {
             languages: "Multilingual rewrite",
             runtime: "llama.cpp llama-server",
             memory: "About 1.1 GB on disk. Thinking is forced off.",
-            notes: "Rewrite model below 16 GB. The official Qwen GGUF repo publishes Q8_0 only, so this file is the Unsloth Q4_K_M quant of the same model.",
+            notes: "Default local rewrite model on Windows, and on a Mac below 16 GB. The official Qwen GGUF repo publishes Q8_0 only, so this file is the Unsloth Q4_K_M quant of the same model.",
             platforms: MAC_WIN,
             depends_on: &["llama-cpp-b12292"],
         },
@@ -266,7 +266,7 @@ pub fn runnable_on(card: &Card, os: OsKind) -> bool {
 pub fn recommend(hardware: Hardware) -> Recommendation {
     let high = hardware.ram_bytes >= HIGH_RAM_MIN_BYTES;
     let (asr_id, llm_id) = match hardware.os {
-        OsKind::Windows => ("qwen3-asr-0.6b-int8", if high { "qwen3-4b-q4" } else { "qwen3-1.7b-q4" }),
+        OsKind::Windows => ("qwen3-asr-0.6b-int8", "qwen3-1.7b-q4"),
         OsKind::Mac | OsKind::Other => {
             if high {
                 ("qwen3-asr-1.7b-q8", "qwen3-4b-q4")
@@ -685,7 +685,7 @@ mod tests {
         assert_eq!(just_under.asr_id, "qwen3-asr-0.6b-int8");
         let windows_big = recommend(hw(OsKind::Windows, 32));
         assert_eq!(windows_big.asr_id, "qwen3-asr-0.6b-int8");
-        assert_eq!(windows_big.llm_id, "qwen3-4b-q4");
+        assert_eq!(windows_big.llm_id, "qwen3-1.7b-q4");
         let windows_small = recommend(hw(OsKind::Windows, 8));
         assert_eq!(windows_small.llm_id, "qwen3-1.7b-q4");
         assert!(card("qwen3-asr-1.7b-q8").unwrap().platforms == MAC_ONLY);

@@ -187,7 +187,7 @@ fn fold_transport(result: Result<FinishedText, String>, transcript: &str, words:
     match result {
         Ok(finished) => finished,
         Err(reason) => {
-            let ruled = hotwords::apply(transcript, words);
+            let ruled = fallback_ruled(transcript, words);
             FinishedText {
                 raw: transcript.to_string(),
                 ruled: ruled.clone(),
@@ -208,7 +208,7 @@ fn attempt(
     llm: &dyn LlmComplete,
 ) -> Result<FinishedText, String> {
     let raw = transcript.to_string();
-    let ruled = hotwords::apply(transcript, words);
+    let ruled = ruled_text(transcript, words);
     if ruled.trim().is_empty() {
         return Ok(FinishedText {
             raw,
@@ -229,20 +229,32 @@ fn attempt(
             Ok(text) => Ok(FinishedText {
                 raw,
                 ruled,
-                text,
+                text: super::fillers::clean(&text, words),
                 used_fallback: false,
                 reason: String::new(),
             }),
-            Err(reason) => Ok(FinishedText {
-                raw,
-                ruled: ruled.clone(),
-                text: ruled,
-                used_fallback: true,
-                reason,
-            }),
+            Err(reason) => {
+                crate::diag::record("cleanup rules");
+                Ok(FinishedText {
+                    raw,
+                    ruled: ruled.clone(),
+                    text: ruled,
+                    used_fallback: true,
+                    reason,
+                })
+            }
         },
         Err(reason) => Err(reason),
     }
+}
+
+pub fn ruled_text(transcript: &str, words: &[Hotword]) -> String {
+    super::fillers::clean(&hotwords::apply(transcript, words), words)
+}
+
+pub fn fallback_ruled(transcript: &str, words: &[Hotword]) -> String {
+    crate::diag::record("cleanup rules");
+    ruled_text(transcript, words)
 }
 
 pub fn fence_transcript(text: &str) -> String {

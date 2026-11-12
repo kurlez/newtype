@@ -127,7 +127,7 @@ fn finish_after_transcript(
         let reason = if job.needs_capable_local() {
             task::small_model_reason(job)
         } else {
-            "The local rewrite model is not installed, so the ruled transcript was inserted.".into()
+            "Local polish model is not installed, so only rule cleanup ran. 本地润色模型未安装，只做了规则清理".into()
         };
         return ruled_fallback(transcript, words, reason);
     }
@@ -136,7 +136,7 @@ fn finish_after_transcript(
 }
 
 fn ruled_fallback(transcript: &str, words: &[Hotword], reason: String) -> FinishedText {
-    let ruled = super::hotwords::apply(transcript, words);
+    let ruled = super::polish::fallback_ruled(transcript, words);
     FinishedText {
         raw: transcript.to_string(),
         ruled: ruled.clone(),
