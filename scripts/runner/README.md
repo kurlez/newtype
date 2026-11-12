@@ -30,7 +30,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\runner\setup-windows.ps1 -Uninstall
 ```
 
-Mac 上如果没有 `~/.cargo/bin/rustup`，脚本会安装 rustup stable，不使用 Homebrew 里较旧的 rustc。`src-tauri/Cargo.toml` 的 `rust-version` 是最低版本。`~/.cargo/bin` 会写在 runner 的 `.path` 和 `.env` 最前面。上次如果停在 host 检查，重新运行脚本即可。
+Mac 上如果没有 `~/.cargo/bin/rustup`，脚本会安装 rustup stable，不使用 Homebrew 里较旧的 rustc。脚本自带最低 rustc 版本，不读取仓库文件。`~/.cargo/bin` 会写在 runner 的 `.path` 和 `.env` 最前面。只下载这一个脚本到 `~/.newtype-runner-setup/` 再运行即可。
 
 macOS（登录用户，不要用 sudo，在仓库目录里）：
 
@@ -80,7 +80,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\runner\setup-windows.ps1 -Uninstall
 ```
 
-On the Mac, a missing `~/.cargo/bin/rustup` is installed as rustup stable. Homebrew's older rustc is not the compiler the runner uses. `rust-version` in `src-tauri/Cargo.toml` is the minimum. `~/.cargo/bin` is written first in the runner `.path` and `.env` files. Re-run the script if an earlier run stopped at the host check.
+On the Mac, a missing `~/.cargo/bin/rustup` is installed as rustup stable. Homebrew's older rustc is not the compiler the runner uses. The script carries its own minimum rustc version and does not read the repo, so download that one file into `~/.newtype-runner-setup/` and run it from there. `~/.cargo/bin` is written first in the runner `.path` and `.env` files.
 
 macOS, as the logged-in user, not root:
 

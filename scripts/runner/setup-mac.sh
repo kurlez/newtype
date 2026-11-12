@@ -71,8 +71,9 @@ require_token() {
   fi
 }
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "${script_dir}/../.." && pwd)"
+# Same value as rust-version in src-tauri/Cargo.toml. scripts/runner-msrv.test.mjs checks it.
+# This script is downloaded on its own, so it must not read the repo.
+minimum_rust="1.77.2"
 
 # Compare dotted versions. Do not pipe rustc into grep -q: under pipefail,
 # grep -q closes the pipe early and rustc dies with SIGPIPE.
@@ -169,17 +170,16 @@ ensure_build_tools() {
   rustup toolchain install stable --profile minimal
   rustup default stable
   rustup target add aarch64-apple-darwin
-  local rustc_version release msrv
+  local rustc_version release
   rustc_version="$(rustc -vV)"
   printf '%s\n' "$rustc_version"
   release="$(printf '%s\n' "$rustc_version" | sed -n 's/^release: //p')"
-  msrv="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' "${repo_root}/src-tauri/Cargo.toml")"
   if [[ "$rustc_version" != *"host: aarch64-apple-darwin"* ]]; then
     echo "rustc host is not aarch64-apple-darwin." >&2
     exit 1
   fi
-  if [[ -z "$msrv" || -z "$release" ]] || ! version_at_least "$release" "$msrv"; then
-    echo "rustc ${release:-unknown} is older than rust-version ${msrv:-missing} in src-tauri/Cargo.toml." >&2
+  if [[ -z "$release" ]] || ! version_at_least "$release" "$minimum_rust"; then
+    echo "rustc ${release:-unknown} is older than ${minimum_rust}." >&2
     exit 1
   fi
   node -v

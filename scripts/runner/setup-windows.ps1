@@ -7,6 +7,10 @@ param(
     [string]$RunnerRoot = (Join-Path $env:USERPROFILE 'actions-runners\newtype-win')
 )
 
+# Same value as rust-version in src-tauri/Cargo.toml. scripts/runner-msrv.test.mjs checks it.
+# This script is downloaded on its own, so it must not read the repo.
+$MinimumRust = '1.77.2'
+
 $ErrorActionPreference = 'Stop'
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
@@ -155,18 +159,12 @@ function Write-RunnerServicePath {
 }
 
 function Assert-RustMsrv {
-    $cargoToml = Join-Path $PSScriptRoot '..\..\src-tauri\Cargo.toml'
-    $found = Select-String -Path $cargoToml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1
-    if (-not $found) {
-        throw "src-tauri/Cargo.toml has no rust-version."
-    }
-    $msrv = $found.Matches[0].Groups[1].Value
     $info = & rustc -vV | Out-String
     $release = ([regex]::Match($info, '(?m)^release: (\S+)')).Groups[1].Value
-    if (-not $release -or ([version]$release -lt [version]$msrv)) {
-        throw "rustc ${release} is older than rust-version $msrv."
+    if (-not $release -or ([version]$release -lt [version]$MinimumRust)) {
+        throw "rustc ${release} is older than $MinimumRust."
     }
-    Write-Output "rustc $release satisfies rust-version $msrv."
+    Write-Output "rustc $release satisfies $MinimumRust."
 }
 
 function Get-RunnerAsset {
