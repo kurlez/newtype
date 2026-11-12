@@ -14,7 +14,8 @@ use crate::permissions::{self, PermissionSnapshot};
 use crate::pipeline::asr::AsrProvider;
 use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::catalog::{self, Mirror};
-use crate::pipeline::cloud::{self, CloudAsr, CloudLlm, Preset};
+use crate::pipeline::cloud::{self, AsrWire, CloudAsr, CloudLlm, Preset};
+use crate::pipeline::volcengine::{self, VolcAuth};
 use crate::pipeline::engines::Engines;
 use crate::pipeline::library::{self, LibraryView};
 use crate::pipeline::local_run;
@@ -307,6 +308,14 @@ impl Dictation {
                 secrets::has_key(preset.id, &self.dev_secrets),
             );
         }
+        keys.insert(
+            "volcengine-speech".into(),
+            secrets::has_key("volcengine-speech", &self.dev_secrets),
+        );
+        keys.insert(
+            "volcengine-token".into(),
+            secrets::has_key("volcengine-token", &self.dev_secrets),
+        );
         Snapshot {
             settings,
             hotkey_labels: labels,
@@ -848,7 +857,7 @@ fn begin_recording(
             schedule_hide(app, 3600);
             return;
         }
-        if !secrets::has_key(&effective.asr_provider, &state.dev_secrets) {
+        if !speech_credentials_ready(&effective.asr_provider, &settings, &state.dev_secrets) {
             talk.active = None;
             *state.locked.lock().expect("locked") = None;
             let store = state.secure_store.lock().expect("store").clone();
@@ -861,6 +870,22 @@ fn begin_recording(
             schedule_hide(app, 5000);
             return;
         }
+    }
+    let mic_state = permissions::microphone_state(&state.mic_status.lock().expect("mic"));
+    if matches!(mic_state.as_str(), "denied" | "restricted") {
+        talk.active = None;
+        *state.locked.lock().expect("locked") = None;
+        let current = permissions::snapshot("");
+        let (prompt, _) = permissions::access_prompt(std::env::consts::OS, &mic_state, &current.accessibility_state);
+        let message = if prompt.is_empty() {
+            "Microphone access is off.".to_string()
+        } else {
+            prompt
+        };
+        emit_phase(app, "error", route, &message, 0, 0.0, "");
+        show_indicator(app);
+        schedule_hide(app, 5000);
+        return;
     }
     let mut selection_note = String::new();
     if matches!(mode, HotkeyMode::Command) {
@@ -1157,7 +1182,33 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let llm_implemented = effective.llm_implemented;
     let hotwords_cloud = effective.hotwords.clone();
     let speech_hint = crate::pipeline::hotwords::asr_hint(&hotwords_cloud);
+    let volc_app_id = settings
+        .providers
+        .get("volcengine")
+        .map(|config| config.volc_app_id.clone())
+        .unwrap_or_default();
     let cloud_asr = move |audio: &[u8]| {
+        if asr_wire == AsrWire::Volcengine {
+            let speech_key = secrets::get_key("volcengine-speech", &dev_secrets)
+                .ok()
+                .flatten()
+                .filter(|value| !value.is_empty())
+                .or_else(|| secrets::get_key(&asr_provider, &dev_secrets).ok().flatten())
+                .unwrap_or_default();
+            let token = secrets::get_key("volcengine-token", &dev_secrets)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            return volcengine::transcribe_wav(
+                &VolcAuth {
+                    api_key: speech_key,
+                    app_id: volc_app_id.clone(),
+                    token,
+                },
+                &speech_hint,
+                audio,
+            );
+        }
         let key = secrets::get_key(&asr_provider, &dev_secrets)?
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "Speech API key is missing.".to_string())?;
@@ -1678,9 +1729,55 @@ pub fn clear_key(app: &AppHandle, provider: &str) -> Result<(), String> {
     secrets::clear_key(provider, &path)
 }
 
-pub fn test_connection(app: &AppHandle, provider: &str) -> Result<String, String> {
+fn speech_credentials_ready(provider: &str, settings: &DictationSettings, secrets_path: &std::path::Path) -> bool {
+    if provider == "volcengine" {
+        let app_id = settings
+            .providers
+            .get("volcengine")
+            .map(|config| !config.volc_app_id.trim().is_empty())
+            .unwrap_or(false);
+        let token = secrets::has_key("volcengine-token", secrets_path);
+        let speech = secrets::has_key("volcengine-speech", secrets_path)
+            || secrets::has_key("volcengine", secrets_path);
+        return speech || (app_id && token);
+    }
+    secrets::has_key(provider, secrets_path)
+}
+
+fn volc_auth(settings: &DictationSettings, secrets_path: &std::path::Path) -> VolcAuth {
+    let speech = secrets::get_key("volcengine-speech", secrets_path)
+        .ok()
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            secrets::get_key("volcengine", secrets_path)
+                .ok()
+                .flatten()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_default();
+    let token = secrets::get_key("volcengine-token", secrets_path)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let app_id = settings
+        .providers
+        .get("volcengine")
+        .map(|config| config.volc_app_id.clone())
+        .unwrap_or_default();
+    VolcAuth {
+        api_key: speech,
+        app_id,
+        token,
+    }
+}
+
+pub fn test_connection(app: &AppHandle, provider: &str, kind: &str) -> Result<String, String> {
     let state = app.state::<Dictation>();
     let settings = state.settings.lock().expect("settings").clone();
+    if provider == "volcengine" && kind != "rewrite" {
+        return volcengine::test_connection(&volc_auth(&settings, &state.dev_secrets));
+    }
     let effective = dictate_config::effective(&settings, hotkey::host_os())?;
     let (base, model_ready) = if provider == effective.llm_provider {
         (

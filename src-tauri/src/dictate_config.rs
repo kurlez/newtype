@@ -25,6 +25,8 @@ pub struct ProviderConfig {
     pub llm_base: String,
     pub asr_wire: String,
     pub thinking: String,
+    /// Volcengine openspeech App ID. Empty for every other provider.
+    pub volc_app_id: String,
 }
 
 impl Default for ProviderConfig {
@@ -37,6 +39,7 @@ impl Default for ProviderConfig {
             llm_base: String::new(),
             asr_wire: AsrWire::Transcriptions.as_str().into(),
             thinking: "auto".into(),
+            volc_app_id: String::new(),
         }
     }
 }
@@ -106,6 +109,7 @@ fn config_from_preset(preset: &Preset) -> ProviderConfig {
         llm_base: String::new(),
         asr_wire: preset.asr_wire.as_str().to_string(),
         thinking: "auto".into(),
+        volc_app_id: String::new(),
     }
 }
 
@@ -372,14 +376,6 @@ fn provider_end(settings: &DictationSettings, id: &str, speech: bool) -> Result<
     } else {
         preset.llm_ready && !model.is_empty() && !base.is_empty()
     };
-    if speech && preset.id == "volcengine" {
-        return Ok(End {
-            model,
-            base,
-            wire: AsrWire::Unfinished,
-            implemented: false,
-        });
-    }
     Ok(End {
         model,
         base,

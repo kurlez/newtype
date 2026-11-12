@@ -31,6 +31,7 @@ pub(crate) mod selection;
 pub(crate) mod session;
 pub(crate) mod task;
 pub(crate) mod vad;
+pub(crate) mod volcengine;
 
 #[cfg(test)]
 mod harness;

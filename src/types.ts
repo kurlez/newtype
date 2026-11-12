@@ -6,6 +6,7 @@ export interface ProviderConfig {
   llmBase: string;
   asrWire: string;
   thinking: string;
+  volcAppId: string;
 }
 
 export interface Hotword {
@@ -57,6 +58,10 @@ export interface PermissionInfo {
   accessibility: string;
   platform: string;
   guidance: string;
+  microphoneState: string;
+  accessibilityState: string;
+  prompt: string;
+  promptAction: string;
 }
 
 export interface LocalModel {

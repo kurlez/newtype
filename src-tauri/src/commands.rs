@@ -54,8 +54,14 @@ pub fn dictation_clear_key(app: AppHandle, provider: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub async fn dictation_test_connection(app: AppHandle, provider: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::dictation::test_connection(&app, &provider))
+pub async fn dictation_test_connection(
+    app: AppHandle,
+    provider: String,
+    kind: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::dictation::test_connection(&app, &provider, kind.as_deref().unwrap_or("speech"))
+    })
         .await
         .map_err(|err| err.to_string())?
 }

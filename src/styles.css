@@ -236,6 +236,11 @@ textarea {
   font-size: 18px;
 }
 
+.banner.warn {
+  color: var(--warn);
+  font-size: 15px;
+}
+
 .badge {
   display: inline-block;
   margin-right: 6px;
