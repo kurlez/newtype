@@ -95,7 +95,7 @@ The `.dmg` is not notarized and is not Developer ID signed.
 3. 在 Finder 中右键（或按住 Control 点击）该应用 → **打开**，再在对话框里点 **打开**。
 4. 如果已经双击失败：打开 **系统设置 → 隐私与安全性**，找到被拦截的提示，点 **仍要打开**。可能需要管理员密码。
 
-CI ad-hoc signs every macOS build unless `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` are all set. Ad-hoc signing changes the code hash every build. A stable self-signed identity is the mitigation for Accessibility and Microphone grants surviving an update. That has not been verified on a real Mac. Hardened runtime stays off. This build requests the microphone and, on macOS, Accessibility. Details and the certificate steps are in [SETUP.md](SETUP.md).
+CI ad-hoc signs every macOS build unless `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` are all set. Those three secrets are a self-signed Code Signing certificate, not an Apple Developer ID, and they are optional: if they are absent the job stays on ad-hoc and stays green. Ad-hoc signing changes the code hash every build. The stable identity is the mitigation for Accessibility and Microphone grants surviving an update. That has not been verified on a real Mac, so it is not a promise yet. Hardened runtime stays off. `llama-server` and its libraries are signed with that same identity when the private key is in the keychain, and ad-hoc as a set otherwise. Details and the one-time certificate steps are in [SETUP.md](SETUP.md).
 
 ### Windows
 

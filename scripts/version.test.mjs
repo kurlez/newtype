@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appleSigningIdentity, configOverlay, resolveVersion, updaterPlatform } from "./with-version.mjs";
+import { appleSigningIdentity, childBuildEnv, configOverlay, resolveVersion, updaterPlatform } from "./with-version.mjs";
 
 test("local builds use dev.0 and a display commit", () => {
   const resolved = resolveVersion({
@@ -82,11 +82,28 @@ test("missing Apple secrets are not forwarded as empty certificate env", () => {
   );
 });
 
-test("stable signing identity is a config overlay", () => {
+test("stable signing identity is a config overlay and the p12 is not passed to Tauri", () => {
   const overlay = configOverlay("0.1.0-dev.4", "newtype-self-signed");
   assert.equal(overlay.bundle.macOS.signingIdentity, "newtype-self-signed");
   assert.equal(overlay.bundle.macOS.hardenedRuntime, false);
   assert.deepEqual(configOverlay("0.1.0-dev.4", ""), { version: "0.1.0-dev.4" });
+  const full = {
+    APPLE_CERTIFICATE: "cert",
+    APPLE_CERTIFICATE_PASSWORD: "secret",
+    APPLE_SIGNING_IDENTITY: "newtype-self-signed",
+    PATH: "/usr/bin",
+  };
+  assert.equal(appleSigningIdentity({ ...full }), "newtype-self-signed");
+  const child = childBuildEnv(full, "newtype-self-signed");
+  assert.equal("APPLE_CERTIFICATE" in child, false);
+  assert.equal("APPLE_CERTIFICATE_PASSWORD" in child, false);
+  assert.equal(child.APPLE_SIGNING_IDENTITY, "newtype-self-signed");
+  assert.equal(child.NEWTYPE_MAC_SIGN_IDENTITY, "newtype-self-signed");
+  assert.equal(child.PATH, "/usr/bin");
+  assert.equal(appleSigningIdentity({ APPLE_SIGNING_IDENTITY: "newtype-self-signed" }), "newtype-self-signed");
+  const adHoc = childBuildEnv({ APPLE_SIGNING_IDENTITY: "newtype-self-signed" }, "");
+  assert.equal("APPLE_SIGNING_IDENTITY" in adHoc, false);
+  assert.equal("NEWTYPE_MAC_SIGN_IDENTITY" in adHoc, false);
 });
 
 test("only the two shipping targets have updater platform ids", () => {

@@ -37,7 +37,7 @@ Weights and the llama.cpp runtime download into the Tauri app data directory, un
 
 A model is installed only after every download matches its size and SHA-256 and the expected names are on disk. A mismatch deletes the partial file and leaves an error file. Downloads resume from `<name>.partial`. The install marker is `installed.json` in that model directory. Settings trusts the marker plus file sizes; it does not re-hash multi-gigabyte files on every open.
 
-The Windows llama.cpp build is the CPU zip, so a machine without Vulkan or CUDA can still rewrite. macOS uses the Metal build (`-ngl 99`). Windows passes `-ngl 0`. After a Mac download, the app ad-hoc signs `llama-server` and the sibling `.dylib` files so a runtime download is not left quarantined. That signing step has not been exercised on a physical Mac in this change.
+The Windows llama.cpp build is the CPU zip, so a machine without Vulkan or CUDA can still rewrite. macOS uses the Metal build (`-ngl 99`). Windows passes `-ngl 0`. After a Mac download, the app signs `llama-server` and every sibling Mach-O with one identity: the stable self-signed name when that private key is in the keychain, otherwise ad-hoc. Libraries are signed before the executable, with `--timestamp=none`. The private key is not in the app. That signing step has not been exercised on a physical Mac in this change.
 
 ## Licenses
 

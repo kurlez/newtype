@@ -94,20 +94,43 @@ const APPLE_ENV = [
 ];
 
 // GitHub Actions sets an env var to "" when the secret is missing. Tauri treats
-// any present APPLE_CERTIFICATE as a PKCS#12 to import, including an empty one.
+// any present APPLE_CERTIFICATE as a Developer ID PKCS#12, including an empty
+// one, and its importer only accepts Apple certificate name prefixes. A
+// self-signed identity is imported by scripts/import-macos-identity.sh. This
+// function then keeps the certificate name and the child build env drops the
+// PKCS#12 so Tauri calls codesign with that name.
 export function appleSigningIdentity(env) {
   for (const name of APPLE_ENV) {
     if (typeof env[name] === "string" && env[name].trim() === "") {
       delete env[name];
     }
   }
-  const present = APPLE_ENV.filter((name) => env[name]);
-  if (present.length !== 0 && present.length !== APPLE_ENV.length) {
-    throw new Error(
-      "Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY, or none of them.",
-    );
+  const identity = typeof env.APPLE_SIGNING_IDENTITY === "string" ? env.APPLE_SIGNING_IDENTITY.trim() : "";
+  const cert = Boolean(env.APPLE_CERTIFICATE);
+  const password = Boolean(env.APPLE_CERTIFICATE_PASSWORD);
+  if (!identity && !cert && !password) {
+    return "";
   }
-  return present.length === APPLE_ENV.length ? env.APPLE_SIGNING_IDENTITY : "";
+  if (identity && ((cert && password) || (!cert && !password))) {
+    return identity;
+  }
+  throw new Error(
+    "Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY, or none of them. After the keychain import, APPLE_SIGNING_IDENTITY alone is enough.",
+  );
+}
+
+export function childBuildEnv(env, identity) {
+  const child = { ...env };
+  delete child.APPLE_CERTIFICATE;
+  delete child.APPLE_CERTIFICATE_PASSWORD;
+  if (identity) {
+    child.APPLE_SIGNING_IDENTITY = identity;
+    child.NEWTYPE_MAC_SIGN_IDENTITY = identity;
+  } else {
+    delete child.APPLE_SIGNING_IDENTITY;
+    delete child.NEWTYPE_MAC_SIGN_IDENTITY;
+  }
+  return child;
 }
 
 export function configOverlay(version, signingIdentity) {
@@ -174,6 +197,7 @@ if (isDirectRun()) {
     resolved.version,
     process.platform === "darwin" ? signingIdentity : "",
   );
+  const childEnv = childBuildEnv(process.env, process.platform === "darwin" ? signingIdentity : "");
   const metaPath = path.join(root, "build-meta.json");
   writeFileSync(metaPath, `${JSON.stringify(resolved, null, 2)}\n`);
   console.log(
@@ -188,7 +212,11 @@ if (isDirectRun()) {
   const child = spawn(
     process.execPath,
     [cli, ...tauriArgs, "--config", JSON.stringify(overlay)],
-    { cwd: root, stdio: "inherit", env: { ...process.env, NEWTYPE_COMMIT: resolved.commit, NEWTYPE_VERSION: resolved.version } },
+    {
+      cwd: root,
+      stdio: "inherit",
+      env: { ...childEnv, NEWTYPE_COMMIT: resolved.commit, NEWTYPE_VERSION: resolved.version },
+    },
   );
   child.on("exit", (code, signal) => {
     if (signal) {
