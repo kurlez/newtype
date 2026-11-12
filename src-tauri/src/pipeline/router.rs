@@ -1,8 +1,8 @@
 //! Path router. UI code asks this module which path a dictation should take.
 //!
-//! Local models are not linked in this build. The decision still names the
-//! local path so a later milestone can turn `local_asr_ready` on without
-//! scattering that choice through the session.
+//! Auto prefers cloud and falls back when the probe says the endpoint is
+//! unreachable. Cloud only never selects local. The probe and the strict
+//! offline gate live outside this function so the choice stays pure.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,15 +12,17 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "router",
         status: "ready",
-        note: "Manual local and strict offline select the local engines. Automatic offline fallback waits on a reachability probe, which this build does not run.",
+        note: "Auto prefers cloud, falls back when the probe says unreachable, and returns to cloud after the connection holds. Cloud only, local only, and strict offline do not switch on their own.",
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum RoutePreference {
+    /// Auto. Stored as `cloudDefault` so existing settings files keep loading.
     #[default]
     CloudDefault,
+    CloudOnly,
     LocalOnly,
     StrictOffline,
 }
@@ -28,7 +30,8 @@ pub enum RoutePreference {
 impl RoutePreference {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "cloudDefault" | "cloud" => Some(Self::CloudDefault),
+            "auto" | "cloudDefault" | "cloud" => Some(Self::CloudDefault),
+            "cloudOnly" => Some(Self::CloudOnly),
             "localOnly" | "local" => Some(Self::LocalOnly),
             "strictOffline" | "offline" => Some(Self::StrictOffline),
             _ => None,
@@ -38,6 +41,7 @@ impl RoutePreference {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CloudDefault => "cloudDefault",
+            Self::CloudOnly => "cloudOnly",
             Self::LocalOnly => "localOnly",
             Self::StrictOffline => "strictOffline",
         }
@@ -71,6 +75,15 @@ impl PathLabel {
             Self::StrictOffline => "Strict offline · 严格离线",
         }
     }
+
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Cloud => "cloud",
+            Self::LocalAutoFallback => "fallback",
+            Self::LocalManual => "local",
+            Self::StrictOffline => "strict",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +97,7 @@ pub enum RouteReason {
     LocalNotReady,
     CloudNotConfigured,
     AsrNotFinished,
+    CloudOnlyOffline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +121,7 @@ pub enum Block {
     CloudNotConfigured,
     LocalNotReady,
     AsrNotFinished,
+    CloudUnreachable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +153,7 @@ pub fn decide(input: RouteInput) -> RouteDecision {
         RoutePreference::LocalOnly => {
             local_or_blocked(input, PathLabel::LocalManual, RouteReason::ManualLocal)
         }
+        RoutePreference::CloudOnly => decide_cloud_only(input),
         RoutePreference::CloudDefault => decide_cloud(input),
     }
 }
@@ -163,6 +179,47 @@ fn local_or_blocked(input: RouteInput, label: PathLabel, reason: RouteReason) ->
             reason: RouteReason::LocalNotReady,
             block: Block::LocalNotReady,
         }
+    }
+}
+
+fn decide_cloud_only(input: RouteInput) -> RouteDecision {
+    let online = matches!(
+        input.reachability,
+        Reachability::Reachable | Reachability::Unknown
+    );
+    if !online {
+        return RouteDecision {
+            asr: Slot::None,
+            llm: Slot::None,
+            label: PathLabel::Cloud,
+            reason: RouteReason::CloudOnlyOffline,
+            block: Block::CloudUnreachable,
+        };
+    }
+    if !input.cloud_configured {
+        return RouteDecision {
+            asr: Slot::None,
+            llm: Slot::None,
+            label: PathLabel::Cloud,
+            reason: RouteReason::CloudNotConfigured,
+            block: Block::CloudNotConfigured,
+        };
+    }
+    if !input.asr_implemented {
+        return RouteDecision {
+            asr: Slot::None,
+            llm: Slot::None,
+            label: PathLabel::Cloud,
+            reason: RouteReason::AsrNotFinished,
+            block: Block::AsrNotFinished,
+        };
+    }
+    RouteDecision {
+        asr: Slot::Cloud,
+        llm: Slot::Cloud,
+        label: PathLabel::Cloud,
+        reason: RouteReason::OnlineCloud,
+        block: Block::None,
     }
 }
 
@@ -235,18 +292,24 @@ fn decide_cloud(input: RouteInput) -> RouteDecision {
     }
 }
 
-pub fn block_message(block: Block) -> Option<&'static str> {
+pub fn block_message_for(block: Block, preference: RoutePreference) -> Option<&'static str> {
     match block {
         Block::None => None,
         Block::CloudNotConfigured => {
             Some("Save an API key for the speech provider before dictating. Audio is not sent until you do.")
         }
-        Block::LocalNotReady => {
-            Some("The local speech model is not installed yet. Download it in settings. Audio was not sent.")
-        }
+        Block::LocalNotReady if preference == RoutePreference::CloudDefault => Some(
+            "The cloud provider is unreachable and the local speech model is not installed. This recording stays on this computer and is saved in History.",
+        ),
+        Block::LocalNotReady => Some(
+            "The local speech model is not installed yet. Download it in settings. This recording stays on this computer and is saved in History.",
+        ),
         Block::AsrNotFinished => {
             Some("This speech provider is not finished. Pick OpenAI, Groq, DashScope, or a custom endpoint for speech.")
         }
+        Block::CloudUnreachable => Some(
+            "The cloud provider is unreachable. Cloud only does not use local models. This recording stays on this computer and is saved in History.",
+        ),
     }
 }
 
@@ -318,6 +381,35 @@ mod tests {
         let blocked = decide(strict);
         assert_eq!(blocked.block, Block::LocalNotReady);
         assert_ne!(blocked.asr, Slot::Cloud);
+    }
+
+    #[test]
+    fn cloud_only_stays_on_cloud_and_does_not_use_local_models() {
+        let mut offline = input(RoutePreference::CloudOnly);
+        offline.reachability = Reachability::Unreachable;
+        offline.local_asr_ready = true;
+        offline.local_llm_ready = true;
+        let blocked = decide(offline);
+        assert_eq!(blocked.block, Block::CloudUnreachable);
+        assert_eq!(blocked.asr, Slot::None);
+        assert_eq!(blocked.label, PathLabel::Cloud);
+        assert_ne!(blocked.asr, Slot::Local);
+
+        let mut online = input(RoutePreference::CloudOnly);
+        online.reachability = Reachability::Reachable;
+        online.local_asr_ready = true;
+        let decision = decide(online);
+        assert_eq!(decision.asr, Slot::Cloud);
+        assert_eq!(decision.label.kind(), "cloud");
+    }
+
+    #[test]
+    fn saved_auto_aliases_parse_without_changing_the_stored_name() {
+        assert_eq!(RoutePreference::parse("cloudDefault"), Some(RoutePreference::CloudDefault));
+        assert_eq!(RoutePreference::parse("auto"), Some(RoutePreference::CloudDefault));
+        assert_eq!(RoutePreference::parse("cloud"), Some(RoutePreference::CloudDefault));
+        assert_eq!(RoutePreference::CloudDefault.as_str(), "cloudDefault");
+        assert_eq!(RoutePreference::parse("cloudOnly"), Some(RoutePreference::CloudOnly));
     }
 
     #[test]

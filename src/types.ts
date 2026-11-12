@@ -114,6 +114,8 @@ export interface Snapshot {
   logPath: string;
   routeLabel: string;
   routeDetail: string;
+  routeNotice: string;
+  connectivity: string;
   phase: string;
   version: string;
   devKeyStore: boolean;
@@ -133,6 +135,7 @@ export interface HistoryEntry {
   text: string;
   usedFallback: boolean;
   note: string;
+  audioKept: boolean;
 }
 
 export interface PhaseEvent {

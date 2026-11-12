@@ -1,6 +1,6 @@
 # Local models (M2)
 
-Cloud dictation stays the default. Local speech and rewrite run only when the path is **Local only** or **Strict offline**. Automatic offline switching is not in this build. The router already returns the local path when reachability is `Unreachable`; this build always passes `Unknown`, so a cloud-default session does not flip by itself.
+Auto is the default. It uses cloud speech and rewrite while the configured endpoint answers, and local Qwen speech and rewrite when the probe has marked that endpoint unreachable. A dictation that already started does not change path if the probe flips during the recording. If the cloud call itself fails, that same recording or transcript is retried locally when the models are installed. Cloud only never makes that retry. Strict offline does not probe, download, or check for updates.
 
 Audio for a local session is not given to the cloud client. llama.cpp is reached at `127.0.0.1` with proxies disabled.
 

@@ -26,7 +26,7 @@ export function localPanel(local: LocalLibrary, preference: string): string {
     })
     .join("");
   const strict = preference === "strictOffline"
-    ? `<p class="status warn">Strict offline is on. A download needs one explicit network allowance.</p>`
+    ? `<p class="status warn">Strict offline is on. Downloads, probes, and update checks stay off until you choose another path.</p>`
     : "";
   return `<section id="local-models" data-asr="${escapeHtml(local.recommendedAsr)}" data-llm="${escapeHtml(local.recommendedLlm)}">
     <h2>Local models</h2>
@@ -55,7 +55,11 @@ function confirmNetwork(): boolean | null {
   if (!strict) {
     return false;
   }
-  return window.confirm("Strict offline is on. Allow this download to contact the model host once?") ? true : null;
+  const line = document.querySelector("#local-progress");
+  if (line) {
+    line.textContent = "Strict offline is on. Choose Auto, Cloud only, or Local only before downloading. Nothing was contacted.";
+  }
+  return null;
 }
 
 export function bindLocal(preview: boolean, reloadLocal: () => Promise<void>): void {

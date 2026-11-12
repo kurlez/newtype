@@ -609,6 +609,9 @@ fn chat_text(status: u16, body: &str) -> Result<String, String> {
     Ok(content.to_string())
 }
 
+/// On-device llama-server only. This client is not the outbound gate: strict
+/// offline still has to reach `127.0.0.1`, and `no_proxy` keeps a system proxy
+/// from forwarding it.
 fn loopback_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .timeout(timeout)

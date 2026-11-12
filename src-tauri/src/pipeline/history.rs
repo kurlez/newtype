@@ -31,6 +31,10 @@ pub struct HistoryEntry {
     pub text: String,
     pub used_fallback: bool,
     pub note: String,
+    /// The wav file sits beside history when a cloud failure could not be
+    /// finished on device. Older history files omit the field.
+    #[serde(default)]
+    pub audio_kept: bool,
 }
 
 pub fn load(path: &Path) -> Vec<HistoryEntry> {
@@ -71,7 +75,20 @@ mod tests {
             text: "text".into(),
             used_fallback: false,
             note: String::new(),
+            audio_kept: false,
         }
+    }
+
+    #[test]
+    fn older_history_without_audio_kept_still_loads() {
+        let json = r#"[{
+            "id":"1","createdAtMs":1,"appVersion":"0.1.0","mode":"dictate",
+            "route":"Cloud · 云端","provider":"openai","polishLevel":"polish",
+            "raw":"a","ruled":"a","text":"a","usedFallback":false,"note":""
+        }]"#;
+        let loaded: Vec<HistoryEntry> = serde_json::from_str(json).unwrap();
+        assert!(!loaded[0].audio_kept);
+        assert_eq!(loaded[0].route, "Cloud · 云端");
     }
 
     #[test]

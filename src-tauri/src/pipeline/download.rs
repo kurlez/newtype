@@ -43,6 +43,7 @@ pub fn download_verified(
     if dest.exists() {
         let _ = fs::remove_file(dest);
     }
+    super::egress::authorize(super::egress::Purpose::ModelDownload)?;
     let mut last_error = "Download did not start.".to_string();
     for url in urls {
         if cancel.load(Ordering::Relaxed) {
@@ -105,13 +106,13 @@ fn download_one(
         if expected_size > 0 && existing == expected_size {
             return finish_partial(&partial, dest, expected_sha256, expected_size, progress);
         }
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(2 * 60 * 60))
-            .redirect(reqwest::redirect::Policy::limited(8))
-            .user_agent("newtype/0.1 (local-model-download)")
-            .build()
-            .map_err(|err| err.to_string())?;
+        let client = super::egress::blocking_client_with(super::egress::Purpose::ModelDownload, |builder| {
+            builder
+                .connect_timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(2 * 60 * 60))
+                .redirect(reqwest::redirect::Policy::limited(8))
+                .user_agent("newtype/0.1 (local-model-download)")
+        })?;
         let mut request = client.get(url);
         if existing > 0 {
             request = request.header("Range", format!("bytes={existing}-"));
@@ -368,6 +369,29 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), body);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strict_offline_does_not_open_a_download() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dir = std::env::temp_dir().join(format!("newtype-dl-strict-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let dest = dir.join("model.bin");
+        let _guard = crate::pipeline::egress::ModeGuard::strict();
+        let err = download_verified(
+            &[format!("http://{addr}/file")],
+            &dest,
+            "abc",
+            4,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("Strict offline"), "{err}");
+        assert!(listener.accept().is_err());
+        assert!(!dest.exists());
     }
 
     #[test]
