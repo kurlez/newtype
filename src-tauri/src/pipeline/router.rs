@@ -68,11 +68,24 @@ impl PathLabel {
     }
 
     pub fn text(self) -> &'static str {
+        crate::locale::text(self.english(), self.chinese())
+    }
+
+    fn english(self) -> &'static str {
         match self {
-            Self::Cloud => "Cloud · 云端",
-            Self::LocalAutoFallback => "Local · auto fallback · 本地 · 自动回落",
-            Self::LocalManual => "Local · manual · 本地 · 手动",
-            Self::StrictOffline => "Strict offline · 严格离线",
+            Self::Cloud => "Cloud",
+            Self::LocalAutoFallback => "Local, automatic",
+            Self::LocalManual => "Local",
+            Self::StrictOffline => "Strict offline",
+        }
+    }
+
+    fn chinese(self) -> &'static str {
+        match self {
+            Self::Cloud => "云端",
+            Self::LocalAutoFallback => "本地自动",
+            Self::LocalManual => "本地",
+            Self::StrictOffline => "严格离线",
         }
     }
 
@@ -293,23 +306,34 @@ fn decide_cloud(input: RouteInput) -> RouteDecision {
 }
 
 pub fn block_message_for(block: Block, preference: RoutePreference) -> Option<&'static str> {
+    let zh = crate::locale::prefers_zh();
     match block {
         Block::None => None,
-        Block::CloudNotConfigured => {
-            Some("Save an API key for the speech provider before dictating. Audio is not sent until you do.")
-        }
-        Block::LocalNotReady if preference == RoutePreference::CloudDefault => Some(
-            "The cloud provider is unreachable and the local speech model is not installed. This recording stays on this computer and is saved in History.",
-        ),
-        Block::LocalNotReady => Some(
-            "The local speech model is not installed yet. Download it in settings. This recording stays on this computer and is saved in History.",
-        ),
-        Block::AsrNotFinished => {
-            Some("This speech provider is not finished. Pick OpenAI, Groq, DashScope, Volcengine, or a custom endpoint for speech.")
-        }
-        Block::CloudUnreachable => Some(
-            "The cloud provider is unreachable. Cloud only does not use local models. This recording stays on this computer and is saved in History.",
-        ),
+        Block::CloudNotConfigured => Some(if zh {
+            "口授前请先保存语音供应商的密钥。在此之前不会发送音频。"
+        } else {
+            "Save an API key for the speech provider before dictating. Audio is not sent until you do."
+        }),
+        Block::LocalNotReady if preference == RoutePreference::CloudDefault => Some(if zh {
+            "云端供应商连不上，本地语音模型也还没安装。这段录音留在这台电脑上，并写入历史。"
+        } else {
+            "The cloud provider is unreachable and the local speech model is not installed. This recording stays on this computer and is saved in History."
+        }),
+        Block::LocalNotReady => Some(if zh {
+            "本地语音模型还没安装。请在设置里下载。这段录音留在这台电脑上，并写入历史。"
+        } else {
+            "The local speech model is not installed yet. Download it in settings. This recording stays on this computer and is saved in History."
+        }),
+        Block::AsrNotFinished => Some(if zh {
+            "这个语音供应商还没完成。请改用已完成的供应商或自定义地址。"
+        } else {
+            "This speech provider is not finished. Pick OpenAI, Groq, DashScope, Volcengine, or a custom endpoint for speech."
+        }),
+        Block::CloudUnreachable => Some(if zh {
+            "云端供应商连不上。仅云端不会改用本地模型。这段录音留在这台电脑上，并写入历史。"
+        } else {
+            "The cloud provider is unreachable. Cloud only does not use local models. This recording stays on this computer and is saved in History."
+        }),
     }
 }
 

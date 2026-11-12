@@ -170,6 +170,7 @@ pub struct Snapshot {
     pub version: String,
     pub dev_key_store: bool,
     pub local: LibraryView,
+    pub language: String,
 }
 
 impl Dictation {
@@ -202,6 +203,7 @@ impl Dictation {
         let engines = Arc::new(Engines::new(data_dir.join("models")));
         let mut settings = dictate_config::load(&settings_path);
         dictate_config::normalize(&mut settings);
+        crate::locale::set_preference(&settings.ui_language);
         let effective =
             dictate_config::effective(&settings, hotkey::host_os()).unwrap_or_else(|_| {
                 dictate_config::effective(&DictationSettings::default(), hotkey::host_os())
@@ -238,7 +240,7 @@ impl Dictation {
             log_path: crate::diag::path().unwrap_or_default(),
             mic_status: Arc::new(Mutex::new("unknown".into())),
             phase: Mutex::new("idle".into()),
-            session_label: Mutex::new("Dictate · 口授".into()),
+            session_label: Mutex::new(crate::locale::text("Dictate", "口授").into()),
             reachability: Mutex::new(Reachability::Unknown),
             notice: Mutex::new(String::new()),
             probe_wake: Arc::new(AtomicBool::new(true)),
@@ -255,6 +257,7 @@ impl Dictation {
 
     pub fn launch(app: AppHandle) {
         open_indicator(&app);
+        show_indicator(&app);
         {
             let state = app.state::<Dictation>();
             apply_route_mode(&state, true);
@@ -325,7 +328,7 @@ impl Dictation {
                 Vec::new(),
                 Vec::new(),
                 vec![err.clone()],
-                "Cloud · 云端".into(),
+                PathLabel::Cloud.text().to_string(),
                 err.clone(),
             ),
         };
@@ -365,6 +368,7 @@ impl Dictation {
             version: version_of(app),
             dev_key_store: cfg!(not(any(target_os = "macos", target_os = "windows"))),
             local: self.library_view(),
+            language: crate::locale::resolved_tag().into(),
         }
     }
 
@@ -384,7 +388,7 @@ impl Dictation {
                     route_detail(effective.preference, decision, ready, &notice),
                 )
             }
-            Err(err) => ("Cloud · 云端".into(), err),
+            Err(err) => (PathLabel::Cloud.text().to_string(), err),
         }
     }
 }
@@ -417,10 +421,18 @@ fn bundle_dto(bundle: &cloud::Bundle) -> BundleDto {
     }
 }
 
+fn preset_label(id: &str, fallback: &str) -> String {
+    match id {
+        "dashscope" => crate::locale::text("DashScope", "通义").into(),
+        "volcengine" => crate::locale::text("Volcengine", "火山").into(),
+        _ => fallback.to_string(),
+    }
+}
+
 fn preset_dto(preset: &Preset) -> PresetDto {
     PresetDto {
         id: preset.id.into(),
-        label: preset.label.into(),
+        label: preset_label(preset.id, preset.label),
         asr_ready: preset.asr_ready,
         llm_ready: preset.llm_ready,
         base_editable: preset.base_editable,
@@ -478,33 +490,70 @@ fn route_detail(
     let mut text = if let Some(message) = router::block_message_for(decision.block, preference) {
         message.to_string()
     } else {
+        let zh = crate::locale::prefers_zh();
         match decision.label {
             PathLabel::Cloud if preference == RoutePreference::CloudOnly => {
-                "Cloud only. A failure does not switch to local models.".into()
+                if zh {
+                    "仅云端。失败时不会改用本地模型。".into()
+                } else {
+                    "Cloud only. A failure does not switch to local models.".into()
+                }
             }
             PathLabel::Cloud if !ready.fallback_ready() => {
-                "Speech goes to the provider you configured. Offline fallback needs both local models installed.".into()
+                if zh {
+                    "语音发往你配置的供应商。离线回落需要两个本地模型都已安装。".into()
+                } else {
+                    "Speech goes to the provider you configured. Offline fallback needs both local models installed.".into()
+                }
             }
             PathLabel::Cloud => {
-                "Speech goes to the provider you configured. If it stays unreachable, the next dictation uses local models.".into()
+                if zh {
+                    "语音发往你配置的供应商。如果一直连不上，下一次口授改用本地模型。".into()
+                } else {
+                    "Speech goes to the provider you configured. If it stays unreachable, the next dictation uses local models.".into()
+                }
             }
             PathLabel::LocalAutoFallback if decision.llm == Slot::None => {
-                "Cloud is unreachable. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                if zh {
+                    "云端连不上。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                } else {
+                    "Cloud is unreachable. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                }
             }
             PathLabel::LocalAutoFallback => {
-                "Cloud is unreachable. Audio stays on this computer and uses the local models.".into()
+                if zh {
+                    "云端连不上。音频留在这台电脑上，并使用本地模型。".into()
+                } else {
+                    "Cloud is unreachable. Audio stays on this computer and uses the local models.".into()
+                }
             }
             PathLabel::LocalManual if decision.llm == Slot::None => {
-                "Local only. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                if zh {
+                    "仅本地。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                } else {
+                    "Local only. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                }
             }
             PathLabel::LocalManual => {
-                "Local only. Audio stays on this computer, even when the cloud is reachable.".into()
+                if zh {
+                    "仅本地。音频留在这台电脑上，即使云端可以连通。".into()
+                } else {
+                    "Local only. Audio stays on this computer, even when the cloud is reachable.".into()
+                }
             }
             PathLabel::StrictOffline if decision.llm == Slot::None => {
-                "Strict offline. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                if zh {
+                    "严格离线。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                } else {
+                    "Strict offline. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
+                }
             }
             PathLabel::StrictOffline => {
-                "Strict offline. Audio stays on this computer. No cloud call, probe, update check, or model download runs.".into()
+                if zh {
+                    "严格离线。音频留在这台电脑上。不会发起云端调用、探测、更新检查或模型下载。".into()
+                } else {
+                    "Strict offline. Audio stays on this computer. No cloud call, probe, update check, or model download runs.".into()
+                }
             }
         }
     };
@@ -626,13 +675,20 @@ fn spawn_listener(
                 }
                 outcome.suppress || capturing
             };
-            set_listener(&app, &listener, "Listening for the right-hand Control key.");
+            set_listener(
+                &app,
+                &listener,
+                crate::locale::text("Listening for the right-hand Control key.", "正在监听右侧 Ctrl 键。"),
+            );
             crate::diag::record("hotkey listener starting");
             crate::key_feed::install(on_edge);
             #[cfg(windows)]
             {
                 if let Err(err) = crate::win_hotkey::run() {
-                    let message = format!("Hotkey listener is not running. {err}");
+                    let message = crate::locale::pick(
+                        format!("Hotkey listener is not running. {err}"),
+                        format!("快捷键监听没有运行。{err}"),
+                    );
                     set_listener(&app, &listener, &message);
                     crate::diag::record(&message);
                 }
@@ -654,13 +710,16 @@ fn spawn_listener(
                     }
                 });
                 if let Err(err) = listen_result {
-                    let message = format!(
-                        "Hotkey listener is not running ({err:?}). On macOS, grant Accessibility and, if the hotkey still does nothing, Input Monitoring, then restart newtype."
+                    let message = crate::locale::pick(
+                        format!(
+                            "Hotkey listener is not running ({err:?}). On macOS, grant Accessibility and, if the hotkey still does nothing, Input Monitoring, then restart newtype."
+                        ),
+                        format!("快捷键监听没有运行（{err:?}）。请在 macOS 上允许辅助功能。如果快捷键仍然没反应，再允许输入监视，然后重启 newtype。"),
                     );
                     set_listener(&app, &listener, &message);
                     crate::diag::record(&message);
                 } else {
-                    let message = "Hotkey listener stopped.";
+                    let message = crate::locale::text("Hotkey listener stopped.", "快捷键监听已停止。");
                     set_listener(&app, &listener, message);
                     crate::diag::record(message);
                 }
@@ -680,7 +739,7 @@ fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {
 fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
     let mut talk = TalkController::new(TalkMode::Toggle);
     let mut mic: Option<MicSession> = None;
-    let mut route = String::from("Cloud · 云端");
+    let mut route = PathLabel::Cloud.text().to_string();
     let mut started: Option<Instant> = None;
     let mut busy = false;
     while let Ok(message) = inbox.recv() {
@@ -763,7 +822,7 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         &app,
                         "processing",
                         &route,
-                        "Still working on the last dictation.",
+                        crate::locale::text("Still working on the last dictation.", "上一条口授还在处理。"),
                         0,
                         0.0,
                         "",
@@ -798,7 +857,7 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         &app,
                         "cancelled",
                         &route,
-                        "Cancelled. Nothing was inserted.",
+                        crate::locale::text("Cancelled. Nothing was inserted.", "已取消。没有插入。"),
                         0,
                         0.0,
                         "",
@@ -809,7 +868,6 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         .cancel
                         .store(false, Ordering::Relaxed);
                     emit_phase(&app, "idle", &route, "", 0, 0.0, "");
-                    hide_indicator(&app);
                 }
             }
             Control::AutoStop => {
@@ -859,7 +917,7 @@ fn apply(
                 app,
                 "cancelled",
                 route,
-                "Cancelled. Nothing was inserted.",
+                crate::locale::text("Cancelled. Nothing was inserted.", "已取消。没有插入。"),
                 0,
                 0.0,
                 "",
@@ -1001,12 +1059,19 @@ fn begin_recording(
     }
     let privacy = if hold {
         router::block_message_for(decision.block, effective.preference)
-            .unwrap_or("This recording stays on this computer.")
+            .unwrap_or(crate::locale::text(
+                "This recording stays on this computer.",
+                "这段录音留在这台电脑上。",
+            ))
             .to_string()
     } else if on_device {
-        "Audio stays on this computer.".to_string()
+        crate::locale::text("Audio stays on this computer.", "音频留在这台电脑上。").to_string()
     } else {
-        "Audio will be sent to your speech provider when you stop.".to_string()
+        crate::locale::text(
+            "Audio will be sent to your speech provider when you stop.",
+            "停止后，音频会发往你的语音供应商。",
+        )
+        .to_string()
     };
     let recording_line = if selection_note.is_empty() {
         format!("{}. {privacy}", job.voice_label())
@@ -1088,7 +1153,15 @@ fn finish_recording(
     let _elapsed = started.take();
     bump(app);
     *busy = true;
-    emit_phase(app, "processing", route, "Transcribing…", 0, 0.0, "");
+    emit_phase(
+        app,
+        "processing",
+        route,
+        crate::locale::text("Transcribing…", "转写中…"),
+        0,
+        0.0,
+        "",
+    );
     show_indicator(app);
     let clip = session.stop();
     if audio::is_silent(&clip.samples) {
@@ -1098,7 +1171,7 @@ fn finish_recording(
             app,
             "silence",
             route,
-            "No speech detected. Nothing was inserted.",
+            crate::locale::text("No speech detected. Nothing was inserted.", "没有检测到语音。没有插入。"),
             0,
             0.0,
             "",
@@ -1117,7 +1190,7 @@ fn finish_recording(
             app,
             "cancelled",
             route,
-            "Cancelled. Nothing was inserted.",
+            crate::locale::text("Cancelled. Nothing was inserted.", "已取消。没有插入。"),
             0,
             0.0,
             "",
@@ -1137,7 +1210,10 @@ fn finish_recording(
                         phase = "copied";
                     }
                     Delivered::Failed(err) => {
-                        message = format!("{message} Could not paste: {err} Copy it from history.");
+                        message = crate::locale::pick(
+                            format!("{message} Could not paste: {err} Copy it from history."),
+                            format!("{message} 无法粘贴：{err} 请从历史复制。"),
+                        );
                         phase = "error";
                     }
                 }
@@ -1173,7 +1249,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         Ok(effective) => effective,
         Err(err) => {
             return Err(ProcessError {
-                route: "Cloud · 云端".into(),
+                route: PathLabel::Cloud.text().into(),
                 message: err,
             });
         }
@@ -1776,11 +1852,7 @@ fn emit_phase(
                 .unwrap_or_default(),
         },
     );
-    if phase == "idle" {
-        hide_indicator(app);
-    } else {
-        show_indicator(app);
-    }
+    show_indicator(app);
     if phase != "recording" {
         crate::tray::refresh_menu(app);
     }
@@ -1793,6 +1865,8 @@ fn show_indicator(app: &AppHandle) {
     }
     if let Some(window) = app.get_webview_window("indicator") {
         if window.is_visible().unwrap_or(false) {
+            let dir = app.path().app_config_dir().ok();
+            crate::overlay::clamp_indicator(&window, dir.as_deref());
             return;
         }
         place(&window);
@@ -1803,44 +1877,21 @@ fn show_indicator(app: &AppHandle) {
     }
 }
 
-fn hide_indicator(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("indicator") {
-        let _ = window.hide();
-    }
-}
-
 fn schedule_hide(app: &AppHandle, delay_ms: u64) {
     let app = app.clone();
     let generation = app.state::<Dictation>().generation.load(Ordering::Relaxed);
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         if app.state::<Dictation>().generation.load(Ordering::Relaxed) == generation {
-            hide_indicator(&app);
-            if let Ok(mut phase) = app.state::<Dictation>().phase.lock() {
-                *phase = "idle".into();
-            }
+            let route = app.state::<Dictation>().route_label();
+            emit_phase(&app, "idle", &route, "", 0, 0.0, "");
         }
     });
 }
 
 fn place(window: &tauri::WebviewWindow) {
-    let Ok(Some(monitor)) = window.current_monitor() else {
-        return;
-    };
-    let size = monitor.size();
-    let scale = monitor.scale_factor();
-    let width = 440.0 * scale;
-    let height = 84.0 * scale;
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-        width: width as u32,
-        height: height as u32,
-    }));
-    let x = (size.width as f64 - width) / 2.0;
-    let y = size.height as f64 - height - 64.0 * scale;
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-        x: x as i32,
-        y: y as i32,
-    }));
+    let dir = window.app_handle().path().app_config_dir().ok();
+    crate::overlay::place_indicator(window, dir.as_deref());
 }
 
 fn open_indicator(app: &AppHandle) {
@@ -1853,12 +1904,13 @@ fn open_indicator(app: &AppHandle) {
         WebviewUrl::App("index.html?view=indicator".into()),
     )
     .title("newtype")
-    .inner_size(440.0, 84.0)
+    .inner_size(480.0, 132.0)
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .focused(false)
     .visible(false)
+    .transparent(true)
     .resizable(false)
     .shadow(true)
     .initialization_script("window.__newtypeIndicator = true;")
@@ -1881,6 +1933,7 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
         share.generation = share.generation.wrapping_add(1);
     }
     *state.settings.lock().expect("settings") = settings.clone();
+    crate::locale::set_preference(&settings.ui_language);
     log_applied_hotkeys(&previous, &settings);
     let _ = warnings;
     apply_route_mode(&state, true);
@@ -2463,14 +2516,28 @@ fn apply_route_mode(state: &Dictation, cancel_downloads: bool) {
 
 fn connectivity_line(state: &Dictation) -> String {
     match egress::process_mode() {
-        NetMode::StrictOffline => {
-            "Strict offline. No cloud calls, probes, update checks, or model downloads.".into()
-        }
-        NetMode::LocalOnly => "Local only. Connectivity probes are off.".into(),
+        NetMode::StrictOffline => crate::locale::text(
+            "Strict offline. No cloud calls, probes, update checks, or model downloads.",
+            "严格离线。不会发起云端调用、探测、更新检查或模型下载。",
+        )
+        .into(),
+        NetMode::LocalOnly => crate::locale::text(
+            "Local only. Connectivity probes are off.",
+            "仅本地。已关闭连通性探测。",
+        )
+        .into(),
         NetMode::Open => match *state.reachability.lock().expect("reachability") {
-            Reachability::Unknown => "Checking the configured cloud provider.".into(),
-            Reachability::Reachable => "Cloud provider reachable.".into(),
-            Reachability::Unreachable => "Cloud provider unreachable.".into(),
+            Reachability::Unknown => crate::locale::text(
+                "Checking the configured cloud provider.",
+                "正在检查配置的云端供应商。",
+            )
+            .into(),
+            Reachability::Reachable => {
+                crate::locale::text("Cloud provider reachable.", "云端供应商可以连通。").into()
+            }
+            Reachability::Unreachable => {
+                crate::locale::text("Cloud provider unreachable.", "云端供应商连不上。").into()
+            }
         },
     }
 }
@@ -2478,18 +2545,32 @@ fn connectivity_line(state: &Dictation) -> String {
 fn notice_for(transition: probe::Transition, preference: RoutePreference, local_ready: bool) -> String {
     match (transition, preference) {
         (probe::Transition::Offline, RoutePreference::CloudDefault) if local_ready => {
-            "The cloud provider is unreachable. New dictations use the local model.".into()
+            crate::locale::text(
+                "The cloud provider is unreachable. New dictations use the local model.",
+                "云端供应商连不上。新的口授改用本地模型。",
+            )
+            .into()
         }
-        (probe::Transition::Offline, RoutePreference::CloudDefault) => {
-            "The cloud provider is unreachable, and the local speech model is not installed. Recordings stay on this computer.".into()
-        }
-        (probe::Transition::Offline, RoutePreference::CloudOnly) => {
-            "The cloud provider is unreachable. Cloud only will not use local models.".into()
-        }
-        (probe::Transition::Online, RoutePreference::CloudDefault) => {
-            "The cloud provider is back. The next dictation uses cloud.".into()
-        }
-        (probe::Transition::Online, RoutePreference::CloudOnly) => "The cloud provider is reachable again.".into(),
+        (probe::Transition::Offline, RoutePreference::CloudDefault) => crate::locale::text(
+            "The cloud provider is unreachable, and the local speech model is not installed. Recordings stay on this computer.",
+            "云端供应商连不上，本地语音模型也还没安装。录音留在这台电脑上。",
+        )
+        .into(),
+        (probe::Transition::Offline, RoutePreference::CloudOnly) => crate::locale::text(
+            "The cloud provider is unreachable. Cloud only will not use local models.",
+            "云端供应商连不上。仅云端不会使用本地模型。",
+        )
+        .into(),
+        (probe::Transition::Online, RoutePreference::CloudDefault) => crate::locale::text(
+            "The cloud provider is back. The next dictation uses cloud.",
+            "云端供应商已恢复。下一次口授走云端。",
+        )
+        .into(),
+        (probe::Transition::Online, RoutePreference::CloudOnly) => crate::locale::text(
+            "The cloud provider is reachable again.",
+            "云端供应商又可以连通了。",
+        )
+        .into(),
         _ => String::new(),
     }
 }

@@ -46,6 +46,9 @@
     "allow-local-delete",
     "allow-local-skip-download",
     "allow-local-set-mirror",
-    "allow-local-use-model"
+    "allow-local-use-model",
+    "allow-indicator-save-position",
+    "allow-indicator-open-history",
+    "core:window:allow-start-dragging"
   ]
 }

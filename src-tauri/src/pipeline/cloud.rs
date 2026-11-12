@@ -117,7 +117,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             id: "dashscope",
-            label: "DashScope · 通义",
+            label: "DashScope",
             asr_ready: true,
             llm_ready: true,
             base_editable: true,
@@ -132,7 +132,7 @@ pub fn presets() -> &'static [Preset] {
         },
         Preset {
             id: "volcengine",
-            label: "Volcengine · 火山",
+            label: "Volcengine",
             asr_ready: true,
             llm_ready: true,
             base_editable: true,

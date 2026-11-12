@@ -231,6 +231,20 @@ pub fn local_use_model(
 }
 
 #[tauri::command]
+pub fn indicator_save_position(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("indicator")
+        .ok_or_else(|| "indicator missing".to_string())?;
+    let dir = app.path().app_config_dir().map_err(|err| err.to_string())?;
+    crate::overlay::remember_indicator(&window, &dir)
+}
+
+#[tauri::command]
+pub fn indicator_open_history(app: AppHandle, last: bool) {
+    crate::tray::reveal_history(&app, last);
+}
+
+#[tauri::command]
 pub fn pipeline_status() -> Vec<PipelineModule> {
     pipeline::inventory()
         .into_iter()

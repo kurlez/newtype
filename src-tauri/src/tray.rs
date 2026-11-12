@@ -96,7 +96,7 @@ pub fn reveal(app: &AppHandle) {
     }
 }
 
-fn reveal_history(app: &AppHandle, last: bool) {
+pub fn reveal_history(app: &AppHandle, last: bool) {
     reveal(app);
     let _ = app.emit(
         "ui://navigate",
@@ -116,7 +116,7 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         None::<&str>,
     )?;
-    let open = MenuItem::with_id(app, "open", "Open newtype", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", crate::locale::text("Open newtype", "打开 newtype"), true, None::<&str>)?;
     let version = MenuItem::with_id(
         app,
         "version",
@@ -134,11 +134,17 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
     let route = MenuItem::with_id(
         app,
         "route",
-        format!("Path: {}", crate::dictation::route_label(app)),
+        format!("{}: {}", crate::locale::text("Path", "路径"), crate::dictation::route_label(app)),
         false,
         None::<&str>,
     )?;
-    let dictate = MenuItem::with_id(app, "dictate", "Start or stop dictation", true, None::<&str>)?;
+    let dictate = MenuItem::with_id(
+        app,
+        "dictate",
+        crate::locale::text("Start or stop dictation", "开始或停止口授"),
+        true,
+        None::<&str>,
+    )?;
     let fallback = MenuItem::with_id(
         app,
         "fallback",
@@ -149,25 +155,28 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
     let listener = MenuItem::with_id(
         app,
         "listener",
-        format!("Hotkeys: {}", crate::dictation::listener_line(app)),
+        format!("{}: {}", crate::locale::text("Hotkeys", "快捷键"), crate::dictation::listener_line(app)),
         false,
         None::<&str>,
     )?;
     let log = MenuItem::with_id(
         app,
         "log",
-        format!("Log: {}", crate::dictation::log_line()),
+        format!("{}: {}", crate::locale::text("Log", "日志"), crate::dictation::log_line()),
         false,
         None::<&str>,
     )?;
-    let check = MenuItem::with_id(app, "check", "Check for updates", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let check = MenuItem::with_id(app, "check", crate::locale::text("Check for updates", "检查更新"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", crate::locale::text("Quit", "退出"), true, None::<&str>)?;
     let sep_a = PredefinedMenuItem::separator(app)?;
     let sep_b = PredefinedMenuItem::separator(app)?;
     if state.phase == "ready" {
         let label = match &state.available_version {
-            Some(version) => format!("Restart to apply {version}"),
-            None => "Restart to apply update".to_string(),
+            Some(version) => crate::locale::pick(
+                format!("Restart to apply {version}"),
+                format!("重启以应用 {version}"),
+            ),
+            None => crate::locale::text("Restart to apply update", "重启以应用更新").to_string(),
         };
         let apply = MenuItem::with_id(app, "apply", label, true, None::<&str>)?;
         Menu::with_items(

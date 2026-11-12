@@ -197,16 +197,26 @@ fn recover_rewrite(
                 RouteReason::CloudFailedFallback,
                 Via::FallbackRewrite,
                 body,
-                "Inserted. The cloud rewrite failed, so this transcript used the local model.",
+                crate::locale::text(
+                    "Inserted. The cloud rewrite failed, so this transcript used the local model.",
+                    "已插入。云端改写失败，这段转写改用了本地模型。",
+                ),
                 false,
                 log,
             ),
             Err(local_err) => {
                 let ruled = rule(transcript);
-                let message = format!(
-                    "Inserted the ruled transcript. Cloud rewrite failed ({}) and the local rewrite also failed ({}). The recording is in History.",
-                    clip(err),
-                    clip(&local_err)
+                let message = crate::locale::pick(
+                    format!(
+                        "Inserted the ruled transcript. Cloud rewrite failed ({}) and the local rewrite also failed ({}). The recording is in History.",
+                        clip(err),
+                        clip(&local_err)
+                    ),
+                    format!(
+                        "已插入规则整理后的文本。云端改写失败（{}），本地改写也失败（{}）。录音在历史里。",
+                        clip(err),
+                        clip(&local_err)
+                    ),
                 );
                 let body = FinishedText {
                     raw: transcript.to_string(),
@@ -236,14 +246,26 @@ fn recover_rewrite(
     on_event(line);
     let ruled = rule(transcript);
     let message = if preference == RoutePreference::CloudOnly {
-        format!(
-            "Inserted the ruled transcript. Cloud rewrite failed ({}). Cloud only does not switch to the local model. The recording is in History.",
-            clip(err)
+        crate::locale::pick(
+            format!(
+                "Inserted the ruled transcript. Cloud rewrite failed ({}). Cloud only does not switch to the local model. The recording is in History.",
+                clip(err)
+            ),
+            format!(
+                "已插入规则整理后的文本。云端改写失败（{}）。仅云端不会改用本地模型。录音在历史里。",
+                clip(err)
+            ),
         )
     } else {
-        format!(
-            "Inserted the ruled transcript. Cloud rewrite failed ({}) and the local rewrite model is not installed. The recording is in History.",
-            clip(err)
+        crate::locale::pick(
+            format!(
+                "Inserted the ruled transcript. Cloud rewrite failed ({}) and the local rewrite model is not installed. The recording is in History.",
+                clip(err)
+            ),
+            format!(
+                "已插入规则整理后的文本。云端改写失败（{}），本地润色模型未安装。录音在历史里。",
+                clip(err)
+            ),
         )
     };
     let body = FinishedText {
@@ -267,11 +289,17 @@ fn done(
 ) -> Outcome {
     let message = if notice.is_empty() {
         if body.used_fallback {
-            format!("Inserted the ruled transcript. {}", body.reason)
+            crate::locale::pick(
+                format!("Inserted the ruled transcript. {}", body.reason),
+                format!("已插入规则整理后的文本。{}", body.reason),
+            )
         } else {
-            "Inserted.".into()
+            crate::locale::text("Inserted.", "已插入。").into()
         }
-    } else if body.used_fallback && !notice.contains("ruled transcript") {
+    } else if body.used_fallback
+        && !notice.contains("ruled transcript")
+        && !notice.contains("规则整理")
+    {
         format!("{notice} {}", body.reason)
     } else {
         notice.to_string()

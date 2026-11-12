@@ -192,35 +192,59 @@ pub fn view(
 }
 
 pub fn skip_warning() -> &'static str {
-    "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。 This reminder stays until both are installed."
+    skip_warning_in(crate::locale::prefers_zh())
+}
+
+pub fn skip_warning_in(zh: bool) -> &'static str {
+    if zh {
+        "跳过本地下载？断网后无法自动改用本地模型，直到语音模型和润色模型都安装并校验完成。这条提醒会一直留到两个都安装完成。"
+    } else {
+        "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. This reminder stays until both are installed."
+    }
 }
 
 pub fn fallback_menu(asr_ready: bool, llm_ready: bool) -> &'static str {
+    fallback_menu_in(crate::locale::prefers_zh(), asr_ready, llm_ready)
+}
+
+pub fn fallback_menu_in(zh: bool, asr_ready: bool, llm_ready: bool) -> &'static str {
     if asr_ready && llm_ready {
-        "Local fallback: ready"
+        if zh { "本地回落：就绪" } else { "Local fallback: ready" }
     } else if !llm_ready {
-        "Local fallback: rewrite model missing"
+        if zh { "本地回落：缺少润色模型" } else { "Local fallback: rewrite model missing" }
+    } else if zh {
+        "本地回落：未就绪"
     } else {
         "Local fallback: not ready"
     }
 }
 
 pub fn reminder(asr_ready: bool, llm_ready: bool, skipped: bool) -> String {
+    reminder_in(crate::locale::prefers_zh(), asr_ready, llm_ready, skipped)
+}
+
+pub fn reminder_in(zh: bool, asr_ready: bool, llm_ready: bool, skipped: bool) -> String {
     if asr_ready && llm_ready {
         return String::new();
     }
-    let mut text = String::from(
-        "Offline fallback is not ready. Download both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。",
-    );
+    let mut text = if zh {
+        "离线回落还没准备好。断网后无法自动改用本地模型，直到语音模型和润色模型都安装并校验完成。".to_string()
+    } else {
+        "Offline fallback is not ready. Download both the local speech model and the local rewrite model.".to_string()
+    };
     if skipped {
-        text.push_str(" You skipped the download. This reminder stays until both are installed.");
+        text.push_str(if zh {
+            "你跳过了下载。这条提醒会一直留到两个模型都安装完成。"
+        } else {
+            " You skipped the download. This reminder stays until both are installed."
+        });
     }
     if !asr_ready && !llm_ready {
-        text.push_str(" Neither model is installed.");
+        text.push_str(if zh { "两个模型都还没安装。" } else { " Neither model is installed." });
     } else if !asr_ready {
-        text.push_str(" The speech model is still missing.");
+        text.push_str(if zh { "语音模型还没安装。" } else { " The speech model is still missing." });
     } else {
-        text.push_str(" The rewrite model is still missing.");
+        text.push_str(if zh { "润色模型还没安装。" } else { " The rewrite model is still missing." });
     }
     text
 }
@@ -619,10 +643,18 @@ mod tests {
         assert!(!ready.fallback_ready());
         let shown = view(&dir, hardware, "auto", true, "", "", "");
         assert!(!shown.fallback_ready);
-        assert!(shown.reminder.contains("skipped") || shown.reminder.contains("Skipped") || shown.reminder.contains("skip"));
-        assert!(shown.reminder.contains("断网"));
-        assert!(shown.skip_warning.contains("断网"));
-        assert!(shown.skip_warning.contains("speech") && shown.skip_warning.contains("rewrite"));
+        assert_eq!(shown.reminder, reminder(false, false, true));
+        assert!(!crate::locale::mixes_languages(&shown.reminder));
+        assert!(!crate::locale::mixes_languages(&shown.skip_warning));
+        let english = reminder_in(false, false, false, true);
+        let chinese = reminder_in(true, false, false, true);
+        assert!(english.contains("skipped"));
+        assert!(!english.contains("断网"));
+        assert!(chinese.contains("断网"));
+        assert!(!crate::locale::mixes_languages(&english));
+        assert!(!crate::locale::mixes_languages(&chinese));
+        assert!(skip_warning_in(false).contains("speech") && skip_warning_in(false).contains("rewrite"));
+        assert!(skip_warning_in(true).contains("断网"));
         assert_eq!(shown.recommended_asr, "qwen3-asr-1.7b-q8");
         assert!(shown.disk_bytes == 0);
         assert!(shown.models.iter().any(|model| model.id == "qwen3-asr-0.6b-int8" && model.state == "missing"));
@@ -635,16 +667,19 @@ mod tests {
 
     #[test]
     fn reminder_clears_only_when_both_roles_are_ready() {
-        assert!(!reminder(true, false, false).is_empty());
-        assert!(!reminder(false, true, true).is_empty());
-        assert!(reminder(true, true, true).is_empty());
-        let warning = skip_warning();
+        assert!(!reminder_in(false, true, false, false).is_empty());
+        assert!(!reminder_in(false, false, true, true).is_empty());
+        assert!(reminder_in(false, true, true, true).is_empty());
+        assert!(reminder_in(true, true, true, true).is_empty());
+        let warning = skip_warning_in(false);
         assert!(warning.contains("speech"));
         assert!(warning.contains("rewrite"));
-        assert!(warning.contains("断网"));
-        assert_eq!(fallback_menu(true, true), "Local fallback: ready");
-        assert_eq!(fallback_menu(true, false), "Local fallback: rewrite model missing");
-        assert_eq!(fallback_menu(false, false), "Local fallback: rewrite model missing");
-        assert_eq!(fallback_menu(false, true), "Local fallback: not ready");
+        assert!(!warning.contains("断网"));
+        assert_eq!(fallback_menu_in(false, true, true), "Local fallback: ready");
+        assert_eq!(fallback_menu_in(false, true, false), "Local fallback: rewrite model missing");
+        assert_eq!(fallback_menu_in(false, false, false), "Local fallback: rewrite model missing");
+        assert_eq!(fallback_menu_in(false, false, true), "Local fallback: not ready");
+        assert_eq!(fallback_menu_in(true, true, true), "本地回落：就绪");
+        assert_eq!(fallback_menu_in(true, true, false), "本地回落：缺少润色模型");
     }
 }
