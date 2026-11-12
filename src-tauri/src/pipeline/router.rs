@@ -12,7 +12,7 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "router",
         status: "ready",
-        note: "Cloud is the live path. Local fallback is decided here and is not linked yet.",
+        note: "Manual local and strict offline select the local engines. Automatic offline fallback waits on a reachability probe, which this build does not run.",
     }
 }
 
@@ -242,7 +242,7 @@ pub fn block_message(block: Block) -> Option<&'static str> {
             Some("Save an API key for the speech provider before dictating. Audio is not sent until you do.")
         }
         Block::LocalNotReady => {
-            Some("Local models are not in this build, so this path cannot dictate yet. Cloud is the working path.")
+            Some("The local speech model is not installed yet. Download it in settings. Audio was not sent.")
         }
         Block::AsrNotFinished => {
             Some("This speech provider is not finished. Pick OpenAI, Groq, DashScope, or a custom endpoint for speech.")
@@ -263,6 +263,18 @@ mod tests {
             local_asr_ready: false,
             local_llm_ready: false,
         }
+    }
+
+    #[test]
+    fn cloud_default_stays_on_cloud_when_local_models_are_ready() {
+        let mut ready = input(RoutePreference::CloudDefault);
+        ready.local_asr_ready = true;
+        ready.local_llm_ready = true;
+        ready.reachability = Reachability::Unknown;
+        let decision = decide(ready);
+        assert_eq!(decision.asr, Slot::Cloud);
+        assert_eq!(decision.llm, Slot::Cloud);
+        assert_eq!(decision.label, PathLabel::Cloud);
     }
 
     #[test]

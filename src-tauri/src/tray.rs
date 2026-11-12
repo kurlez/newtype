@@ -41,11 +41,12 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
 
 pub fn refresh(app: &AppHandle, state: &StateDto) {
     let key = format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         state.phase,
         state.full_version,
         state.available_version.as_deref().unwrap_or(""),
         crate::dictation::route_label(app),
+        crate::dictation::fallback_line(app),
         crate::dictation::listener_line(app)
     );
     let mut last = LAST_MENU.lock().expect("tray menu key");
@@ -101,6 +102,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         None::<&str>,
     )?;
     let dictate = MenuItem::with_id(app, "dictate", "Start or stop dictation", true, None::<&str>)?;
+    let fallback = MenuItem::with_id(
+        app,
+        "fallback",
+        crate::dictation::fallback_line(app),
+        false,
+        None::<&str>,
+    )?;
     let listener = MenuItem::with_id(
         app,
         "listener",
@@ -128,13 +136,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         Menu::with_items(
             app,
             &[
-                &open, &version, &commit, &route, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
+                &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
             ],
         )
     } else {
         Menu::with_items(
             app,
-            &[&open, &version, &commit, &route, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
+            &[&open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
         )
     }
 }

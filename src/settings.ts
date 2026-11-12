@@ -1,3 +1,4 @@
+import { bindLocal, localPanel, showProgress, takeRemembered, wireLocal } from "./local-models";
 import { previewHistory, previewSnapshot } from "./preview";
 import {
   escapeHtml,
@@ -26,7 +27,7 @@ export async function mount(previewMode: boolean): Promise<void> {
   root.innerHTML = `
     <header>
       <h1>newtype</h1>
-      <p id="tagline">Cloud dictation for the focused app. Local models are not in this build.</p>
+      <p id="tagline">Cloud dictation by default. Local speech and rewrite stay on this computer when you choose them.</p>
     </header>
     <div id="dictate"></div>
     <section aria-labelledby="updates-heading">
@@ -56,7 +57,7 @@ export async function mount(previewMode: boolean): Promise<void> {
     </section>
     <section>
       <h2>About</h2>
-      <p class="status">Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen and Doubao weights are not bundled in this build.</p>
+      <p class="status">Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0 and download after install. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.</p>
     </section>
   `;
   wireUpdates();
@@ -93,7 +94,48 @@ export async function mount(previewMode: boolean): Promise<void> {
   });
   const { invoke } = await import("@tauri-apps/api/core");
   renderUpdate(await invoke<UpdateState>("get_state"));
+  wireLocal(preview, (event) => {
+    showProgress(event);
+    if (event.phase === "installed" || event.phase === "failed" || event.phase === "cancelled") {
+      void refreshLocal();
+    }
+  });
   await reload();
+}
+
+async function refreshLocal(): Promise<void> {
+  const remembered = takeRemembered();
+  if (remembered) {
+    snap.local = remembered.local;
+    snap.routeLabel = remembered.routeLabel;
+    snap.routeDetail = remembered.routeDetail;
+    snap.settings.localMirror = remembered.localMirror;
+    snap.settings.localDownloadSkipped = remembered.localDownloadSkipped;
+    snap.settings.localAsrId = remembered.localAsrId;
+    snap.settings.localLlmId = remembered.localLlmId;
+  } else if (!preview) {
+    const fresh = await call<Snapshot>("dictation_snapshot");
+    snap.local = fresh.local;
+    snap.routeLabel = fresh.routeLabel;
+    snap.routeDetail = fresh.routeDetail;
+    snap.settings.localMirror = fresh.settings.localMirror;
+    snap.settings.localDownloadSkipped = fresh.settings.localDownloadSkipped;
+    snap.settings.localAsrId = fresh.settings.localAsrId;
+    snap.settings.localLlmId = fresh.settings.localLlmId;
+  }
+  const current = document.querySelector("#local-models");
+  if (current) {
+    current.outerHTML = localPanel(snap.local, snap.settings.preference);
+    bindLocal(preview, refreshLocal);
+  }
+  const banner = document.querySelector("#route-banner");
+  if (banner) {
+    banner.textContent = snap.routeLabel;
+  }
+  const detail = document.querySelector("#route-detail");
+  if (detail) {
+    detail.textContent = snap.routeDetail;
+  }
 }
 
 async function reload(): Promise<void> {
@@ -113,17 +155,18 @@ function paint(): void {
   host.innerHTML = `
     <section>
       <h2>Path</h2>
-      <p class="banner">${escapeHtml(snap.routeLabel)}</p>
-      <p class="status">${escapeHtml(snap.routeDetail)}</p>
+      <p class="banner" id="route-banner">${escapeHtml(snap.routeLabel)}</p>
+      <p class="status" id="route-detail">${escapeHtml(snap.routeDetail)}</p>
       <p class="status">Hotkey listener: ${escapeHtml(snap.listener)}</p>
       <p class="status">Log file: ${escapeHtml(snap.logPath || "not open yet")}</p>
       ${snap.secureStore === "ready" ? "" : `<p class="status warn">Credential store: ${escapeHtml(snap.secureStore)}</p>`}
       ${radios("preference", [
-        ["cloudDefault", "Cloud default", "Use the configured provider. Local fallback is decided by the router and is not linked yet."],
-        ["localOnly", "Local only", "Not available in this build. Audio will not be sent."],
-        ["strictOffline", "Strict offline", "Not available in this build. Nothing is uploaded."],
+        ["cloudDefault", "Cloud default", "Use the configured provider. Automatic offline switching is not on yet."],
+        ["localOnly", "Local only", "Record, recognize, and rewrite on this computer. Audio is not sent."],
+        ["strictOffline", "Strict offline", "Same as local. Downloads stay off unless you allow one."],
       ], settings.preference)}
     </section>
+    ${localPanel(snap.local, settings.preference)}
     <section>
       <h2>Permissions</h2>
       <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
@@ -201,6 +244,7 @@ function paint(): void {
     </section>
   `;
   bind();
+  bindLocal(preview, refreshLocal);
 }
 
 function bind(): void {

@@ -29,7 +29,7 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "shortDescription": "AI voice input",
-    "longDescription": "newtype is a menu-bar voice input app. This build dictates through a cloud speech model and a rewrite model.",
+    "longDescription": "newtype is a menu-bar voice input app. Cloud dictation is the default. Local Qwen speech and rewrite models download when you choose them.",
     "category": "Productivity",
     "icon": [
       "icons/32x32.png",

@@ -6,6 +6,6 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "llm",
         status: "ready",
-        note: "Cloud rewrite is on. temperature 0, and thinking is turned off where the model allows it. Local llama.cpp is not linked.",
+        note: "Cloud rewrite is on. Local rewrite uses llama.cpp with thinking off. temperature is 0 on both paths.",
     }
 }

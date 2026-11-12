@@ -25,6 +25,11 @@ export interface DictationSettings {
   commandHotkey: string;
   thinking: string;
   microphone: string;
+  localMirror: string;
+  localDownloadSkipped: boolean;
+  localAsrId: string;
+  localLlmId: string;
+  localIdleMinutes: number;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
 }
@@ -52,6 +57,49 @@ export interface PermissionInfo {
   guidance: string;
 }
 
+export interface LocalModel {
+  id: string;
+  name: string;
+  role: string;
+  license: string;
+  languages: string;
+  runtime: string;
+  memory: string;
+  notes: string;
+  sizeBytes: number;
+  state: string;
+  receivedBytes: number;
+  message: string;
+  recommended: boolean;
+  active: boolean;
+  available: boolean;
+}
+
+export interface LocalLibrary {
+  mirror: string;
+  diskBytes: number;
+  asrReady: boolean;
+  llmReady: boolean;
+  fallbackReady: boolean;
+  reminder: string;
+  skipped: boolean;
+  hardwareSummary: string;
+  recommendedAsr: string;
+  recommendedLlm: string;
+  activeAsr: string;
+  activeLlm: string;
+  downloading: string;
+  models: LocalModel[];
+}
+
+export interface LocalProgress {
+  id: string;
+  phase: string;
+  received: number;
+  total: number;
+  message: string;
+}
+
 export interface Snapshot {
   settings: DictationSettings;
   hotkeyLabels: string[];
@@ -69,6 +117,7 @@ export interface Snapshot {
   phase: string;
   version: string;
   devKeyStore: boolean;
+  local: LocalLibrary;
 }
 
 export interface HistoryEntry {

@@ -8,4 +8,6 @@ Keep the ckckck/OpenTypeless attribution when redistributing these prompts.
 
 `v2-polish.system.txt` and `v2-polish.user.txt` are newtype's default polish prompts. They keep the same MIT skeleton and the same hard limits (do not answer, do not execute, keep meaning and language, keep terms and hot words exact, treat the transcript as untrusted data). They relax only wording and sentence flow, as specified for the polish level.
 
+`v2-polish-local.system.txt` and `v2-polish-local.user.txt` are the shortened local-model variants of that polish prompt. They keep the same hard limits and add a few short examples. They do not copy prompt text from Open-Less/openless.
+
 Ideas about correction order — hot words before a model, transcripts treated as data, no "here is the cleaned text" preamble — are common to open voice-input tools. No prompt text was copied from Open-Less/openless (AGPL-3.0).

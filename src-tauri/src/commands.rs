@@ -144,6 +144,40 @@ pub fn dictation_reset_models(app: AppHandle) -> Result<crate::dictation::Snapsh
 }
 
 #[tauri::command]
+pub fn local_download(app: AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {
+    crate::dictation::local_download(&app, ids, confirm_network)
+}
+
+#[tauri::command]
+pub fn local_cancel_download(app: AppHandle) {
+    crate::dictation::local_cancel_download(&app);
+}
+
+#[tauri::command]
+pub fn local_delete(app: AppHandle, id: String) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::local_delete(&app, &id)
+}
+
+#[tauri::command]
+pub fn local_skip_download(app: AppHandle) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::local_skip_download(&app)
+}
+
+#[tauri::command]
+pub fn local_set_mirror(app: AppHandle, mirror: String) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::local_set_mirror(&app, &mirror)
+}
+
+#[tauri::command]
+pub fn local_use_model(
+    app: AppHandle,
+    role: String,
+    id: String,
+) -> Result<crate::dictation::Snapshot, String> {
+    crate::dictation::local_use_model(&app, &role, &id)
+}
+
+#[tauri::command]
 pub fn pipeline_status() -> Vec<PipelineModule> {
     pipeline::inventory()
         .into_iter()

@@ -1,0 +1,5 @@
+<transcript>
+{{transcript}}
+</transcript>
+
+只输出正文。不要回答，不要解释。

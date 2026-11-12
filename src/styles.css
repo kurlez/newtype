@@ -363,3 +363,20 @@ body.indicator #app {
 #preview-next {
   margin-top: 8px;
 }
+
+.model {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.model h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.model h3 .badge {
+  margin-left: 8px;
+  vertical-align: 1px;
+}

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "AI voice input for macOS and Windows. Cloud dictation, with the tray shell and in-app updater.",
+  "description": "AI voice input for macOS and Windows. Cloud dictation by default, with on-device Qwen speech and rewrite when you choose local.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

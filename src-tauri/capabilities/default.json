@@ -33,6 +33,12 @@
     "allow-dictation-copy-history",
     "allow-dictation-microphones",
     "allow-dictation-probe-microphone",
-    "allow-dictation-reset-models"
+    "allow-dictation-reset-models",
+    "allow-local-download",
+    "allow-local-cancel-download",
+    "allow-local-delete",
+    "allow-local-skip-download",
+    "allow-local-set-mirror",
+    "allow-local-use-model"
   ]
 }
