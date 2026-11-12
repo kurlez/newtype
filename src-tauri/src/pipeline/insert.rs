@@ -33,14 +33,14 @@ pub fn insert_text(text: &str) -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn clipboard_get() -> Option<String> {
+pub(crate) fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.get_text())
         .ok()
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn clipboard_set(text: &str) -> Result<(), String> {
+pub(crate) fn clipboard_set(text: &str) -> Result<(), String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|err| format!("Clipboard is unavailable: {err}"))?;
     clipboard
@@ -49,13 +49,25 @@ fn clipboard_set(text: &str) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn clipboard_get() -> Option<String> {
+pub(crate) fn clipboard_get() -> Option<String> {
     None
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn clipboard_set(_text: &str) -> Result<(), String> {
+pub(crate) fn clipboard_set(_text: &str) -> Result<(), String> {
     Err("Clipboard paste is implemented for macOS and Windows.".into())
+}
+
+pub(crate) fn copy_shortcut() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let modifier = rdev::Key::MetaLeft;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = rdev::Key::ControlLeft;
+    press(modifier)?;
+    press(rdev::Key::KeyC)?;
+    release(rdev::Key::KeyC)?;
+    release(modifier)?;
+    Ok(())
 }
 
 fn paste_shortcut() -> Result<(), String> {

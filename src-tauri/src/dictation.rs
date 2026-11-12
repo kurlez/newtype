@@ -25,8 +25,11 @@ use crate::pipeline::hotkey::{
 };
 use crate::pipeline::insert;
 use crate::pipeline::egress::{self, NetMode};
-use crate::pipeline::polish::{self, FinishedText, PolishLevel};
+use crate::pipeline::polish::{FinishedText, PolishLevel};
 use crate::pipeline::probe;
+use crate::pipeline::rewrite::{self, Audience};
+use crate::pipeline::selection;
+use crate::pipeline::task::{self, Job};
 use crate::pipeline::router::{self, Block, PathLabel, Reachability, RouteDecision, RouteInput, RoutePreference, Slot};
 use crate::pipeline::session::{self, Outcome, Via};
 use crate::secrets;
@@ -58,6 +61,7 @@ pub struct Dictation {
     log_path: String,
     mic_status: Arc<Mutex<String>>,
     phase: Mutex<String>,
+    session_label: Mutex<String>,
     reachability: Mutex<Reachability>,
     notice: Mutex<String>,
     probe_wake: Arc<AtomicBool>,
@@ -72,6 +76,7 @@ pub struct Dictation {
 struct LockedSession {
     decision: RouteDecision,
     preference: RoutePreference,
+    job: Job,
 }
 
 #[derive(Clone, Serialize)]
@@ -92,6 +97,7 @@ struct PhaseEvent {
     elapsed_ms: u64,
     level: f32,
     text: String,
+    mode: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -182,13 +188,25 @@ impl Dictation {
                     .expect("defaults")
             });
         let (control, inbox) = mpsc::channel();
+        let mut history = history::load(&history_path);
+        let removed = history::prune(
+            &mut history,
+            history::Retention::parse(&settings.history_retention),
+            now_ms(),
+        );
+        for id in &removed {
+            let _ = std::fs::remove_file(audio_file(&history_path, id));
+        }
+        if !removed.is_empty() {
+            let _ = history::save(&history_path, &history);
+        }
         Ok(Self {
             settings_path,
             history_path: history_path.clone(),
             dev_secrets,
             engines,
             settings: Mutex::new(settings),
-            history: Mutex::new(history::load(&history_path)),
+            history: Mutex::new(history),
             hotkeys: Arc::new(Mutex::new(HotkeyShare {
                 generation: 1,
                 bindings: effective.bindings,
@@ -200,6 +218,7 @@ impl Dictation {
             log_path: crate::diag::path().unwrap_or_default(),
             mic_status: Arc::new(Mutex::new("unknown".into())),
             phase: Mutex::new("idle".into()),
+            session_label: Mutex::new("Dictate · 口授".into()),
             reachability: Mutex::new(Reachability::Unknown),
             notice: Mutex::new(String::new()),
             probe_wake: Arc::new(AtomicBool::new(true)),
@@ -653,6 +672,7 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         &mut mic,
                         &mut route,
                         &mut started,
+                        HotkeyMode::Dictate,
                     );
                 }
             }
@@ -716,8 +736,8 @@ fn apply(
     effect: TalkEffect,
 ) {
     match effect {
-        TalkEffect::StartDictate => {
-            begin_recording(app, control, talk, mic, route, started);
+        TalkEffect::Start(mode) => {
+            begin_recording(app, control, talk, mic, route, started, mode);
         }
         TalkEffect::Stop => {
             finish_recording(app, mic, started, busy, route, false);
@@ -737,23 +757,13 @@ fn apply(
             );
             schedule_hide(app, 900);
         }
-        TalkEffect::Stub(mode) | TalkEffect::CancelThenStub(mode) => {
-            if matches!(effect, TalkEffect::CancelThenStub(_)) {
-                mic.take();
-                *started = None;
-                bump(app);
-            }
-            let message = match mode {
-                HotkeyMode::Translate => {
-                    "Translate is registered and not implemented in this build."
-                }
-                HotkeyMode::Command => {
-                    "Command mode is registered and not implemented in this build."
-                }
-                HotkeyMode::Dictate => "Dictation is ready.",
-            };
-            emit_phase(app, "stub", route, message, 0, 0.0, "");
-            schedule_hide(app, 1800);
+        TalkEffect::CancelThenStart(mode) => {
+            mic.take();
+            *started = None;
+            bump(app);
+            *app.state::<Dictation>().locked.lock().expect("locked") = None;
+            talk.active = Some(mode);
+            begin_recording(app, control, talk, mic, route, started, mode);
         }
         TalkEffect::Ignore => {}
     }
@@ -766,6 +776,7 @@ fn begin_recording(
     mic: &mut Option<MicSession>,
     route: &mut String,
     started: &mut Option<Instant>,
+    mode: HotkeyMode,
 ) {
     if mic.is_some() {
         return;
@@ -784,10 +795,22 @@ fn begin_recording(
     };
     let ready = readiness_of(&state);
     let decision = route_for(&state, &effective, ready);
+    let hardware = catalog::host_hardware();
+    let llm_id = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
+    let mut job = job_for(mode, &effective);
+    *state.session_label.lock().expect("mode") = job.voice_label();
     *route = decision.label.text().to_string();
+    if let Some(message) = command_block(&job, decision, &llm_id) {
+        talk.active = None;
+        emit_phase(app, "error", route, &message, 0, 0.0, "");
+        show_indicator(app);
+        schedule_hide(app, 4200);
+        return;
+    }
     *state.locked.lock().expect("locked") = Some(LockedSession {
         decision,
         preference: effective.preference,
+        job: job.clone(),
     });
     crate::diag::record(&format!(
         "route decision preference={} path={} label=\"{}\" reason={:?} block={:?}",
@@ -839,13 +862,29 @@ fn begin_recording(
             return;
         }
     }
-    let recording_line = if hold {
+    let mut selection_note = String::new();
+    if matches!(mode, HotkeyMode::Command) {
+        let captured = selection::capture_focused();
+        selection_note = captured.note;
+        job = Job::Command { selection: captured.text };
+        *state.session_label.lock().expect("mode") = job.voice_label();
+        if let Some(locked) = state.locked.lock().expect("locked").as_mut() {
+            locked.job = job.clone();
+        }
+    }
+    let privacy = if hold {
         router::block_message_for(decision.block, effective.preference)
             .unwrap_or("This recording stays on this computer.")
+            .to_string()
     } else if on_device {
-        "Recording. Audio stays on this computer."
+        "Audio stays on this computer.".to_string()
     } else {
-        "Recording. Audio will be sent to your speech provider when you stop."
+        "Audio will be sent to your speech provider when you stop.".to_string()
+    };
+    let recording_line = if selection_note.is_empty() {
+        format!("{}. {privacy}", job.voice_label())
+    } else {
+        format!("{}. {privacy} {selection_note}", job.voice_label())
     };
     match audio::MicSession::start(&effective.microphone) {
         Ok(session) => {
@@ -855,7 +894,7 @@ fn begin_recording(
             *mic = Some(session);
             *started = Some(started_at);
             let generation = bump(app);
-            emit_phase(app, "recording", route, recording_line, 0, 0.0, "");
+            emit_phase(app, "recording", route, &recording_line, 0, 0.0, "");
             show_indicator(app);
             let app_loop = app.clone();
             let control = control.clone();
@@ -962,7 +1001,7 @@ fn finish_recording(
     match outcome {
         Ok(done) => {
             let mut message = done.message;
-            if !done.text.is_empty() {
+            if done.insert && !done.text.is_empty() {
                 if let Err(err) = insert::insert_text(&done.text) {
                     message = format!("{message} Could not paste: {err} Copy it from history.");
                 }
@@ -983,6 +1022,7 @@ struct Done {
     route: String,
     phase: &'static str,
     message: String,
+    insert: bool,
 }
 
 struct ProcessError {
@@ -1006,6 +1046,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let locked = state.locked.lock().expect("locked").take().unwrap_or(LockedSession {
         decision: route_for(&state, &effective, ready),
         preference: effective.preference,
+        job: Job::Polish(effective.polish),
     });
     let dev_secrets = state.dev_secrets.clone();
     let engines = Arc::clone(&state.engines);
@@ -1050,8 +1091,8 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let asr_for_audio = asr_id.clone();
     let llm_for_audio = llm_id.clone();
     let hotwords = effective.hotwords.clone();
-    let polish_level = effective.polish;
     let llm_ready = ready.llm;
+    let job_audio = locked.job.clone();
     let local_audio = move |_wav: &[u8]| {
         match local_run::run(
             &engines_audio,
@@ -1063,7 +1104,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             &asr_for_audio,
             &llm_for_audio,
             llm_ready,
-            polish_level,
+            &job_audio,
             &hotwords,
             &front::front_app_name(),
             &report,
@@ -1085,6 +1126,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let engines_rewrite = engines;
     let llm_for_rewrite = llm_id;
     let hotwords_rewrite = effective.hotwords.clone();
+    let job_rewrite = locked.job.clone();
     let report_rewrite = {
         let report_app = app.clone();
         let report_route = Arc::clone(&shown);
@@ -1098,7 +1140,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             &engines_rewrite,
             &llm_for_rewrite,
             transcript,
-            polish_level,
+            &job_rewrite,
             &hotwords_rewrite,
             &front::front_app_name(),
             &report_rewrite,
@@ -1114,6 +1156,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let thinking = effective.thinking;
     let llm_implemented = effective.llm_implemented;
     let hotwords_cloud = effective.hotwords.clone();
+    let speech_hint = crate::pipeline::hotwords::asr_hint(&hotwords_cloud);
     let cloud_asr = move |audio: &[u8]| {
         let key = secrets::get_key(&asr_provider, &dev_secrets)?
             .filter(|value| !value.is_empty())
@@ -1123,16 +1166,21 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             key,
             model: asr_model,
             wire: asr_wire,
+            prompt: speech_hint.clone(),
         }
         .transcribe(audio)
     };
     let dev_secrets_llm = app.state::<Dictation>().dev_secrets.clone();
+    let job_cloud = locked.job.clone();
     let cloud_rewrite = move |transcript: &str| -> Result<FinishedText, String> {
         let key = secrets::get_key(&llm_provider, &dev_secrets_llm)
             .ok()
             .flatten()
             .filter(|value| !value.is_empty());
         if !llm_implemented || key.is_none() {
+            if job_cloud.needs_capable_local() {
+                return Err("No rewrite model is configured for this mode.".into());
+            }
             let ruled = crate::pipeline::hotwords::apply(transcript, &hotwords_cloud);
             return Ok(FinishedText {
                 raw: transcript.to_string(),
@@ -1148,10 +1196,11 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             model: llm_model,
             thinking,
         };
-        polish::attempt_transcript(
+        rewrite::attempt_job(
+            Audience::Cloud,
+            &job_cloud,
             transcript,
             &hotwords_cloud,
-            polish_level,
             &front::front_app_name(),
             &llm,
         )
@@ -1185,28 +1234,38 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             } else {
                 done.label.text().to_string()
             };
-            let phase = if done.body.used_fallback || matches!(done.via, Via::FallbackAudio | Via::FallbackRewrite) {
+            let insert = task::should_insert(&locked.job, &done.body.text, done.body.used_fallback);
+            let phase = if !insert {
+                "withheld"
+            } else if done.body.used_fallback || matches!(done.via, Via::FallbackAudio | Via::FallbackRewrite) {
                 "fallback"
             } else {
                 "inserted"
             };
+            let message = if insert {
+                done.message
+            } else {
+                task::withheld_message(&locked.job, &done.body.reason)
+            };
             remember(
                 app,
                 &effective,
+                &locked.job,
                 &label,
                 &provider,
                 &done.body.raw,
                 &done.body.ruled,
                 &done.body.text,
                 done.body.used_fallback,
-                &done.message,
+                &message,
                 done.keep_audio.then_some(wav.as_slice()),
             );
             Ok(Done {
                 text: done.body.text,
                 route: label,
                 phase,
-                message: done.message,
+                message,
+                insert,
             })
         }
         Outcome::Failed(failed) => {
@@ -1214,6 +1273,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             remember(
                 app,
                 &effective,
+                &locked.job,
                 &label,
                 "kept",
                 &failed.raw,
@@ -1234,6 +1294,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
 fn remember(
     app: &AppHandle,
     effective: &dictate_config::Effective,
+    job: &Job,
     route: &str,
     provider: &str,
     raw: &str,
@@ -1244,11 +1305,14 @@ fn remember(
     audio: Option<&[u8]>,
 ) {
     let state = app.state::<Dictation>();
+    if effective.history_retention == history::Retention::Off {
+        return;
+    }
     let entry = HistoryEntry {
         id: format!("{}-{}", now_ms(), state.generation.load(Ordering::Relaxed)),
         created_at_ms: now_ms(),
         app_version: version_of(app),
-        mode: "dictate".into(),
+        mode: job.mode_name().into(),
         route: route.to_string(),
         provider: provider.to_string(),
         polish_level: match effective.polish {
@@ -1274,7 +1338,13 @@ fn remember(
     }
     let mut history = state.history.lock().expect("history");
     history::push(&mut history, entry);
-    let _ = history::save(&state.history_path, &history);
+    let removed = history::prune(&mut history, effective.history_retention, now_ms());
+    let saved = history::save(&state.history_path, &history);
+    drop(history);
+    for id in removed {
+        let _ = std::fs::remove_file(audio_file(&state.history_path, &id));
+    }
+    let _ = saved;
 }
 
 fn bump(app: &AppHandle) -> u64 {
@@ -1308,6 +1378,12 @@ fn emit_phase(
             elapsed_ms,
             level,
             text: text.into(),
+            mode: app
+                .state::<Dictation>()
+                .session_label
+                .lock()
+                .map(|label| label.clone())
+                .unwrap_or_default(),
         },
     );
     if phase == "idle" {
@@ -1681,6 +1757,32 @@ pub fn cancel_capture(app: &AppHandle) {
     share.generation = share.generation.wrapping_add(1);
 }
 
+fn job_for(mode: HotkeyMode, effective: &dictate_config::Effective) -> Job {
+    match mode {
+        HotkeyMode::Dictate => Job::Polish(effective.polish),
+        HotkeyMode::Translate => Job::Translate {
+            target: effective.target_language.clone(),
+        },
+        HotkeyMode::Command => Job::Command { selection: None },
+    }
+}
+
+fn command_block(job: &Job, decision: RouteDecision, llm_id: &str) -> Option<String> {
+    if !matches!(job, Job::Command { .. }) {
+        return None;
+    }
+    if decision.block != Block::None || decision.asr == Slot::None {
+        return None;
+    }
+    if decision.llm == Slot::Cloud {
+        return None;
+    }
+    if decision.llm == Slot::Local && task::local_rewrite_capable(llm_id) {
+        return None;
+    }
+    Some(task::small_model_reason(job))
+}
+
 pub fn history(app: &AppHandle) -> Vec<HistoryEntry> {
     app.state::<Dictation>()
         .history
@@ -1698,6 +1800,104 @@ pub fn delete_history(app: &AppHandle, id: &str) -> Result<(), String> {
     drop(history);
     let _ = std::fs::remove_file(audio);
     saved
+}
+
+pub fn clear_history(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<Dictation>();
+    let ids: Vec<String> = {
+        let mut history = state.history.lock().expect("history");
+        let ids = history.iter().map(|entry| entry.id.clone()).collect();
+        history.clear();
+        history::save(&state.history_path, &history)?;
+        ids
+    };
+    for id in ids {
+        let _ = std::fs::remove_file(audio_file(&state.history_path, &id));
+    }
+    Ok(())
+}
+
+pub fn reinsert_history(app: &AppHandle, id: &str) -> Result<(), String> {
+    let text = {
+        let state = app.state::<Dictation>();
+        let history = state.history.lock().expect("history");
+        history
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| entry.text.clone())
+            .ok_or_else(|| "That history entry is gone.".to_string())?
+    };
+    if text.trim().is_empty() {
+        return Err("That history entry has no text to insert.".into());
+    }
+    insert::insert_text(&text)
+}
+
+pub fn export_dictionary(app: &AppHandle) -> Result<String, String> {
+    let settings = app.state::<Dictation>().settings.lock().expect("settings").clone();
+    crate::pipeline::hotwords::export_json(&settings.hotwords)
+}
+
+pub fn import_dictionary(app: &AppHandle, body: &str) -> Result<Snapshot, String> {
+    let words = crate::pipeline::hotwords::import_json(body).map_err(|err| err.to_string())?;
+    let state = app.state::<Dictation>();
+    let mut settings = state.settings.lock().expect("settings").clone();
+    settings.hotwords = words;
+    drop(state);
+    save_settings(app, settings)
+}
+
+pub fn rerun_history(app: &AppHandle, id: &str) -> Result<String, String> {
+    let state = app.state::<Dictation>();
+    let phase = state.phase.lock().expect("phase").clone();
+    if phase == "recording" || phase == "processing" {
+        return Err("Finish the current dictation before re-running a recording.".into());
+    }
+    let entry = state
+        .history
+        .lock()
+        .expect("history")
+        .iter()
+        .find(|entry| entry.id == id)
+        .cloned()
+        .ok_or_else(|| "That history entry is gone.".to_string())?;
+    if !entry.audio_kept {
+        return Err("This entry has no saved recording to re-run.".into());
+    }
+    let bytes = std::fs::read(audio_file(&state.history_path, id))
+        .map_err(|_| "The saved recording is missing.".to_string())?;
+    let clip = audio::decode_wav(&bytes)?;
+    let settings = state.settings.lock().expect("settings").clone();
+    let effective = dictate_config::effective(&settings, hotkey::host_os())?;
+    let ready = readiness_of(&state);
+    let decision = route_for(&state, &effective, ready);
+    let mode = match entry.mode.as_str() {
+        "translate" => HotkeyMode::Translate,
+        "command" => HotkeyMode::Command,
+        _ => HotkeyMode::Dictate,
+    };
+    let job = job_for(mode, &effective);
+    let hardware = catalog::host_hardware();
+    let llm_id = catalog::active_id(catalog::Role::Llm, &settings.local_llm_id, hardware);
+    if let Some(message) = command_block(&job, decision, &llm_id) {
+        return Err(message);
+    }
+    *state.session_label.lock().expect("mode") = job.voice_label();
+    *state.locked.lock().expect("locked") = Some(LockedSession {
+        decision,
+        preference: effective.preference,
+        job,
+    });
+    drop(state);
+    match transcribe_and_polish(app, clip) {
+        Ok(done) => {
+            if done.insert && !done.text.is_empty() {
+                insert::insert_text(&done.text)?;
+            }
+            Ok(done.message)
+        }
+        Err(failed) => Err(failed.message),
+    }
 }
 
 pub fn copy_history(app: &AppHandle, id: &str) -> Result<(), String> {

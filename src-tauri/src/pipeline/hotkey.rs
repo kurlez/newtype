@@ -1,8 +1,8 @@
 //! Global hotkeys that can tell the left modifier from the right one.
 //!
 //! Modifier-only chords (Right Ctrl on both desktops) are not OS accelerators.
-//! A low-level key listener feeds this engine. Translate and command are
-//! registered here; the session treats them as stubs.
+//! A low-level key listener feeds this engine. Dictate, translate, and command
+//! all start a recording. The dictate chord also ends the other two modes.
 
 use std::collections::BTreeSet;
 
@@ -12,7 +12,7 @@ pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "hotkey",
         status: "ready",
-        note: "Dictate, translate, and command chords are registered. Translate and command do not record yet.",
+        note: "Dictate, translate, and command all record. Press the same chord again to stop. The dictate chord also stops translate and command.",
     }
 }
 
@@ -217,11 +217,11 @@ pub enum TalkMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TalkEffect {
-    StartDictate,
+    Start(HotkeyMode),
     Stop,
     Cancel,
-    Stub(HotkeyMode),
-    CancelThenStub(HotkeyMode),
+    /// The chord window replaced the mode that just started. Drop that audio.
+    CancelThenStart(HotkeyMode),
     Ignore,
 }
 
@@ -277,35 +277,28 @@ impl TalkController {
 
     fn on_pressed(&mut self, mode: HotkeyMode, now_ms: u64) -> TalkEffect {
         if let Some(active) = self.active {
-            if mode == HotkeyMode::Dictate
-                && active == HotkeyMode::Dictate
-                && self.talk_mode == TalkMode::Toggle
-            {
+            if mode == active {
+                if self.talk_mode == TalkMode::Toggle {
+                    self.active = None;
+                    return TalkEffect::Stop;
+                }
+                return TalkEffect::Ignore;
+            }
+            let age = now_ms.saturating_sub(self.started_ms);
+            if age <= CHORD_WINDOW_MS {
+                self.active = Some(mode);
+                self.started_ms = now_ms;
+                return TalkEffect::CancelThenStart(mode);
+            }
+            if mode == HotkeyMode::Dictate && self.talk_mode == TalkMode::Toggle {
                 self.active = None;
                 return TalkEffect::Stop;
             }
-            let age = now_ms.saturating_sub(self.started_ms);
-            if mode != active && age <= CHORD_WINDOW_MS {
-                self.active = None;
-                return match mode {
-                    HotkeyMode::Dictate => {
-                        self.active = Some(HotkeyMode::Dictate);
-                        self.started_ms = now_ms;
-                        TalkEffect::StartDictate
-                    }
-                    other => TalkEffect::CancelThenStub(other),
-                };
-            }
             return TalkEffect::Ignore;
         }
-        match mode {
-            HotkeyMode::Dictate => {
-                self.active = Some(HotkeyMode::Dictate);
-                self.started_ms = now_ms;
-                TalkEffect::StartDictate
-            }
-            other => TalkEffect::Stub(other),
-        }
+        self.active = Some(mode);
+        self.started_ms = now_ms;
+        TalkEffect::Start(mode)
     }
 }
 
@@ -868,7 +861,7 @@ mod tests {
         let mut toggle = TalkController::new(TalkMode::Toggle);
         assert_eq!(
             toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 0),
-            TalkEffect::StartDictate
+            TalkEffect::Start(HotkeyMode::Dictate)
         );
         assert_eq!(
             toggle.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 40),
@@ -882,7 +875,7 @@ mod tests {
         let mut hold = TalkController::new(TalkMode::Hold);
         assert_eq!(
             hold.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 0),
-            TalkEffect::StartDictate
+            TalkEffect::Start(HotkeyMode::Dictate)
         );
         assert_eq!(
             hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 400),
@@ -893,9 +886,9 @@ mod tests {
         window.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_000);
         assert_eq!(
             window.on_event(&EngineEvent::Pressed(HotkeyMode::Translate), 1_200),
-            TalkEffect::CancelThenStub(HotkeyMode::Translate)
+            TalkEffect::CancelThenStart(HotkeyMode::Translate)
         );
-        assert!(window.active.is_none());
+        assert_eq!(window.active, Some(HotkeyMode::Translate));
 
         let mut late = TalkController::new(TalkMode::Toggle);
         late.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_000);
@@ -920,5 +913,24 @@ mod tests {
             extra.on_event(&EngineEvent::Escape, 600),
             TalkEffect::Cancel
         );
+
+        let mut translate = TalkController::new(TalkMode::Toggle);
+        assert_eq!(
+            translate.on_event(&EngineEvent::Pressed(HotkeyMode::Translate), 0),
+            TalkEffect::Start(HotkeyMode::Translate)
+        );
+        assert_eq!(
+            translate.on_event(&EngineEvent::Pressed(HotkeyMode::Translate), 400),
+            TalkEffect::Stop
+        );
+        assert_eq!(
+            translate.on_event(&EngineEvent::Pressed(HotkeyMode::Command), 500),
+            TalkEffect::Start(HotkeyMode::Command)
+        );
+        assert_eq!(
+            translate.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 900),
+            TalkEffect::Stop
+        );
+        assert!(translate.active.is_none());
     }
 }

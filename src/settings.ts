@@ -1,3 +1,4 @@
+import { ui } from "./i18n";
 import {
   beginCapture,
   bindingError,
@@ -23,11 +24,13 @@ import {
   type UpdateState,
 } from "./types";
 
-const HOTKEY_MODES: Array<[HotkeyModeName, string]> = [
-  ["dictate", "Dictate"],
-  ["translate", "Translate (stub)"],
-  ["command", "Command (stub)"],
+const HOTKEY_MODES: Array<[HotkeyModeName, string, string]> = [
+  ["dictate", "Dictate", "口授"],
+  ["translate", "Translate", "翻译"],
+  ["command", "Command", "指令"],
 ];
+
+const TARGET_LANGUAGES = ["English", "简体中文", "繁体中文", "日本語", "Español", "Français", "Deutsch", "한국어", "Português"];
 
 const PREVIEW_CHORDS: Array<[string, string]> = [
   ["AltRight", "Right Alt"],
@@ -51,6 +54,8 @@ let history: HistoryEntry[] = [];
 let notice = "";
 let preview = false;
 let remoteModels: string[] = [];
+let dictionaryQuery = "";
+let historyQuery = "";
 
 export async function mount(previewMode: boolean): Promise<void> {
   preview = previewMode;
@@ -220,7 +225,7 @@ function paint(): void {
   const llm = preset(settings.llmProvider);
   host.innerHTML = `
     <section>
-      <h2>Path</h2>
+      <h2 id="sec-path">${ui("Path", "路径")}</h2>
       <p class="banner" id="route-banner">${escapeHtml(snap.routeLabel)}</p>
       <p class="status" id="connectivity">${escapeHtml(snap.connectivity)}</p>
       <p class="status" id="route-detail">${escapeHtml(snap.routeDetail)}</p>
@@ -237,19 +242,19 @@ function paint(): void {
     </section>
     ${localPanel(snap.local, settings.preference)}
     <section>
-      <h2>Permissions</h2>
+      <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
       <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
       <p class="status">Microphone: ${escapeHtml(snap.permissions.microphone)} · Accessibility: ${escapeHtml(snap.permissions.accessibility)}</p>
       <div class="row">
-        <button type="button" id="perm-mic" class="primary">Allow microphone</button>
-        <button type="button" id="perm-ax">Allow Accessibility</button>
-        <button type="button" id="open-mic">Microphone settings</button>
-        <button type="button" id="open-ax">Accessibility settings</button>
-        <button type="button" id="open-input">Input Monitoring</button>
+        <button type="button" id="perm-mic" class="primary">${ui("Allow microphone", "允许麦克风")}</button>
+        <button type="button" id="perm-ax">${ui("Allow Accessibility", "允许辅助功能")}</button>
+        <button type="button" id="open-mic">${ui("Microphone settings", "麦克风设置")}</button>
+        <button type="button" id="open-ax">${ui("Accessibility settings", "辅助功能设置")}</button>
+        <button type="button" id="open-input">${ui("Input Monitoring", "输入监视")}</button>
       </div>
     </section>
     <section>
-      <h2>Provider</h2>
+      <h2 id="sec-cloud">${ui("Cloud", "云端")}</h2>
       <p class="status">Model ids were checked ${escapeHtml(snap.verifiedOn)}. The fields stay editable. Load models asks the provider what this key can see.</p>
       ${snap.devKeyStore ? `<p class="status warn">This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.</p>` : `<p class="status">API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.</p>`}
       <label class="field">Speech<select id="asr-provider">${options(snap.presets, settings.asrProvider, (item) => item.asrReady)}</select></label>
@@ -270,41 +275,63 @@ function paint(): void {
       </label>
       ${settings.llmProvider !== settings.asrProvider ? `<label class="field">API key for ${escapeHtml(settings.llmProvider)}<input id="llm-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.llmProvider] ? "Saved. Enter a new key to replace it." : "Not saved"}" /></label>` : ""}
       <div class="row">
-        <button type="button" id="save-key" class="primary">Save key</button>
-        <button type="button" id="clear-key">Clear speech key</button>
-        <button type="button" id="test-key">Test connection</button>
-        <button type="button" id="load-models">Load models</button>
+        <button type="button" id="save-key" class="primary">${ui("Save key", "保存密钥")}</button>
+        <button type="button" id="clear-key">${ui("Clear speech key", "清除语音密钥")}</button>
+        <button type="button" id="test-key">${ui("Test speech connection", "测试语音连接")}</button>
+        <button type="button" id="test-llm">${ui("Test rewrite connection", "测试改写连接")}</button>
+        <button type="button" id="load-models">${ui("Load models", "加载模型")}</button>
       </div>
     </section>
     <section>
-      <h2>Hotkey</h2>
+      <h2 id="sec-hotkey">${ui("Hotkeys", "快捷键")}</h2>
       <p class="status hotkey-hint">The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A Typeless clash is a warning, and Set still keeps the chord.</p>
       ${radios("talk", [["toggle", "Toggle", "Press to start, press again to stop."], ["hold", "Hold to talk", "Release to stop."]], settings.talkMode)}
       <div id="hotkey-editor">${hotkeyEditorInner()}</div>
     </section>
     <section>
-      <h2>Polish</h2>
+      <h2 id="sec-polish">${ui("Polish", "润色")}</h2>
       ${radios("polish", [["polish", "Polish", "Smoother wording. Does not answer or carry out the request."], ["literal", "Literal", "Minimal cleanup. Wording stays close to the transcript."]], settings.polishLevel)}
     </section>
-    <section>
-      <h2>Hot words</h2>
-      <p class="status">Aliases and patterns run before the model. The same list is shown to the model. A spelling with no alias is prompt-only.</p>
+    <section id="sec-language">
+      <h2>${ui("Language", "语言")}</h2>
+      <p class="status">${ui("The window follows the system language. Translation has one target.", "界面跟随系统语言。翻译使用一个目标语言。")}</p>
+      <label class="field">${ui("Translation target", "翻译目标语言")}
+        <input id="target-language" list="target-languages" maxlength="40" value="${escapeHtml(settings.targetLanguage || "English")}" />
+      </label>
+      <datalist id="target-languages">${TARGET_LANGUAGES.map((language) => `<option value="${escapeHtml(language)}"></option>`).join("")}</datalist>
+    </section>
+    <section id="sec-dictionary">
+      <h2>${ui("Dictionary", "词典")}</h2>
+      <p class="status">${ui("Terms are sent as a speech hint and listed in the rewrite prompt. Replacements run before the model. A term with no replacement is prompt-only.", "词条会作为语音提示，并写进改写提示。替换在模型之前执行。没有替换的词条只出现在提示里。")}</p>
+      <label class="field">${ui("Search", "搜索")}<input id="dictionary-search" value="${escapeHtml(dictionaryQuery)}" placeholder="${ui("Term or replacement", "词条或替换")}" /></label>
       <div id="hotwords">${settings.hotwords.map((word, index) => hotwordRow(word, index)).join("")}</div>
-      <button type="button" id="add-hotword">Add hot word</button>
+      <div class="row">
+        <button type="button" id="add-hotword">${ui("Add term", "添加词条")}</button>
+        <button type="button" id="export-dictionary">${ui("Export JSON", "导出 JSON")}</button>
+        <button type="button" id="import-dictionary">${ui("Import JSON", "导入 JSON")}</button>
+      </div>
+      <input id="dictionary-file" type="file" accept="application/json,.json" hidden />
     </section>
     <section>
-      <h2>Microphone</h2>
+      <h2 id="sec-audio">${ui("Audio", "语音")}</h2>
       <label class="field">Device<input id="microphone" list="mic-list" value="${escapeHtml(settings.microphone)}" placeholder="System default" /></label>
       <datalist id="mic-list"></datalist>
       <div class="row"><button type="button" id="refresh-mics">List devices</button><button type="button" id="probe-mic">Test microphone</button><button type="button" id="record">Record a test</button></div>
     </section>
-    <section>
-      <h2>History</h2>
-      <p class="status">On this device only. Each entry stores the app version. The latest 300 are kept.</p>
-      <ul class="history">${history.map((entry) => historyRow(entry)).join("") || "<li>No dictations yet.</li>"}</ul>
+    <section id="sec-history">
+      <h2>${ui("History", "历史")}</h2>
+      <p class="status">${ui("On this device only. Each entry shows the mode and the path. The latest 300 that are still inside the retention window are kept.", "只存在这台电脑上。每条显示模式和路径。保留期内最新的 300 条会被留下。")}</p>
+      <label class="field">${ui("Keep history", "保留时长")}
+        <select id="retention">
+          ${retentionOptions(settings.historyRetention || "month")}
+        </select>
+      </label>
+      <label class="field">${ui("Search", "搜索")}<input id="history-search" value="${escapeHtml(historyQuery)}" placeholder="${ui("Text, mode, or path", "文本、模式或路径")}" /></label>
+      <ul class="history">${visibleHistory().map((entry) => historyRow(entry)).join("") || `<li>${ui("No matching history.", "没有匹配的历史。")}</li>`}</ul>
+      <div class="row"><button type="button" id="clear-history">${ui("Clear all", "全部清除")}</button></div>
     </section>
     <section>
-      <div class="row"><button type="button" id="save" class="primary">Save settings</button><button type="button" id="reset-models">Reset suggested models</button></div>
+      <div class="row"><button type="button" id="save" class="primary">${ui("Save settings", "保存设置")}</button><button type="button" id="reset-models">${ui("Reset suggested models", "恢复建议模型")}</button></div>
       <p class="status" id="notice">${escapeHtml(notice)}</p>
     </section>
   `;
@@ -350,6 +377,7 @@ function bind(): void {
   document.querySelector("#save-key")?.addEventListener("click", () => void saveKeys());
   document.querySelector("#clear-key")?.addEventListener("click", () => void clearKey(snap.settings.asrProvider));
   document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider));
+  document.querySelector("#test-llm")?.addEventListener("click", () => void testKey(snap.settings.llmProvider));
   document.querySelector("#load-models")?.addEventListener("click", () => void loadModels(snap.settings.asrProvider));
   document.querySelector("#reset-models")?.addEventListener("click", () => void resetModels());
   document.querySelector("#add-hotword")?.addEventListener("click", () => {
@@ -357,6 +385,32 @@ function bind(): void {
     snap.settings.hotwords.push({ canonical: "", aliases: [], pattern: "" });
     paint();
   });
+  document.querySelector("#dictionary-search")?.addEventListener("input", (event) => {
+    readHotwords();
+    dictionaryQuery = (event.target as HTMLInputElement).value;
+    const host = document.querySelector("#hotwords");
+    if (!host) {
+      return;
+    }
+    host.innerHTML = snap.settings.hotwords.map((word, index) => hotwordRow(word, index)).join("");
+    bindHotwordButtons();
+  });
+  document.querySelector("#export-dictionary")?.addEventListener("click", () => void exportDictionary());
+  document.querySelector("#import-dictionary")?.addEventListener("click", () => {
+    document.querySelector<HTMLInputElement>("#dictionary-file")?.click();
+  });
+  document.querySelector("#dictionary-file")?.addEventListener("change", (event) => {
+    const file = (event.target as HTMLInputElement).files?.[0];
+    if (file) {
+      void importDictionary(file);
+    }
+  });
+  document.querySelector("#history-search")?.addEventListener("input", (event) => {
+    historyQuery = (event.target as HTMLInputElement).value;
+    paint();
+  });
+  document.querySelector("#clear-history")?.addEventListener("click", () => void clearHistory());
+  bindHotwordButtons();
   document.querySelector("#perm-mic")?.addEventListener("click", () => void permission("microphone"));
   document.querySelector("#perm-ax")?.addEventListener("click", () => void permission("accessibility"));
   document.querySelector("#open-mic")?.addEventListener("click", () => void openPrivacy("microphone"));
@@ -372,12 +426,21 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-delete]")) {
     button.addEventListener("click", () => void deleteHistory(button.dataset.delete ?? ""));
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-reinsert]")) {
+    button.addEventListener("click", () => void reinsertHistory(button.dataset.reinsert ?? ""));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-rerun]")) {
+    button.addEventListener("click", () => void rerunHistory(button.dataset.rerun ?? ""));
+  }
 }
 
 function readForm(): void {
   const settings = snap.settings;
   const read = (id: string) => document.querySelector<HTMLInputElement>(id)?.value ?? "";
   settings.microphone = read("#microphone");
+  const target = read("#target-language").trim();
+  settings.targetLanguage = target || "English";
+  settings.historyRetention = document.querySelector<HTMLSelectElement>("#retention")?.value || settings.historyRetention || "month";
   settings.thinking = document.querySelector<HTMLSelectElement>("#thinking")?.value ?? settings.thinking;
   writeProvider(settings, settings.asrProvider, true);
   if (settings.llmProvider !== settings.asrProvider) {
@@ -697,7 +760,8 @@ async function setHotkey(mode: HotkeyModeName): Promise<void> {
     renderHotkeys();
     return;
   }
-  const title = HOTKEY_MODES.find(([name]) => name === mode)?.[1] ?? mode;
+  const found = HOTKEY_MODES.find(([name]) => name === mode);
+  const title = found ? ui(found[1], found[2]) : mode;
   if (preview) {
     snap.settings.dictateHotkey = chords[0] ?? "";
     snap.settings.translateHotkey = chords[1] ?? "";
@@ -815,12 +879,146 @@ function bindHotkeyButtons(): void {
 }
 
 function hotkeyEditorInner(): string {
-  const rows = HOTKEY_MODES.map(([mode, title], index) => hotkeyRow(mode, title, index)).join("");
+  const rows = HOTKEY_MODES.map(([mode, en, zh], index) => hotkeyRow(mode, ui(en, zh), index)).join("");
   const notes = snap.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
   const status = hotkeyMessage
     ? `<p class="status${hotkeyMessageError ? " error" : ""}" id="hotkey-status">${escapeHtml(hotkeyMessage)}</p>`
     : "";
   return `${rows}${status}<div class="row"><button type="button" id="defaults">Restore default hotkeys</button></div><ul class="notes" id="hotkey-notes">${notes}</ul>`;
+}
+
+async function exportDictionary(): Promise<void> {
+  readHotwords();
+  if (preview) {
+    downloadText(
+      "newtype-dictionary.json",
+      JSON.stringify(
+        {
+          version: 1,
+          terms: snap.settings.hotwords.map((word) => ({
+            term: word.canonical,
+            replacements: word.aliases,
+            pattern: word.pattern,
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  try {
+    const body = await call<string>("dictation_export_dictionary");
+    downloadText("newtype-dictionary.json", body);
+  } catch (error) {
+    notice = String(error);
+    paint();
+  }
+}
+
+async function importDictionary(file: File): Promise<void> {
+  const body = await file.text();
+  if (preview) {
+    try {
+      const parsed = JSON.parse(body) as { terms?: Hotword[] } | Hotword[];
+      const terms = Array.isArray(parsed) ? parsed : parsed.terms ?? [];
+      snap.settings.hotwords = terms.map((term) => ({
+        canonical: String((term as { term?: string; canonical?: string }).term ?? (term as { canonical?: string }).canonical ?? ""),
+        aliases: aliasesOf(term),
+        pattern: String((term as { pattern?: string }).pattern ?? ""),
+      }));
+      notice = ui("Imported the dictionary in preview.", "预览里已导入词典。");
+    } catch (error) {
+      notice = String(error);
+    }
+    paint();
+    return;
+  }
+  try {
+    snap = await call<Snapshot>("dictation_import_dictionary", { body });
+    notice = ui("Imported the dictionary.", "已导入词典。");
+    paint();
+  } catch (error) {
+    notice = String(error);
+    const node = document.querySelector("#notice");
+    if (node) {
+      node.textContent = notice;
+    }
+  }
+}
+
+function aliasesOf(term: unknown): string[] {
+  const record = term as { replacements?: unknown; aliases?: unknown };
+  const value = record.replacements ?? record.aliases;
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function downloadText(name: string, body: string): void {
+  const blob = new Blob([body], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function clearHistory(): Promise<void> {
+  if (!window.confirm(ui("Delete every history entry on this computer?", "删除这台电脑上的全部历史？"))) {
+    return;
+  }
+  if (preview) {
+    history = [];
+    paint();
+    return;
+  }
+  await call("dictation_clear_history");
+  history = [];
+  paint();
+}
+
+async function reinsertHistory(id: string): Promise<void> {
+  if (preview) {
+    notice = ui("Preview does not paste into another app.", "预览不会粘贴到其他应用。");
+    paint();
+    return;
+  }
+  try {
+    await call("dictation_reinsert_history", { id });
+    notice = ui("Inserted again.", "已再次插入。");
+  } catch (error) {
+    notice = String(error);
+  }
+  const node = document.querySelector("#notice");
+  if (node) {
+    node.textContent = notice;
+  }
+}
+
+async function rerunHistory(id: string): Promise<void> {
+  if (preview) {
+    notice = ui("Preview cannot re-run a recording.", "预览不能重新识别录音。");
+    paint();
+    return;
+  }
+  notice = ui("Re-running the saved recording…", "正在重新识别保存的录音…");
+  const node = document.querySelector("#notice");
+  if (node) {
+    node.textContent = notice;
+  }
+  try {
+    notice = await call<string>("dictation_rerun_history", { id });
+    history = await call<HistoryEntry[]>("dictation_history");
+  } catch (error) {
+    notice = String(error);
+  }
+  paint();
 }
 
 async function copyHistory(id: string): Promise<void> {
@@ -903,19 +1101,73 @@ function hotkeyRow(mode: HotkeyModeName, title: string, index: number): string {
 }
 
 function hotwordRow(word: Hotword, index: number): string {
-  return `<div class="hotword" data-index="${index}">
-    <input class="canonical" placeholder="Exact spelling" value="${escapeHtml(word.canonical)}" />
-    <input class="aliases" placeholder="Mishearings, comma separated" value="${escapeHtml(word.aliases.join(", "))}" />
-    <input class="pattern" placeholder="Optional regex" value="${escapeHtml(word.pattern)}" />
+  const haystack = `${word.canonical} ${word.aliases.join(" ")} ${word.pattern}`.toLowerCase();
+  const hidden = dictionaryQuery.trim() && !haystack.includes(dictionaryQuery.trim().toLowerCase()) ? " hidden" : "";
+  return `<div class="hotword${hidden}" data-index="${index}">
+    <input class="canonical" placeholder="${ui("Term", "词条")}" value="${escapeHtml(word.canonical)}" />
+    <input class="aliases" placeholder="${ui("Replacements, comma separated", "替换，逗号分隔")}" value="${escapeHtml(word.aliases.join(", "))}" />
+    <input class="pattern" placeholder="${ui("Optional regex", "可选正则")}" value="${escapeHtml(word.pattern)}" />
+    <button type="button" data-remove-term="${index}">${ui("Delete", "删除")}</button>
   </div>`;
+}
+
+function bindHotwordButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-remove-term]")) {
+    button.addEventListener("click", () => {
+      button.closest(".hotword")?.remove();
+      readHotwords();
+      paint();
+    });
+  }
 }
 
 function historyRow(entry: HistoryEntry): string {
   const when = new Date(entry.createdAtMs).toLocaleString();
-  const flag = entry.usedFallback ? " · ruled fallback" : "";
-  const kept = entry.audioKept ? " · recording saved" : "";
+  const flag = entry.usedFallback ? ` · ${ui("ruled fallback", "规则回退")}` : "";
+  const kept = entry.audioKept ? ` · ${ui("recording saved", "已保存录音")}` : "";
   const note = entry.note ? `<p class="muted">${escapeHtml(entry.note)}</p>` : "";
-  return `<li><p><strong>${escapeHtml(entry.text || "(empty)")}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(entry.appVersion)} · ${escapeHtml(entry.route)}${flag}${kept}</p>${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">Copy</button><button type="button" data-delete="${escapeHtml(entry.id)}">Delete</button></div></li>`;
+  const rerun = entry.audioKept
+    ? `<button type="button" data-rerun="${escapeHtml(entry.id)}">${ui("Re-run", "重新识别")}</button>`
+    : "";
+  return `<li><p><strong>${escapeHtml(entry.text || ui("(empty)", "（空）"))}</strong></p><p class="muted">${escapeHtml(when)} · ${escapeHtml(modeLabel(entry.mode))} · ${escapeHtml(entry.route)} · ${escapeHtml(entry.appVersion)}${flag}${kept}</p>${note}<div class="row"><button type="button" data-copy="${escapeHtml(entry.id)}">${ui("Copy", "复制")}</button><button type="button" data-reinsert="${escapeHtml(entry.id)}">${ui("Insert again", "再次插入")}</button>${rerun}<button type="button" data-delete="${escapeHtml(entry.id)}">${ui("Delete", "删除")}</button></div></li>`;
+}
+
+function modeLabel(mode: string): string {
+  switch (mode) {
+    case "translate":
+      return ui("Translate", "翻译");
+    case "command":
+      return ui("Command", "指令");
+    default:
+      return ui("Dictate", "口授");
+  }
+}
+
+function visibleHistory(): HistoryEntry[] {
+  const query = historyQuery.trim().toLowerCase();
+  if (!query) {
+    return history;
+  }
+  return history.filter((entry) =>
+    `${entry.text} ${entry.raw} ${entry.mode} ${entry.route} ${entry.note}`.toLowerCase().includes(query),
+  );
+}
+
+function retentionOptions(selected: string): string {
+  const choices: Array<[string, string, string]> = [
+    ["forever", "Forever", "永久"],
+    ["year", "1 year", "1 年"],
+    ["month", "1 month", "1 个月"],
+    ["week", "1 week", "1 周"],
+    ["day", "24 hours", "24 小时"],
+    ["off", "Don't keep", "不保留"],
+  ];
+  return choices
+    .map(
+      ([value, en, zh]) =>
+        `<option value="${value}" ${value === selected ? "selected" : ""}>${escapeHtml(ui(en, zh))}</option>`,
+    )
+    .join("");
 }
 
 function radios(name: string, choices: Array<[string, string, string]>, selected: string): string {

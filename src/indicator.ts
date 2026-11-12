@@ -63,7 +63,8 @@ function render(event: PhaseEvent): void {
   }
   bar.dataset.phase = event.phase;
   bar.dataset.path = pathKind(event.route);
-  phase.textContent = label(event.phase, event.elapsedMs);
+  const title = label(event.phase, event.elapsedMs);
+  phase.textContent = event.mode ? `${event.mode} · ${title}` : title;
   route.textContent = event.route;
   message.textContent = event.text ? `${event.message} ${event.text}` : event.message;
   const bars = 8;
@@ -109,6 +110,8 @@ function label(phase: string, elapsedMs: number): string {
       return "Not in this build";
     case "cancelled":
       return "Cancelled";
+    case "withheld":
+      return "Not inserted";
     default:
       return "Idle";
   }

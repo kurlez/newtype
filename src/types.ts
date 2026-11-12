@@ -30,6 +30,8 @@ export interface DictationSettings {
   localAsrId: string;
   localLlmId: string;
   localIdleMinutes: number;
+  targetLanguage: string;
+  historyRetention: string;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
 }
@@ -145,6 +147,7 @@ export interface PhaseEvent {
   elapsedMs: number;
   level: number;
   text: string;
+  mode?: string;
 }
 
 export interface CaptureEvent {

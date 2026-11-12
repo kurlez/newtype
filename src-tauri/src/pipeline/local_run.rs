@@ -11,8 +11,10 @@ use super::engines::Engines;
 use super::hotkey::OsKind;
 use super::hotwords::Hotword;
 use super::library;
-use super::polish::{self, LlmComplete, LlmRequest, PolishLevel};
+use super::polish::{self, FinishedText, LlmComplete, LlmRequest};
+use super::rewrite::{self, Audience};
 use super::router::RoutePreference;
+use super::task::{self, Job};
 use super::vad;
 
 const ASR_17: &str = "qwen3-asr-1.7b-q8";
@@ -38,7 +40,7 @@ pub fn run(
     asr_id: &str,
     llm_id: &str,
     llm_ready: bool,
-    level: PolishLevel,
+    job: &Job,
     words: &[Hotword],
     app_context: &str,
     report: &dyn Fn(&str),
@@ -75,19 +77,16 @@ pub fn run(
         }
         Err(err) => return Err(err),
     };
-    let finished = if llm_ready {
-        let model = LocalModel { hub, id: llm_id, report };
-        polish::finish_local(&transcript, words, level, app_context, &model)
-    } else {
-        let ruled = super::hotwords::apply(&transcript, words);
-        polish::FinishedText {
-            raw: transcript,
-            ruled: ruled.clone(),
-            text: ruled,
-            used_fallback: true,
-            reason: "The local rewrite model is not installed, so the ruled transcript was inserted.".into(),
-        }
-    };
+    let finished = finish_after_transcript(
+        &transcript,
+        hub,
+        llm_id,
+        llm_ready,
+        job,
+        words,
+        app_context,
+        report,
+    );
     Ok(LocalOutcome {
         finished,
         engine,
@@ -99,13 +98,52 @@ pub fn rewrite(
     hub: &Engines,
     llm_id: &str,
     transcript: &str,
-    level: PolishLevel,
+    job: &Job,
     words: &[Hotword],
     app_context: &str,
     report: &dyn Fn(&str),
-) -> Result<polish::FinishedText, String> {
+) -> Result<FinishedText, String> {
+    if job.needs_capable_local() && !task::local_rewrite_capable(llm_id) {
+        return Err(task::small_model_reason(job));
+    }
     let model = LocalModel { hub, id: llm_id, report };
-    polish::attempt_local(transcript, words, level, app_context, &model)
+    rewrite::attempt_job(Audience::Local, job, transcript, words, app_context, &model)
+}
+
+fn finish_after_transcript(
+    transcript: &str,
+    hub: &Engines,
+    llm_id: &str,
+    llm_ready: bool,
+    job: &Job,
+    words: &[Hotword],
+    app_context: &str,
+    report: &dyn Fn(&str),
+) -> FinishedText {
+    if job.needs_capable_local() && !task::local_rewrite_capable(llm_id) {
+        return ruled_fallback(transcript, words, task::small_model_reason(job));
+    }
+    if !llm_ready {
+        let reason = if job.needs_capable_local() {
+            task::small_model_reason(job)
+        } else {
+            "The local rewrite model is not installed, so the ruled transcript was inserted.".into()
+        };
+        return ruled_fallback(transcript, words, reason);
+    }
+    let model = LocalModel { hub, id: llm_id, report };
+    rewrite::finish_job(Audience::Local, job, transcript, words, app_context, &model)
+}
+
+fn ruled_fallback(transcript: &str, words: &[Hotword], reason: String) -> FinishedText {
+    let ruled = super::hotwords::apply(transcript, words);
+    FinishedText {
+        raw: transcript.to_string(),
+        ruled: ruled.clone(),
+        text: ruled,
+        used_fallback: true,
+        reason,
+    }
 }
 
 fn silero_path(hub: &Engines) -> std::path::PathBuf {

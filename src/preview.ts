@@ -17,6 +17,8 @@ export const previewSnapshot: Snapshot = {
     localAsrId: "",
     localLlmId: "",
     localIdleMinutes: 5,
+    targetLanguage: "English",
+    historyRetention: "month",
     providers: {
       openai: {
         asrModel: "gpt-transcribe",
@@ -251,6 +253,21 @@ export const previewHistory: HistoryEntry[] = [
     usedFallback: false,
     note: "Inserted. The cloud provider failed, so this recording used the local model.",
     audioKept: false,
+  },
+  {
+    id: "3",
+    createdAtMs: Date.UTC(2026, 10, 12, 5, 0, 0),
+    appVersion: "0.1.0-dev.0+preview",
+    mode: "translate",
+    route: "Cloud · 云端",
+    provider: "openai / openai",
+    polishLevel: "polish",
+    raw: "今天把这个发给 Emma",
+    ruled: "今天把这个发给 Emma",
+    text: "Send this to Emma today.",
+    usedFallback: false,
+    note: "",
+    audioKept: true,
   },
 ];
 
