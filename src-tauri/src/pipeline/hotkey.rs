@@ -86,6 +86,8 @@ pub enum EngineEvent {
     ExtraKeys,
     Escape,
     Captured(String),
+    /// Escape while a new chord is being recorded. This is not a dictation cancel.
+    CaptureCancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +164,11 @@ impl HotkeyEngine {
             .map(|(mode, chord)| (*mode, chord.clone()));
         if let Some((mode, chord)) = exact {
             self.extra_sent = false;
-            if self.active.as_ref().is_some_and(|(_, active)| active == &chord) {
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|(_, active)| active == &chord)
+            {
                 return Vec::new();
             }
             self.active = Some((mode, chord));
@@ -181,7 +187,8 @@ impl HotkeyEngine {
                 self.capturing = false;
                 self.captured.clear();
                 self.down.clear();
-                vec![EngineEvent::Escape]
+                self.active = None;
+                vec![EngineEvent::CaptureCancelled]
             }
             KeyEdge::Down(key) => {
                 self.captured.insert(key);
@@ -248,7 +255,8 @@ impl TalkController {
                 }
             }
             EngineEvent::ExtraKeys => {
-                if self.active.is_some() && now_ms.saturating_sub(self.started_ms) <= CHORD_WINDOW_MS
+                if self.active.is_some()
+                    && now_ms.saturating_sub(self.started_ms) <= CHORD_WINDOW_MS
                 {
                     self.active = None;
                     TalkEffect::Cancel
@@ -263,7 +271,7 @@ impl TalkController {
                     TalkEffect::Ignore
                 }
             }
-            EngineEvent::Captured(_) => TalkEffect::Ignore,
+            EngineEvent::Captured(_) | EngineEvent::CaptureCancelled => TalkEffect::Ignore,
         }
     }
 
@@ -330,7 +338,10 @@ pub fn parse_chord(input: &str) -> Result<Chord, String> {
             return Err("Escape cancels dictation and cannot be a hotkey.".into());
         }
         if !chord.insert(key) {
-            return Err(format!("{} is repeated in the hotkey.", key_label(key, OsKind::Other)));
+            return Err(format!(
+                "{} is repeated in the hotkey.",
+                key_label(key, OsKind::Other)
+            ));
         }
     }
     Ok(chord)
@@ -407,7 +418,9 @@ pub fn binding_warnings(bindings: &[(HotkeyMode, Chord)], os: OsKind) -> Vec<Str
 fn known_conflict(chord: &Chord, os: OsKind) -> Option<&'static str> {
     let is = |keys: &[KeyId]| chord == &keys.iter().copied().collect::<Chord>();
     if os == OsKind::Mac && is(&[KeyId::Fn]) {
-        return Some("Fn is Typeless's dictate key on macOS. Pick another key if both apps are running.");
+        return Some(
+            "Fn is Typeless's dictate key on macOS. Pick another key if both apps are running.",
+        );
     }
     if os == OsKind::Mac && is(&[KeyId::Fn, KeyId::ShiftLeft]) {
         return Some("Fn + Left Shift is a Typeless shortcut on macOS.");
@@ -662,7 +675,10 @@ mod tests {
         let mut engine = HotkeyEngine::default();
         engine.set_bindings(vec![
             (HotkeyMode::Dictate, default_chord(HotkeyMode::Dictate, os)),
-            (HotkeyMode::Translate, default_chord(HotkeyMode::Translate, os)),
+            (
+                HotkeyMode::Translate,
+                default_chord(HotkeyMode::Translate, os),
+            ),
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
@@ -700,17 +716,25 @@ mod tests {
         for os in [OsKind::Mac, OsKind::Windows] {
             let bindings = [
                 (HotkeyMode::Dictate, default_chord(HotkeyMode::Dictate, os)),
-                (HotkeyMode::Translate, default_chord(HotkeyMode::Translate, os)),
+                (
+                    HotkeyMode::Translate,
+                    default_chord(HotkeyMode::Translate, os),
+                ),
                 (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
             ];
             assert!(binding_error(&bindings).is_none());
             let warnings = binding_warnings(&bindings, os);
             assert!(warnings.iter().all(|warning| !warning.contains("Typeless")));
-            assert!(warnings.iter().any(|warning| warning.contains("short press")));
+            assert!(warnings
+                .iter()
+                .any(|warning| warning.contains("short press")));
         }
         let right_ctrl = chord(&[KeyId::ControlRight]);
         assert_eq!(default_chord(HotkeyMode::Dictate, OsKind::Mac), right_ctrl);
-        assert_eq!(default_chord(HotkeyMode::Dictate, OsKind::Windows), right_ctrl);
+        assert_eq!(
+            default_chord(HotkeyMode::Dictate, OsKind::Windows),
+            right_ctrl
+        );
         assert_eq!(
             default_chord(HotkeyMode::Translate, OsKind::Mac),
             chord(&[KeyId::ControlRight, KeyId::ShiftRight])
@@ -741,7 +765,9 @@ mod tests {
             engine.on_edge(KeyEdge::Down(KeyId::ControlRight)),
             vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
         );
-        assert!(engine.on_edge(KeyEdge::Down(KeyId::ControlRight)).is_empty());
+        assert!(engine
+            .on_edge(KeyEdge::Down(KeyId::ControlRight))
+            .is_empty());
         assert_eq!(
             engine.on_edge(KeyEdge::Down(KeyId::ShiftRight)),
             vec![EngineEvent::Pressed(HotkeyMode::Translate)]
@@ -773,10 +799,67 @@ mod tests {
     fn capture_records_the_side_that_was_pressed() {
         let mut engine = HotkeyEngine::default();
         engine.set_capture(true);
-        assert!(engine.on_edge(KeyEdge::Down(KeyId::ControlRight)).is_empty());
+        assert!(engine
+            .on_edge(KeyEdge::Down(KeyId::ControlRight))
+            .is_empty());
         assert_eq!(
             engine.on_edge(KeyEdge::Up(KeyId::ControlRight)),
             vec![EngineEvent::Captured("ControlRight".into())]
+        );
+    }
+
+    #[test]
+    fn capture_does_not_start_dictation_for_the_saved_chord() {
+        let mut engine = HotkeyEngine::default();
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, parse_chord("AltRight").unwrap()),
+            (
+                HotkeyMode::Translate,
+                parse_chord("AltRight+ShiftRight").unwrap(),
+            ),
+            (HotkeyMode::Command, parse_chord("AltRight+Enter").unwrap()),
+        ]);
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::ControlRight)),
+            Vec::new()
+        );
+        engine.on_edge(KeyEdge::Up(KeyId::ControlRight));
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        engine.on_edge(KeyEdge::Up(KeyId::AltRight));
+
+        engine.set_capture(true);
+        assert_eq!(engine.on_edge(KeyEdge::Down(KeyId::AltRight)), Vec::new());
+        assert_eq!(engine.on_edge(KeyEdge::Down(KeyId::ShiftRight)), Vec::new());
+        assert_eq!(engine.on_edge(KeyEdge::Up(KeyId::ShiftRight)), Vec::new());
+        assert_eq!(
+            engine.on_edge(KeyEdge::Up(KeyId::AltRight)),
+            vec![EngineEvent::Captured("AltRight+ShiftRight".into())]
+        );
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        engine.on_edge(KeyEdge::Up(KeyId::AltRight));
+
+        engine.set_capture(true);
+        engine.on_edge(KeyEdge::Down(KeyId::AltRight));
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::Escape)),
+            vec![EngineEvent::CaptureCancelled]
+        );
+        let mut talk = TalkController::new(TalkMode::Toggle);
+        talk.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 0);
+        assert_eq!(
+            talk.on_event(&EngineEvent::CaptureCancelled, 20),
+            TalkEffect::Ignore
+        );
+        assert_eq!(talk.active, Some(HotkeyMode::Dictate));
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
         );
     }
 
@@ -824,9 +907,18 @@ mod tests {
 
         let mut extra = TalkController::new(TalkMode::Toggle);
         extra.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 0);
-        assert_eq!(extra.on_event(&EngineEvent::ExtraKeys, 50), TalkEffect::Cancel);
+        assert_eq!(
+            extra.on_event(&EngineEvent::ExtraKeys, 50),
+            TalkEffect::Cancel
+        );
         extra.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 0);
-        assert_eq!(extra.on_event(&EngineEvent::ExtraKeys, 500), TalkEffect::Ignore);
-        assert_eq!(extra.on_event(&EngineEvent::Escape, 600), TalkEffect::Cancel);
+        assert_eq!(
+            extra.on_event(&EngineEvent::ExtraKeys, 500),
+            TalkEffect::Ignore
+        );
+        assert_eq!(
+            extra.on_event(&EngineEvent::Escape, 600),
+            TalkEffect::Cancel
+        );
     }
 }

@@ -59,6 +59,7 @@ pub fn run() {
             commands::dictation_open_privacy,
             commands::dictation_capture_hotkey,
             commands::dictation_cancel_capture,
+            commands::dictation_set_hotkey,
             commands::dictation_record_toggle,
             commands::dictation_cancel,
             commands::dictation_history,

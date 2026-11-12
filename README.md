@@ -106,7 +106,9 @@ The NSIS installer is per-user and is not Authenticode signed.
 
 ## Dictation
 
-The hotkey starts and stops a recording. macOS and Windows use the same defaults: dictate is Right Ctrl (the right-hand Control key, `ControlRight`, not Left Control), translate is Right Ctrl + Right Shift, and command is Right Ctrl + Enter (Return). Right Option is not a default. On a PC keyboard attached to a Mac, Right Alt is Right Option, and that key belongs to Typeless. Left and right modifiers stay distinct. Toggle is the default. Hold-to-talk is in settings. Escape cancels. Translate and command are registered and do not record.
+The hotkey starts and stops a recording. macOS and Windows use the same defaults: dictate is Right Ctrl (the right-hand Control key, `ControlRight`, not Left Control), translate is Right Ctrl + Right Shift, and command is Right Ctrl + Enter (Return). Right Option is not a default. On a PC keyboard attached to a Mac, Right Alt is Right Option, and that key belongs to Typeless. Left and right modifiers stay distinct. Toggle is the default. Hold-to-talk is in settings. Escape cancels a recording. Translate and command are registered and do not record.
+
+Some keyboards have no Right Ctrl key. The defaults stay Right Ctrl. To pick a key that exists, open Hotkey, click Capture, press the chord, then click Set. Set writes that chord into `dictation.json` and the listener uses it immediately. Cancel or Escape during capture leaves the saved chord in place. A saved `AltRight`, `AltRight+ShiftRight`, and `AltRight+Enter` binding keeps working. Right Alt still warns that it clashes with Typeless, and Set still saves it. The applied chord is written to `newtype.log`.
 
 Saving a key writes it to the macOS Keychain or Windows Credential Manager and reads it back before the settings window says it was saved. The build enables keyring's `apple-native` and `windows-native` features. Without those, keyring keeps the secret in process memory only, `cmdkey /list` stays empty, and the next launch has no key. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
 
@@ -159,7 +161,8 @@ CI does not set `NEWTYPE_PROMPT_API_KEY`, so `prompt_harness` returns without a 
 
 This environment cannot grant Accessibility, open a microphone, or paste into another app.
 
-- Right Ctrl on both Mac and Windows starts recording. Left Ctrl and Right Option do not. Hold-to-talk releases cleanly.
+- Right Ctrl on both Mac and Windows starts recording when that is still the saved chord. Left Ctrl does not. Hold-to-talk releases cleanly.
+- A keyboard with no Right Ctrl can keep a saved Right Alt chord (`AltRight`, `AltRight+ShiftRight`, `AltRight+Enter`). Changing a chord is Capture, then Set. The settings page warns about Typeless and still saves. `newtype.log` records the applied chord. The press used to capture does not start dictation.
 - The floating indicator shows recording, processing, and error, and names Cloud or the local path.
 - The first launch asks for the microphone. macOS also needs Accessibility, and some versions need Input Monitoring before the hotkey tap runs.
 - Dictation pastes into the focused app and the previous clipboard comes back.

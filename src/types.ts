@@ -148,6 +148,7 @@ export interface CaptureEvent {
   mode: string;
   hotkey: string;
   label: string;
+  phase: "pending" | "idle" | string;
 }
 
 export interface UpdateState {

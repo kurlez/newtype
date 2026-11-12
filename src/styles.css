@@ -260,6 +260,39 @@ textarea {
   font-size: 12px;
 }
 
+.hotkey-hint {
+  margin-top: 0;
+}
+
+.hotkey-row {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+}
+
+.hotkey-row h3 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+.hotkey-row .status {
+  margin-top: 8px;
+}
+
+.hotkey-row code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.hotkey-row .row {
+  margin-top: 8px;
+}
+
 .hotkey-line,
 .hotword {
   display: flex;
