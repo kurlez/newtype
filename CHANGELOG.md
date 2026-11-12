@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-12: The Mac runner setup installs rustup stable when it is missing and puts `~/.cargo/bin` first in the runner service PATH. The host check no longer fails when `grep -q` closes `rustc`'s pipe.
 - 2026-11-12: Builds run on the owner's self-hosted Mac and Windows runners. Pull requests test and build Windows only. macOS and publish run on main, version tags, and a manual run of those refs. Publish verifies updater signatures in Node.
 - 2026-11-12: The floating window stays on screen, can be dragged, and remembers its place on each monitor. It no longer shows the inserted text. History, copy, insert again, and open-in-history sit on the pill. Settings can follow the system language or stay on 中文 or English, and status text is one language at a time.
 - 2026-11-12: Rule cleanup removes Chinese and English filler words when the local rewrite model is missing, fails, or is rejected, and again after a local polish. Local-only and strict offline show that the polish model is missing, with a button to install Qwen3 1.7B on Windows (4B stays the Mac default at 16 GB). The tray says when the rewrite model is missing. The log records `cleanup rules` and not the text.

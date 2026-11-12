@@ -111,14 +111,62 @@ function Add-UserPathEntry {
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
     $parts = @()
     if ($current) {
-        $parts = $current.Split(';') | Where-Object { $_ }
-    }
-    if ($parts -contains $Entry) {
-        return
+        $parts = @($current.Split(';') | Where-Object { $_ -and ($_ -ne $Entry) })
     }
     $updated = (@($parts) + $Entry) -join ';'
     [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
-    $env:Path = "$env:Path;$Entry"
+    if (($env:Path -split ';') -notcontains $Entry) {
+        $env:Path = "$env:Path;$Entry"
+    }
+}
+
+function Add-UserPathFront {
+    param([string]$Entry)
+    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $parts = @()
+    if ($current) {
+        $parts = @($current.Split(';') | Where-Object { $_ -and ($_ -ine $Entry) })
+    }
+    $updated = (@($Entry) + $parts) -join ';'
+    [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
+    $env:Path = "$Entry;" + (($env:Path -split ';' | Where-Object { $_ -and ($_ -ine $Entry) }) -join ';')
+}
+
+function Write-RunnerServicePath {
+    param([string]$Root)
+    $cargo = Join-Path $env:USERPROFILE '.cargo\bin'
+    $parts = @($cargo)
+    foreach ($entry in ($env:Path -split ';')) {
+        if ($entry -and ($entry.TrimEnd('\') -ine $cargo.TrimEnd('\'))) {
+            $parts += $entry
+        }
+    }
+    $pathValue = $parts -join ';'
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText((Join-Path $Root '.path'), $pathValue + "`n", $utf8)
+    $envFile = Join-Path $Root '.env'
+    $lines = @()
+    if (Test-Path $envFile) {
+        $lines = @(Get-Content -Path $envFile | Where-Object { $_ -notmatch '^(PATH|Path)=' })
+    }
+    $lines += "Path=$pathValue"
+    [System.IO.File]::WriteAllLines($envFile, $lines, $utf8)
+    Write-Output "Runner Path starts with $cargo."
+}
+
+function Assert-RustMsrv {
+    $cargoToml = Join-Path $PSScriptRoot '..\..\src-tauri\Cargo.toml'
+    $found = Select-String -Path $cargoToml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1
+    if (-not $found) {
+        throw "src-tauri/Cargo.toml has no rust-version."
+    }
+    $msrv = $found.Matches[0].Groups[1].Value
+    $info = & rustc -vV | Out-String
+    $release = ([regex]::Match($info, '(?m)^release: (\S+)')).Groups[1].Value
+    if (-not $release -or ([version]$release -lt [version]$msrv)) {
+        throw "rustc ${release} is older than rust-version $msrv."
+    }
+    Write-Output "rustc $release satisfies rust-version $msrv."
 }
 
 function Get-RunnerAsset {
@@ -209,14 +257,15 @@ try {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         Install-WingetId 'GitHub.cli'
     }
-    if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+    if (-not (Get-Command rustup -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $cargoBin 'rustup.exe'))) {
         Install-WingetId 'Rustlang.Rustup'
-        $env:Path = "$env:Path;$env:USERPROFILE\.cargo\bin"
     }
-    Add-UserPathEntry (Join-Path $env:USERPROFILE '.cargo\bin')
+    Add-UserPathFront $cargoBin
     & rustup toolchain install stable --profile minimal
     & rustup default stable
     & rustup target add x86_64-pc-windows-msvc
+    Assert-RustMsrv
 
     if (-not (Get-VcInstallPath)) {
         $override = '--wait --passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
@@ -234,6 +283,7 @@ try {
     if (-not (Test-Path (Join-Path $RunnerRoot 'config.cmd'))) {
         Install-RunnerPackage $RunnerRoot
     }
+    Write-RunnerServicePath $RunnerRoot
     Push-Location $RunnerRoot
     try {
         if (-not (Test-Path .\.runner)) {
@@ -255,6 +305,7 @@ try {
             }
         } else {
             Write-Output "Runner $RunnerName is already configured."
+            & .\svc.cmd stop
             & .\svc.cmd start
         }
     } finally {

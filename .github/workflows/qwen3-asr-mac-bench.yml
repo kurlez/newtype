@@ -30,7 +30,8 @@ jobs:
 
       - name: Require Apple Silicon
         run: |
-          uname -m | grep -qx arm64
+          machine="$(uname -m)"
+          test "$machine" = "arm64"
           sysctl -n hw.memsize
           sysctl -n machdep.cpu.brand_string || true
 

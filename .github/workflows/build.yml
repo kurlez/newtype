@@ -52,7 +52,13 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add x86_64-pc-windows-msvc
-          rustc -vV
+          $info = & rustc -vV | Out-String
+          Write-Output $info
+          $release = ([regex]::Match($info, '(?m)^release: (\S+)')).Groups[1].Value
+          $msrv = (Select-String -Path src-tauri/Cargo.toml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ([version]$release -lt [version]$msrv) {
+            throw "rustc $release is older than rust-version $msrv."
+          }
 
       - name: MSVC environment
         shell: pwsh
@@ -198,22 +204,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if command -v rustup >/dev/null 2>&1; then
-            rustup toolchain install stable --profile minimal
-            rustup default stable
-            rustup target add aarch64-apple-darwin
-          elif command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
-            echo "Using the preinstalled rustc (Homebrew or otherwise). rustup is not required."
-            rustc -vV
-          else
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          if ! command -v rustup >/dev/null 2>&1; then
             echo "Installing rustup into the runner user home. This does not use sudo."
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-            # shellcheck disable=SC1091
-            . "${HOME}/.cargo/env"
-            echo "${HOME}/.cargo/bin" >> "$GITHUB_PATH"
-            rustup target add aarch64-apple-darwin
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal
           fi
-          rustc -vV | grep -q 'host: aarch64-apple-darwin'
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          echo "${HOME}/.cargo/bin" >> "$GITHUB_PATH"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+          rustc_version="$(rustc -vV)"
+          printf '%s\n' "$rustc_version"
+          case "$rustc_version" in
+            *"host: aarch64-apple-darwin"*) ;;
+            *)
+              echo "rustc host is not aarch64-apple-darwin." >&2
+              exit 1
+              ;;
+          esac
+          release="$(printf '%s\n' "$rustc_version" | sed -n 's/^release: //p')"
+          msrv="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml)"
+          version_at_least() {
+            local actual="$1" required="$2" IFS=. i actual_n required_n
+            local -a actual_parts=() required_parts=()
+            read -r -a actual_parts <<< "$actual"
+            read -r -a required_parts <<< "$required"
+            for ((i = 0; i < 3; i++)); do
+              actual_n="${actual_parts[$i]:-0}"
+              required_n="${required_parts[$i]:-0}"
+              if ((10#$actual_n > 10#$required_n)); then return 0; fi
+              if ((10#$actual_n < 10#$required_n)); then return 1; fi
+            done
+          }
+          if [[ -z "$release" || -z "$msrv" ]] || ! version_at_least "$release" "$msrv"; then
+            echo "rustc ${release:-unknown} is older than rust-version ${msrv:-missing}." >&2
+            exit 1
+          fi
 
       - name: Require Node
         shell: bash
