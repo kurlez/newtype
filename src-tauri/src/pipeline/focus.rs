@@ -403,12 +403,14 @@ mod windows {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::string::CFString;
+
     use super::FocusTarget;
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
-        static kAXFocusedUIElementAttribute: *const std::ffi::c_void;
-        static kAXFocusedAttribute: *const std::ffi::c_void;
         fn AXUIElementCreateApplication(pid: i32) -> *mut std::ffi::c_void;
         fn AXUIElementCreateSystemWide() -> *mut std::ffi::c_void;
         fn AXUIElementCopyAttributeValue(
@@ -425,7 +427,6 @@ mod macos {
 
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
-        static kCFBooleanTrue: *const std::ffi::c_void;
         fn CFRelease(cf: *const std::ffi::c_void);
     }
 
@@ -462,11 +463,13 @@ mod macos {
         if target.ax == 0 {
             return;
         }
+        let attribute = CFString::new("AXFocused");
+        let focused = CFBoolean::true_value();
         unsafe {
             AXUIElementSetAttributeValue(
                 target.ax as *mut std::ffi::c_void,
-                kAXFocusedAttribute,
-                kCFBooleanTrue,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                focused.as_concrete_TypeRef() as *const std::ffi::c_void,
             );
         }
     }
@@ -523,9 +526,14 @@ mod macos {
         if element.is_null() {
             return std::ptr::null_mut();
         }
+        let attribute = CFString::new("AXFocusedUIElement");
         unsafe {
             let mut value = std::ptr::null_mut();
-            let status = AXUIElementCopyAttributeValue(element, kAXFocusedUIElementAttribute, &mut value);
+            let status = AXUIElementCopyAttributeValue(
+                element,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                &mut value,
+            );
             if status != 0 {
                 std::ptr::null_mut()
             } else {
