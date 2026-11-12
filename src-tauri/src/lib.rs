@@ -1,6 +1,10 @@
 mod build_info;
 mod commands;
+mod dictate_config;
+mod dictation;
+mod permissions;
 mod pipeline;
+mod secrets;
 mod settings;
 mod tray;
 mod updater;
@@ -17,7 +21,10 @@ pub fn run() {
         .setup(|app| {
             let state = updater::AppState::load(app.handle())?;
             app.manage(state);
+            let dictation = dictation::Dictation::load(app.handle())?;
+            app.manage(dictation);
             tray::install(app.handle())?;
+            dictation::Dictation::launch(app.handle().clone());
             updater::spawn_background_checks(app.handle().clone());
             Ok(())
         })
@@ -25,10 +32,12 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
-                #[cfg(target_os = "macos")]
-                let _ = window
-                    .app_handle()
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                if window.label() == "main" {
+                    #[cfg(target_os = "macos")]
+                    let _ = window
+                        .app_handle()
+                        .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +46,24 @@ pub fn run() {
             commands::check_for_updates,
             commands::apply_update,
             commands::pipeline_status,
+            commands::dictation_snapshot,
+            commands::dictation_save,
+            commands::dictation_set_key,
+            commands::dictation_clear_key,
+            commands::dictation_test_connection,
+            commands::dictation_list_models,
+            commands::dictation_request_access,
+            commands::dictation_open_privacy,
+            commands::dictation_capture_hotkey,
+            commands::dictation_cancel_capture,
+            commands::dictation_record_toggle,
+            commands::dictation_cancel,
+            commands::dictation_history,
+            commands::dictation_delete_history,
+            commands::dictation_copy_history,
+            commands::dictation_microphones,
+            commands::dictation_probe_microphone,
+            commands::dictation_reset_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running newtype");

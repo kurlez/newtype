@@ -1,16 +1,23 @@
-//! Dictate pipeline boundaries from PRD §7.
+//! Dictate pipeline.
 //!
-//! Milestone 0 does not record, transcribe, rewrite, or insert text.
-//! These modules exist so later work has a place to land.
+//! Cloud speech, rewrite, hotkeys, paste, and history run in this build.
+//! Local models, Silero, and offline auto-switch stay behind the router.
 
-mod asr;
-mod history;
-mod hotkey;
-mod hotwords;
-mod insert;
-mod llm;
-mod router;
-mod vad;
+pub(crate) mod asr;
+pub(crate) mod audio;
+pub(crate) mod cloud;
+pub(crate) mod front;
+pub(crate) mod history;
+pub(crate) mod hotkey;
+pub(crate) mod hotwords;
+pub(crate) mod insert;
+pub(crate) mod llm;
+pub(crate) mod polish;
+pub(crate) mod router;
+pub(crate) mod vad;
+
+#[cfg(test)]
+mod harness;
 
 pub struct ModuleStatus {
     pub name: &'static str,
@@ -28,5 +35,6 @@ pub fn inventory() -> Vec<ModuleStatus> {
         hotkey::status(),
         insert::status(),
         history::status(),
+        audio::status(),
     ]
 }

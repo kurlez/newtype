@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "AI voice input. This milestone is the tray shell and in-app updater.",
+  "description": "AI voice input for macOS and Windows. Cloud dictation, with the tray shell and in-app updater.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

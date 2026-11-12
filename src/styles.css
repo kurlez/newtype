@@ -39,14 +39,16 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
 #app {
-  max-width: 440px;
+  max-width: 520px;
   margin: 0 auto;
-  padding: 28px 22px 40px;
+  padding: 28px 22px 48px;
 }
 
 header h1 {
@@ -205,4 +207,159 @@ ul.stubs {
 
 ul.stubs li span {
   color: var(--muted);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 12px 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+input[type="text"],
+input[type="password"],
+input:not([type]),
+select,
+textarea {
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.banner {
+  margin: 0;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 18px;
+}
+
+.badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 11px;
+}
+
+.badge.warn,
+.status.warn {
+  background: transparent;
+  color: var(--warn);
+}
+
+.muted,
+.notes {
+  color: var(--muted);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 12px;
+}
+
+.hotkey-line,
+.hotword {
+  display: flex;
+  gap: 8px;
+}
+
+.hotword {
+  margin: 8px 0;
+}
+
+.hotword input,
+.hotkey-line input {
+  flex: 1;
+  min-width: 0;
+}
+
+.history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history li {
+  margin: 12px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+body.indicator {
+  background: #1c1915;
+  color: #f3efe6;
+}
+
+body.indicator #app {
+  max-width: none;
+  margin: 0;
+  padding: 8px;
+}
+
+.bar {
+  border: 1px solid #3a342c;
+  border-radius: 14px;
+  background: #211e1a;
+  padding: 10px 12px;
+}
+
+.bar-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.bar-top strong {
+  font-size: 14px;
+}
+
+.bar-top #route {
+  margin-left: auto;
+  color: #b7b0a4;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: #8ddec0;
+}
+
+.bar[data-phase="error"] .dot,
+.bar[data-phase="fallback"] .dot {
+  background: #e2b07a;
+}
+
+.meter {
+  display: flex;
+  gap: 4px;
+  height: 10px;
+  margin-top: 8px;
+}
+
+.meter i {
+  flex: 1;
+  border-radius: 99px;
+  background: #3a342c;
+}
+
+.meter i.on {
+  background: #8ddec0;
+}
+
+.bar p {
+  margin: 8px 0 0;
+  color: #f3efe6;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+#preview-next {
+  margin-top: 8px;
 }
