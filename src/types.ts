@@ -97,6 +97,7 @@ export interface LocalLibrary {
   activeLlm: string;
   downloading: string;
   attribution: string;
+  skipWarning: string;
   models: LocalModel[];
 }
 

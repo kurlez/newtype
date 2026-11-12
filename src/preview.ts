@@ -196,6 +196,8 @@ export const previewSnapshot: Snapshot = {
     downloading: "",
     attribution:
       "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
+    skipWarning:
+      "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。 This reminder stays until both are installed.",
     models: [
       {
         id: "qwen3-asr-1.7b-q8",
