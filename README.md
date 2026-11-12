@@ -114,7 +114,9 @@ Saving a key writes it to the macOS Keychain or Windows Credential Manager and r
 
 A startup check writes and deletes a throwaway credential. If that check fails, the settings page says the store is unavailable. Dictation errors open the floating indicator instead of failing silently. A rolling log is `newtype.log` in the app log directory. The settings page and the tray menu show that path. The log does not contain API keys.
 
-Speech is sent only after you stop, to the provider you picked. The rewrite uses temperature 0 and turns thinking off where that model allows it. If the rewrite fails, times out, or looks like an answer, the text after hot-word replacement is pasted instead. Paste uses the clipboard and then restores the previous clipboard text. On macOS that is Command+V. On Windows it is Ctrl+V.
+A new install uses Groq: speech `whisper-large-v3-turbo` at `https://api.groq.com/openai/v1/audio/transcriptions`, and rewrite `openai/gpt-oss-20b` with `reasoning_effort: low`. About $1.8/month at 200 dictations a day. Groq + GPT-4o mini is about $2.5 and needs a Groq key plus an OpenAI key, stored separately. OpenAI (`gpt-transcribe` and `gpt-4o-mini`) is about $8. An install that already saved a provider and its model ids keeps them.
+
+Speech is sent only after you stop, to the provider you picked. The rewrite uses temperature 0 and turns thinking off where that model allows it. Groq `openai/gpt-oss-20b` cannot turn reasoning off, so the request uses `low` and at least 512 output tokens. If the rewrite fails, times out, or looks like an answer, the text after hot-word replacement is pasted instead. Paste uses the clipboard and then restores the previous clipboard text. On macOS that is Command+V. On Windows it is Ctrl+V.
 
 ### Providers and model ids
 
@@ -122,13 +124,14 @@ Checked against vendor docs on 2026-11-12. The settings fields are not locked to
 
 | Provider | Speech | Rewrite | In this build |
 | --- | --- | --- | --- |
-| OpenAI (default) | `gpt-transcribe` | `gpt-6-luna` (also `gpt-6.1-sol`, `gpt-6-astra`) | Ready. File transcription and chat completions. `gpt-6-luna` accepts `reasoning_effort: none`. Astra and Sol do not, so they use `low` and omit temperature. |
-| Groq | `whisper-large-v3` (turbo is the faster option) | `openai/gpt-oss-20b` | Ready and OpenAI-compatible. Whisper is weaker for Chinese. gpt-oss cannot use `none`. `qwen/qwen3.8-27b` is optional and can. |
+| Groq (default for a new install) | `whisper-large-v3-turbo` | `openai/gpt-oss-20b` | Ready. About $1.8/month at 200 dictations a day. `reasoning_effort: low`. |
+| Groq + GPT-4o mini | Groq `whisper-large-v3-turbo` | OpenAI `gpt-4o-mini` | Ready. About $2.5/month. The Groq key and the OpenAI key are stored separately. |
+| OpenAI | `gpt-transcribe` | `gpt-4o-mini` | Ready. About $8/month. One OpenAI key. |
 | DashScope · 通义 | `qwen3-asr-flash` | `qwen3.8-flash` (also `qwen3.8-max`) | Partial. HTTP chat with input audio. You paste the workspace base URL. The WebSocket message model is not implemented. |
 | Volcengine · 火山 | not set | `doubao-seed-2-1-lite-260915` (pro: `doubao-seed-2-1-pro-260915`) | Partial. The Ark chat API is implemented, with `thinking.type` disabled. Openspeech WebSocket speech is not. `doubao-seed-asr-1-0` is not used. |
 | OpenAI-compatible | you type it | you type it | Ready. `https`, or `http` on localhost. |
 
-`whisper-1` and `gpt-4o-transcribe` are deprecated and are not suggested. `qwen-audio-3.1-asr-flash-message` and `qwen3.7-plus` were not in the model list that was checked, so they are not suggested either.
+`gpt-5-nano`, `whisper-1`, `gpt-4o-transcribe`, and `gpt-4o-mini-transcribe` are not suggested. `llama-3.1-8b-instant` is not used. Model ids stay editable. `qwen-audio-3.1-asr-flash-message` and `qwen3.7-plus` were not in the model list that was checked, so they are not suggested either.
 
 ### Prompts
 
@@ -148,7 +151,7 @@ To run the 15 cleanup cases from the literal prompt against a configured provide
 export NEWTYPE_PROMPT_API_KEY='your key'
 # optional
 export NEWTYPE_PROMPT_BASE='https://api.openai.com/v1'
-export NEWTYPE_PROMPT_MODEL='gpt-6-luna'
+export NEWTYPE_PROMPT_MODEL='gpt-4o-mini'
 export NEWTYPE_PROMPT_LEVEL='both'   # or literal, or polish
 export NEWTYPE_PROMPT_CASES='10,13,14,15'
 

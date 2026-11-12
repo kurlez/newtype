@@ -133,6 +133,19 @@ pub struct PresetDto {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BundleDto {
+    id: String,
+    label: String,
+    asr_provider: String,
+    llm_provider: String,
+    asr_model: String,
+    llm_model: String,
+    monthly_usd: String,
+    note: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub settings: DictationSettings,
     pub hotkey_labels: Vec<String>,
@@ -141,6 +154,7 @@ pub struct Snapshot {
     pub verified_on: String,
     pub keys: std::collections::BTreeMap<String, bool>,
     pub presets: Vec<PresetDto>,
+    pub bundles: Vec<BundleDto>,
     pub permissions: PermissionSnapshot,
     pub listener: String,
     pub secure_store: String,
@@ -334,6 +348,7 @@ impl Dictation {
             verified_on: cloud::VERIFIED_ON.into(),
             keys,
             presets: cloud::presets().iter().map(preset_dto).collect(),
+            bundles: cloud::bundles().iter().map(bundle_dto).collect(),
             permissions: permissions::snapshot(&self.mic_status.lock().expect("mic")),
             listener: self.listener.lock().expect("listener").clone(),
             secure_store: self.secure_store.lock().expect("store").clone(),
@@ -383,6 +398,19 @@ pub fn cancel(app: &AppHandle) {
 
 pub fn route_label(app: &AppHandle) -> String {
     app.state::<Dictation>().route_label()
+}
+
+fn bundle_dto(bundle: &cloud::Bundle) -> BundleDto {
+    BundleDto {
+        id: bundle.id.into(),
+        label: bundle.label.into(),
+        asr_provider: bundle.asr_provider.into(),
+        llm_provider: bundle.llm_provider.into(),
+        asr_model: bundle.asr_model.into(),
+        llm_model: bundle.llm_model.into(),
+        monthly_usd: bundle.monthly_usd.into(),
+        note: bundle.note.into(),
+    }
 }
 
 fn preset_dto(preset: &Preset) -> PresetDto {

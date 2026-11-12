@@ -38,6 +38,17 @@ export interface DictationSettings {
   hotwords: Hotword[];
 }
 
+export interface BundleInfo {
+  id: string;
+  label: string;
+  asrProvider: string;
+  llmProvider: string;
+  asrModel: string;
+  llmModel: string;
+  monthlyUsd: string;
+  note: string;
+}
+
 export interface PresetInfo {
   id: string;
   label: string;
@@ -118,6 +129,7 @@ export interface Snapshot {
   verifiedOn: string;
   keys: Record<string, boolean>;
   presets: PresetInfo[];
+  bundles: BundleInfo[];
   permissions: PermissionInfo;
   listener: string;
   secureStore: string;

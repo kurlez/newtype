@@ -2,8 +2,8 @@ import type { HistoryEntry, PhaseEvent, Snapshot } from "./types";
 
 export const previewSnapshot: Snapshot = {
   settings: {
-    asrProvider: "openai",
-    llmProvider: "openai",
+    asrProvider: "groq",
+    llmProvider: "groq",
     talkMode: "toggle",
     polishLevel: "polish",
     preference: "cloudDefault",
@@ -23,7 +23,7 @@ export const previewSnapshot: Snapshot = {
     providers: {
       openai: {
         asrModel: "gpt-transcribe",
-        llmModel: "gpt-6-luna",
+        llmModel: "gpt-4o-mini",
         base: "https://api.openai.com/v1",
         asrBase: "",
         llmBase: "",
@@ -32,7 +32,7 @@ export const previewSnapshot: Snapshot = {
         volcAppId: "",
       },
       groq: {
-        asrModel: "whisper-large-v3",
+        asrModel: "whisper-large-v3-turbo",
         llmModel: "openai/gpt-oss-20b",
         base: "https://api.groq.com/openai/v1",
         asrBase: "",
@@ -80,7 +80,7 @@ export const previewSnapshot: Snapshot = {
     "Right Ctrl is also part of Right Ctrl + Right Shift. A short press uses the shorter one; adding the extra key at the start uses the longer one.",
   ],
   verifiedOn: "2026-11-12",
-  keys: { openai: false, groq: false, dashscope: false, volcengine: false, custom: false },
+  keys: { openai: false, groq: true, dashscope: false, volcengine: false, custom: false },
   presets: [
     {
       id: "openai",
@@ -90,11 +90,11 @@ export const previewSnapshot: Snapshot = {
       baseEditable: false,
       defaultBase: "https://api.openai.com/v1",
       defaultAsr: "gpt-transcribe",
-      defaultLlm: "gpt-6-luna",
+      defaultLlm: "gpt-4o-mini",
       asrModels: ["gpt-transcribe"],
-      llmModels: ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"],
+      llmModels: ["gpt-4o-mini"],
       asrWire: "transcriptions",
-      note: "Default. gpt-6-luna can turn thinking off. gpt-6-astra and gpt-6.1-sol use low effort.",
+      note: "Speech is gpt-transcribe. Rewrite is gpt-4o-mini. The model id can be edited.",
       verified: "Checked 2026-11-12.",
     },
     {
@@ -104,12 +104,12 @@ export const previewSnapshot: Snapshot = {
       llmReady: true,
       baseEditable: false,
       defaultBase: "https://api.groq.com/openai/v1",
-      defaultAsr: "whisper-large-v3",
+      defaultAsr: "whisper-large-v3-turbo",
       defaultLlm: "openai/gpt-oss-20b",
-      asrModels: ["whisper-large-v3", "whisper-large-v3-turbo"],
+      asrModels: ["whisper-large-v3-turbo", "whisper-large-v3"],
       llmModels: ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"],
       asrWire: "transcriptions",
-      note: "Whisper Chinese accuracy is weaker. gpt-oss cannot fully disable reasoning.",
+      note: "Recommended. whisper-large-v3-turbo and openai/gpt-oss-20b at reasoning effort low.",
       verified: "Checked 2026-11-12.",
     },
     {
@@ -156,6 +156,38 @@ export const previewSnapshot: Snapshot = {
       asrWire: "transcriptions",
       note: "Your base URL and model ids. localhost may use http.",
       verified: "No model id is assumed.",
+    },
+  ],
+  bundles: [
+    {
+      id: "groq",
+      label: "Groq",
+      asrProvider: "groq",
+      llmProvider: "groq",
+      asrModel: "whisper-large-v3-turbo",
+      llmModel: "openai/gpt-oss-20b",
+      monthlyUsd: "1.8",
+      note: "Recommended. One Groq key.",
+    },
+    {
+      id: "groq-openai",
+      label: "Groq + GPT-4o mini",
+      asrProvider: "groq",
+      llmProvider: "openai",
+      asrModel: "whisper-large-v3-turbo",
+      llmModel: "gpt-4o-mini",
+      monthlyUsd: "2.5",
+      note: "Needs a Groq key and an OpenAI key.",
+    },
+    {
+      id: "openai",
+      label: "OpenAI",
+      asrProvider: "openai",
+      llmProvider: "openai",
+      asrModel: "gpt-transcribe",
+      llmModel: "gpt-4o-mini",
+      monthlyUsd: "8",
+      note: "One OpenAI key.",
     },
   ],
   permissions: {

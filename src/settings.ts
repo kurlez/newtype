@@ -16,6 +16,7 @@ import {
   escapeHtml,
   type CaptureEvent,
   type DictationSettings,
+  type BundleInfo,
   type HistoryEntry,
   type Hotword,
   type PresetInfo,
@@ -92,6 +93,7 @@ export async function mount(previewMode: boolean): Promise<void> {
         <li>macOS：第一次不要双击。右键 → 打开。若已拦截：系统设置 → 隐私与安全性 → 仍要打开。</li>
         <li>Windows: if SmartScreen appears, choose More info, then Run anyway.</li>
         <li>The dictate key defaults to Right Ctrl. If this keyboard has no Right Ctrl key, use Hotkey below: click Capture, press a key that exists, then click Set.</li>
+        <li>${ui("A new install uses Groq: whisper-large-v3-turbo for speech and openai/gpt-oss-20b for rewrite, about $1.8/month at 200 dictations a day. An install that already has a provider keeps it.", "新安装默认用 Groq：语音 whisper-large-v3-turbo，改写 openai/gpt-oss-20b，每天约 200 次大约 $1.8/月。已经选过供应商的安装保持不变。")}</li>
       </ol>
       <p class="status">Updates are not Developer ID signed. Microphone and Accessibility may need to be granted again after an update. That has to be checked on a real Mac.</p>
     </section>
@@ -328,6 +330,14 @@ function paint(): void {
     <section>
       <h2 id="sec-cloud">${ui("Cloud", "云端")}</h2>
       <p class="status">${ui("Cloud dictation sends the recording and the transcript to the provider you configure. The key stays on this computer.", "使用云端时会把录音和转写发到你配置的供应商。密钥只留在这台电脑上。")}</p>
+      <label class="field">${ui("Preset", "方案")}
+        <select id="cloud-preset">
+          <option value="" disabled ${activeBundle(settings) ? "" : "selected"}>${ui("Custom mix", "自定义组合")}</option>
+          ${snap.bundles.map((bundle) => `<option value="${escapeHtml(bundle.id)}" ${bundle.id === activeBundle(settings)?.id ? "selected" : ""}>${escapeHtml(bundle.label)} · ~$${escapeHtml(bundle.monthlyUsd)}${ui("/mo", "/月")}</option>`).join("")}
+        </select>
+      </label>
+      <p class="status">${presetCostLine(settings)}</p>
+      ${keyStatus(settings)}
       <p class="status">Model ids were checked ${escapeHtml(snap.verifiedOn)}. The fields stay editable. Load models asks the provider what this key can see.</p>
       ${snap.devKeyStore ? `<p class="status warn">This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.</p>` : `<p class="status">API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.</p>`}
       <label class="field">Speech<select id="asr-provider">${options(snap.presets, settings.asrProvider, (item) => item.asrReady)}</select></label>
@@ -342,11 +352,11 @@ function paint(): void {
           <option value="low" ${settings.thinking === "low" ? "selected" : ""}>Low effort when off is rejected</option>
         </select>
       </label>
-      <p class="status">Speech key: ${snap.keys[settings.asrProvider] ? `saved in ${snap.devKeyStore ? "the local dev file" : "the system credential store"}` : "not saved"}</p>
-      <label class="field">API key for ${escapeHtml(settings.asrProvider)}
+      <p class="status">${ui("Speech key", "语音密钥")} (${escapeHtml(preset(settings.asrProvider)?.label ?? settings.asrProvider)}): ${snap.keys[settings.asrProvider] ? ui("saved", "已保存") : ui("missing", "缺少")}</p>
+      <label class="field">${ui("API key for", "密钥")} ${escapeHtml(settings.asrProvider)}
         <input id="api-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.asrProvider] ? "Saved. Enter a new key to replace it." : "Not saved"}" />
       </label>
-      ${settings.llmProvider !== settings.asrProvider ? `<label class="field">API key for ${escapeHtml(settings.llmProvider)}<input id="llm-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.llmProvider] ? "Saved. Enter a new key to replace it." : "Not saved"}" /></label>` : ""}
+      ${settings.llmProvider !== settings.asrProvider ? `<p class="status">${ui("Rewrite key", "改写密钥")} (${escapeHtml(preset(settings.llmProvider)?.label ?? settings.llmProvider)}): ${snap.keys[settings.llmProvider] ? ui("saved", "已保存") : ui("missing", "缺少")}</p><label class="field">${ui("API key for", "密钥")} ${escapeHtml(settings.llmProvider)}<input id="llm-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.llmProvider] ? ui("Saved. Enter a new key to replace it.", "已保存。输入新密钥以替换。") : ui("Not saved", "未保存")}" /></label>` : ""}
       <div class="row">
         <button type="button" id="save-key" class="primary">${ui("Save key", "保存密钥")}</button>
         <button type="button" id="clear-key">${ui("Clear speech key", "清除语音密钥")}</button>
@@ -407,6 +417,12 @@ function paint(): void {
 }
 
 function bind(): void {
+  document.querySelector("#cloud-preset")?.addEventListener("change", (event) => {
+    const id = (event.target as HTMLSelectElement).value;
+    if (id) {
+      applyBundle(id);
+    }
+  });
   document.querySelector("#asr-provider")?.addEventListener("change", (event) => {
     snap.settings.asrProvider = (event.target as HTMLSelectElement).value;
     paint();
@@ -703,7 +719,7 @@ async function testKey(provider: string, kind: string): Promise<void> {
 
 async function loadModels(provider: string): Promise<void> {
   if (preview) {
-    remoteModels = ["gpt-transcribe", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"];
+    remoteModels = ["whisper-large-v3-turbo", "openai/gpt-oss-20b", "gpt-transcribe", "gpt-4o-mini"];
     notice = "Preview model list.";
     paint();
     return;
@@ -1365,6 +1381,62 @@ function badge(preset: PresetInfo | undefined): string {
     return `<span class="badge warn">Partial</span>`;
   }
   return `<span class="badge">Ready</span>`;
+}
+
+function activeBundle(settings: DictationSettings): BundleInfo | undefined {
+  return snap.bundles.find((bundle) => {
+    const asr = settings.providers[bundle.asrProvider];
+    const llm = settings.providers[bundle.llmProvider];
+    return (
+      settings.asrProvider === bundle.asrProvider &&
+      settings.llmProvider === bundle.llmProvider &&
+      asr?.asrModel === bundle.asrModel &&
+      llm?.llmModel === bundle.llmModel
+    );
+  });
+}
+
+function applyBundle(id: string): void {
+  const bundle = snap.bundles.find((item) => item.id === id);
+  if (!bundle) {
+    return;
+  }
+  snap.settings.asrProvider = bundle.asrProvider;
+  snap.settings.llmProvider = bundle.llmProvider;
+  ensure(snap.settings, bundle.asrProvider).asrModel = bundle.asrModel;
+  ensure(snap.settings, bundle.llmProvider).llmModel = bundle.llmModel;
+  paint();
+  void save();
+}
+
+function presetCostLine(settings: DictationSettings): string {
+  const bundle = activeBundle(settings);
+  if (!bundle) {
+    return ui(
+      "Pick Groq (~$1.8/mo), Groq + GPT-4o mini (~$2.5/mo), or OpenAI (~$8/mo). Estimates are for about 200 dictations a day.",
+      "可选 Groq（约 $1.8/月）、Groq + GPT-4o mini（约 $2.5/月）或 OpenAI（约 $8/月）。按每天约 200 次估算。",
+    );
+  }
+  return `${escapeHtml(bundle.note)} ${ui(
+    `About $${bundle.monthlyUsd}/month at 200 dictations a day.`,
+    `每天约 200 次时大约 $${bundle.monthlyUsd}/月。`,
+  )}`;
+}
+
+function keyStatus(settings: DictationSettings): string {
+  const missing: string[] = [];
+  const speechName = preset(settings.asrProvider)?.label ?? settings.asrProvider;
+  if (!snap.keys[settings.asrProvider]) {
+    missing.push(ui(`${speechName} speech key`, `${speechName} 语音密钥`));
+  }
+  if (settings.llmProvider !== settings.asrProvider && !snap.keys[settings.llmProvider]) {
+    const rewriteName = preset(settings.llmProvider)?.label ?? settings.llmProvider;
+    missing.push(ui(`${rewriteName} rewrite key`, `${rewriteName} 改写密钥`));
+  }
+  if (missing.length === 0) {
+    return `<p class="status">${ui("The keys for this preset are saved.", "这个方案需要的密钥都已保存。")}</p>`;
+  }
+  return `<p class="status warn">${ui("Missing", "缺少")}: ${escapeHtml(missing.join(", "))}. ${ui("Speech and rewrite keys are stored separately.", "语音密钥和改写密钥分开保存。")}</p>`;
 }
 
 function preset(id: string): PresetInfo | undefined {
