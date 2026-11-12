@@ -85,6 +85,8 @@ pub fn run() {
             commands::local_skip_download,
             commands::local_set_mirror,
             commands::local_use_model,
+            commands::indicator_save_position,
+            commands::indicator_open_history,
         ])
         .build(tauri::generate_context!())
         .expect("error while building newtype")

@@ -402,8 +402,10 @@ textarea {
   border-top: 1px solid var(--line);
 }
 
+html.indicator,
+html.indicator body,
 body.indicator {
-  background: #1c1915;
+  background: transparent;
   color: #f3efe6;
 }
 
@@ -414,10 +416,53 @@ body.indicator #app {
 }
 
 .bar {
-  border: 1px solid #3a342c;
+  border: 1px solid rgba(58, 52, 44, 0.85);
   border-radius: 14px;
-  background: #211e1a;
+  background: rgba(33, 30, 26, 0.72);
+  backdrop-filter: blur(16px);
   padding: 10px 12px;
+  cursor: grab;
+}
+
+.bar button,
+.bar .bar-actions {
+  cursor: pointer;
+}
+
+.grip {
+  width: 10px;
+  height: 16px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    to bottom,
+    #b7b0a4 0 2px,
+    transparent 2px 4px
+  );
+  flex: none;
+}
+
+.bar-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.bar-actions[hidden] {
+  display: none;
+}
+
+.bar button.icon {
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bar button.icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .bar-top {

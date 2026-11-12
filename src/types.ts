@@ -35,6 +35,7 @@ export interface DictationSettings {
   historyRetention: string;
   windowTranslucent: boolean;
   groqRateLimitFallback: boolean;
+  uiLanguage: string;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
 }
@@ -143,6 +144,7 @@ export interface Snapshot {
   version: string;
   devKeyStore: boolean;
   local: LocalLibrary;
+  language: string;
 }
 
 export interface HistoryEntry {

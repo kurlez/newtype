@@ -21,6 +21,7 @@ export const previewSnapshot: Snapshot = {
     historyRetention: "month",
     windowTranslucent: true,
     groqRateLimitFallback: true,
+    uiLanguage: "auto",
     providers: {
       openai: {
         asrModel: "gpt-transcribe",
@@ -115,7 +116,7 @@ export const previewSnapshot: Snapshot = {
     },
     {
       id: "dashscope",
-      label: "DashScope · 通义",
+      label: "DashScope",
       asrReady: true,
       llmReady: true,
       baseEditable: true,
@@ -130,7 +131,7 @@ export const previewSnapshot: Snapshot = {
     },
     {
       id: "volcengine",
-      label: "Volcengine · 火山",
+      label: "Volcengine",
       asrReady: true,
       llmReady: true,
       baseEditable: true,
@@ -206,7 +207,8 @@ export const previewSnapshot: Snapshot = {
   listener: "Listening for the right-hand Control key.",
   secureStore: "ready",
   logPath: "C:\\Users\\example\\AppData\\Local\\app.newtype.desktop\\logs\\newtype.log",
-  routeLabel: "Cloud · 云端",
+  routeLabel: "Cloud",
+  language: "en",
   routeDetail: "Speech goes to the provider you configured. If it stays unreachable, the next dictation uses local models.",
   routeNotice: "",
   connectivity: "Checking the configured cloud provider.",
@@ -220,7 +222,7 @@ export const previewSnapshot: Snapshot = {
     llmReady: false,
     fallbackReady: false,
     reminder:
-      "Offline fallback is not ready. Download both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。",
+      "Offline fallback is not ready. Download both the local speech model and the local rewrite model. Neither model is installed.",
     skipped: false,
     hardwareSummary: "Mac with 24.0 GB RAM. Local speech is Qwen3-ASR 1.7B Q8_0. Local rewrite is Qwen3 4B Q4_K_M.",
     recommendedAsr: "qwen3-asr-1.7b-q8",
@@ -231,7 +233,7 @@ export const previewSnapshot: Snapshot = {
     attribution:
       "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
     skipWarning:
-      "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。 This reminder stays until both are installed.",
+      "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. This reminder stays until both are installed.",
     models: [
       {
         id: "qwen3-asr-1.7b-q8",
@@ -294,7 +296,7 @@ export const previewHistory: HistoryEntry[] = [
     createdAtMs: Date.UTC(2026, 10, 12, 4, 0, 0),
     appVersion: "0.1.0-dev.0+preview",
     mode: "dictate",
-    route: "Cloud · 云端",
+    route: "Cloud",
     provider: "openai / openai",
     polishLevel: "polish",
     raw: "嗯帮我用 cloud code 写一个脚本",
@@ -311,7 +313,7 @@ export const previewHistory: HistoryEntry[] = [
     createdAtMs: Date.UTC(2026, 10, 12, 4, 5, 0),
     appVersion: "0.1.0-dev.0+preview",
     mode: "dictate",
-    route: "Local · auto fallback · 本地 · 自动回落",
+    route: "Local, automatic",
     provider: "local / qwen3-asr-0.6b-int8",
     polishLevel: "polish",
     raw: "同一段录音改走本地",
@@ -326,7 +328,7 @@ export const previewHistory: HistoryEntry[] = [
     createdAtMs: Date.UTC(2026, 10, 12, 5, 0, 0),
     appVersion: "0.1.0-dev.0+preview",
     mode: "translate",
-    route: "Cloud · 云端",
+    route: "Cloud",
     provider: "openai / openai",
     polishLevel: "polish",
     raw: "今天把这个发给 Emma",
@@ -341,7 +343,7 @@ export const previewHistory: HistoryEntry[] = [
 export const previewPhases: PhaseEvent[] = [
   {
     phase: "recording",
-    route: "Cloud · 云端",
+    route: "Cloud",
     message: "Recording. Audio will be sent when you stop.",
     elapsedMs: 4200,
     level: 0.62,
@@ -349,7 +351,7 @@ export const previewPhases: PhaseEvent[] = [
   },
   {
     phase: "processing",
-    route: "Cloud · 云端",
+    route: "Cloud",
     message: "Transcribing…",
     elapsedMs: 0,
     level: 0,
@@ -357,7 +359,7 @@ export const previewPhases: PhaseEvent[] = [
   },
   {
     phase: "fallback",
-    route: "Local · auto fallback · 本地 · 自动回落",
+    route: "Local, automatic",
     message: "Inserted. The cloud provider failed, so this recording used the local model.",
     elapsedMs: 0,
     level: 0,
@@ -365,7 +367,7 @@ export const previewPhases: PhaseEvent[] = [
   },
   {
     phase: "error",
-    route: "Cloud · 云端",
+    route: "Cloud",
     message: "Save an API key for the speech provider. Audio is not sent until you do.",
     elapsedMs: 0,
     level: 0,

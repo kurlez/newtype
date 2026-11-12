@@ -26,11 +26,36 @@ impl Job {
     }
 
     pub fn voice_label(&self) -> String {
+        let zh = crate::locale::prefers_zh();
         match self {
-            Self::Polish(_) => "Dictate · 口授".into(),
-            Self::Translate { target } => format!("Translate → {target} · 翻译 → {target}"),
-            Self::Command { selection: Some(_) } => "Command · rewrite selection · 指令 · 改写选区".into(),
-            Self::Command { selection: None } => "Command · help me write · 指令 · 帮我写".into(),
+            Self::Polish(_) => {
+                if zh {
+                    "口授".into()
+                } else {
+                    "Dictate".into()
+                }
+            }
+            Self::Translate { target } => {
+                if zh {
+                    format!("翻译到 {target}")
+                } else {
+                    format!("Translate to {target}")
+                }
+            }
+            Self::Command { selection: Some(_) } => {
+                if zh {
+                    "改写选区".into()
+                } else {
+                    "Rewrite selection".into()
+                }
+            }
+            Self::Command { selection: None } => {
+                if zh {
+                    "帮我写".into()
+                } else {
+                    "Help me write".into()
+                }
+            }
         }
     }
 }
@@ -79,12 +104,19 @@ pub fn local_rewrite_capable(llm_id: &str) -> bool {
 
 pub fn small_model_reason(job: &Job) -> String {
     match job {
-        Job::Translate { target } => format!(
-            "Translation into {target} needs a cloud model or a local model of at least 4B. The transcript is in History and was not inserted."
+        Job::Translate { target } => crate::locale::pick(
+            format!(
+                "Translation into {target} needs a cloud model or a local model of at least 4B. The transcript is in History and was not inserted."
+            ),
+            format!(
+                "翻译到 {target} 需要云端模型，或至少 4B 的本地模型。转写留在历史里，没有插入。"
+            ),
         ),
-        Job::Command { .. } => {
-            "Command mode needs a cloud model or a local model of at least 4B. Open the model library or switch the path to cloud. Nothing was inserted.".into()
-        }
+        Job::Command { .. } => crate::locale::text(
+            "Command mode needs a cloud model or a local model of at least 4B. Open the model library or switch the path to cloud. Nothing was inserted.",
+            "指令模式需要云端模型，或至少 4B 的本地模型。请打开模型库，或把路径改到云端。没有插入。",
+        )
+        .into(),
         Job::Polish(_) => String::new(),
     }
 }
@@ -101,7 +133,7 @@ pub fn withheld_message(job: &Job, reason: &str) -> String {
     }
     let base = small_model_reason(job);
     if base.is_empty() {
-        "Not inserted. The text is in History.".into()
+        crate::locale::text("Not inserted. The text is in History.", "没有插入。文本在历史里。").into()
     } else {
         base
     }

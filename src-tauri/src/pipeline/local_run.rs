@@ -127,7 +127,11 @@ fn finish_after_transcript(
         let reason = if job.needs_capable_local() {
             task::small_model_reason(job)
         } else {
-            "Local polish model is not installed, so only rule cleanup ran. 本地润色模型未安装，只做了规则清理".into()
+            crate::locale::text(
+                "Local polish model is not installed, so only rule cleanup ran.",
+                "本地润色模型未安装，只做了规则清理",
+            )
+            .into()
         };
         return ruled_fallback(transcript, words, reason);
     }

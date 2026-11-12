@@ -53,21 +53,42 @@ pub fn microphone_state(reported: &str) -> String {
 pub fn access_prompt(platform: &str, microphone: &str, accessibility: &str) -> (String, String) {
     let mic_missing = matches!(microphone, "denied" | "restricted" | "notDetermined");
     let ax_missing = platform == "macos" && accessibility != "granted";
+    let zh = crate::locale::prefers_zh();
     match (mic_missing, ax_missing) {
         (true, true) => (
-            "Microphone and Accessibility are off. Dictation cannot hear you, and hotkeys or paste will fail. macOS often asks again after an update because this build is not Developer ID signed.".into(),
+            if zh {
+                "麦克风和辅助功能都关着。口授听不到声音，快捷键和粘贴也会失败。更新后系统常会再次询问，因为这个构建没有开发者签名。"
+            } else {
+                "Microphone and Accessibility are off. Dictation cannot hear you, and hotkeys or paste will fail. macOS often asks again after an update because this build is not Developer ID signed."
+            }
+            .into(),
             "both".into(),
         ),
         (true, false) if platform == "windows" => (
-            "Windows is blocking the microphone. Open microphone privacy settings and allow newtype. Audio is not recorded until you do.".into(),
+            if zh {
+                "系统正在拦截麦克风。请打开麦克风隐私设置并允许 newtype。在此之前不会录音。"
+            } else {
+                "Windows is blocking the microphone. Open microphone privacy settings and allow newtype. Audio is not recorded until you do."
+            }
+            .into(),
             "microphone".into(),
         ),
         (true, false) => (
-            "Microphone access is off. newtype cannot hear you. After an update, macOS may ask again because this build is not Developer ID signed.".into(),
+            if zh {
+                "麦克风权限关着。newtype 听不到你。更新后系统可能再次询问，因为这个构建没有开发者签名。"
+            } else {
+                "Microphone access is off. newtype cannot hear you. After an update, macOS may ask again because this build is not Developer ID signed."
+            }
+            .into(),
             "microphone".into(),
         ),
         (false, true) => (
-            "Accessibility is off. The hotkey and paste need it. After an update, macOS may forget this permission because the build is not Developer ID signed.".into(),
+            if zh {
+                "辅助功能关着。快捷键和粘贴需要它。更新后系统可能忘掉这项权限，因为这个构建没有开发者签名。"
+            } else {
+                "Accessibility is off. The hotkey and paste need it. After an update, macOS may forget this permission because the build is not Developer ID signed."
+            }
+            .into(),
             "accessibility".into(),
         ),
         _ => (String::new(), String::new()),
@@ -199,20 +220,29 @@ fn accessibility_label() -> String {
 }
 
 fn guidance() -> String {
+    let zh = crate::locale::prefers_zh();
     match std::env::consts::OS {
-        "macos" => concat!(
-            "Allow Microphone and Accessibility for newtype. ",
-            "Accessibility is required to hear the Right Control hotkey and to paste into the focused app. ",
-            "Some macOS versions also ask for Input Monitoring; if the hotkey does nothing after Accessibility is on, enable that too. ",
-            "System Settings → Privacy & Security. After an update, macOS may ask again because this build is not Developer ID signed."
+        "macos" => {
+            if zh {
+                "请允许 newtype 使用麦克风和辅助功能。辅助功能用来监听右侧 Ctrl 快捷键，并粘贴到当前应用。有的系统版本还会要求输入监视；如果辅助功能已开但快捷键没反应，也请打开它。位置在系统设置的隐私与安全性。更新后可能会再次询问，因为这个构建没有开发者签名。"
+            } else {
+                "Allow Microphone and Accessibility for newtype. Accessibility is required to hear the Right Control hotkey and to paste into the focused app. Some macOS versions also ask for Input Monitoring; if the hotkey does nothing after Accessibility is on, enable that too. System Settings → Privacy & Security. After an update, macOS may ask again because this build is not Developer ID signed."
+            }
+            .into()
+        }
+        "windows" => {
+            if zh {
+                "如果系统询问，请允许麦克风。粘贴使用 Ctrl+V 写入当前应用。安装时如果出现安全提示，选择更多信息，然后仍要运行。"
+            } else {
+                "Allow microphone access if Windows asks. Paste uses Ctrl+V into the focused app. If SmartScreen appeared at install, More info → Run anyway."
+            }
+            .into()
+        }
+        _ => crate::locale::text(
+            "Microphone capture, global hotkeys, and paste are implemented for macOS and Windows.",
+            "麦克风采集、全局快捷键和粘贴只在 macOS 和 Windows 上实现。",
         )
         .into(),
-        "windows" => concat!(
-            "Allow microphone access if Windows asks. Paste uses Ctrl+V into the focused app. ",
-            "If SmartScreen appeared at install, More info → Run anyway."
-        )
-        .into(),
-        _ => "Microphone capture, global hotkeys, and paste are implemented for macOS and Windows.".into(),
     }
 }
 
@@ -246,15 +276,15 @@ mod tests {
     fn missing_microphone_and_accessibility_name_the_right_pane() {
         let (message, action) = access_prompt("macos", "denied", "required");
         assert_eq!(action, "both");
-        assert!(message.contains("Microphone"));
-        assert!(message.contains("Accessibility"));
-        assert!(message.contains("not Developer ID signed"));
+        assert!(message.contains("Microphone") || message.contains("麦克风"));
+        assert!(message.contains("Accessibility") || message.contains("辅助功能"));
+        assert!(message.contains("not Developer ID signed") || message.contains("开发者签名"));
         let (message, action) = access_prompt("macos", "granted", "required");
         assert_eq!(action, "accessibility");
-        assert!(message.contains("Accessibility"));
+        assert!(message.contains("Accessibility") || message.contains("辅助功能"));
         let (message, action) = access_prompt("windows", "denied", "notApplicable");
         assert_eq!(action, "microphone");
-        assert!(message.contains("Windows"));
+        assert!(message.contains("Windows") || message.contains("麦克风"));
         assert!(access_prompt("linux", "unknown", "notApplicable").0.is_empty());
     }
 

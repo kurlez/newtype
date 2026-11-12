@@ -72,12 +72,19 @@ pub struct DictationSettings {
     /// When Groq returns 429, 503, or rate_limit_exceeded, retry that step on OpenAI.
     #[serde(default = "default_window_translucent")]
     pub groq_rate_limit_fallback: bool,
+    /// `auto` follows the system UI language. `en` and `zh` override it.
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
 
 fn default_window_translucent() -> bool {
     true
+}
+
+fn default_ui_language() -> String {
+    "auto".into()
 }
 
 impl Default for DictationSettings {
@@ -106,6 +113,7 @@ impl Default for DictationSettings {
             history_retention: Retention::Month.as_str().into(),
             window_translucent: true,
             groq_rate_limit_fallback: true,
+            ui_language: "auto".into(),
             providers,
             hotwords: Vec::new(),
         }
@@ -192,6 +200,9 @@ pub fn normalize(settings: &mut DictationSettings) {
     settings.history_retention = Retention::parse(&settings.history_retention)
         .as_str()
         .into();
+    if !matches!(settings.ui_language.as_str(), "en" | "zh" | "auto") {
+        settings.ui_language = "auto".into();
+    }
     fill_missing_providers(settings);
     for preset in cloud::presets() {
         if let Some(config) = settings.providers.get_mut(preset.id) {
@@ -575,6 +586,7 @@ mod tests {
         assert_eq!(parsed.target_language, "English");
         assert_eq!(parsed.history_retention, "month");
         assert!(parsed.window_translucent);
+        assert_eq!(parsed.ui_language, "auto");
         assert_eq!(
             effective(&parsed, OsKind::Windows).unwrap().target_language,
             "English"

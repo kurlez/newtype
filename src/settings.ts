@@ -1,4 +1,4 @@
-import { ui } from "./i18n";
+import { applyLanguage, ui } from "./i18n";
 import {
   beginCapture,
   bindingError,
@@ -67,42 +67,37 @@ export async function mount(previewMode: boolean): Promise<void> {
   root.innerHTML = `
     <header>
       <h1>newtype</h1>
-      <p id="tagline">Cloud when the provider is reachable. Auto uses local models if it is not, and strict offline never leaves this computer.</p>
+      <p id="tagline"></p>
     </header>
     <div id="dictate"></div>
     <section aria-labelledby="updates-heading">
-      <h2 id="updates-heading">Updates</h2>
+      <h2 id="updates-heading"></h2>
       <p class="version" id="version-line">Loading…</p>
       <p class="endpoint" id="endpoint-line"></p>
       <fieldset>
-        <legend>Channel</legend>
-        <label class="choice"><input type="radio" name="channel" value="dev" /><span>dev<small>Every push to main.</small></span></label>
-        <label class="choice"><input type="radio" name="channel" value="stable" /><span>stable<small>Only v* tags.</small></span></label>
+        <legend id="channel-legend"></legend>
+        <label class="choice"><input type="radio" name="channel" value="dev" /><span>dev<small id="channel-dev"></small></span></label>
+        <label class="choice"><input type="radio" name="channel" value="stable" /><span>stable<small id="channel-stable"></small></span></label>
       </fieldset>
       <div class="row">
-        <button type="button" id="check" class="primary">Check for updates</button>
-        <button type="button" id="apply" hidden>Restart to apply</button>
+        <button type="button" id="check" class="primary"></button>
+        <button type="button" id="apply" hidden></button>
       </div>
       <p class="status" id="status" aria-live="polite"></p>
       <progress id="progress" hidden max="1" value="0"></progress>
     </section>
     <section aria-labelledby="install-heading">
-      <h2 id="install-heading">First install</h2>
-      <ol>
-        <li>macOS: drag newtype to Applications. Do not double-click the first time. Right-click → Open, then Open. If a double-click was blocked: System Settings → Privacy &amp; Security → Open Anyway.</li>
-        <li>macOS：第一次不要双击。右键 → 打开。若已拦截：系统设置 → 隐私与安全性 → 仍要打开。</li>
-        <li>Windows: if SmartScreen appears, choose More info, then Run anyway.</li>
-        <li>The dictate key defaults to Right Ctrl. If this keyboard has no Right Ctrl key, use Hotkey below: click Capture, press a key that exists, then click Set.</li>
-        <li>${ui("A new install uses Groq: whisper-large-v3-turbo for speech and openai/gpt-oss-20b for rewrite, about $1.8/month at 200 dictations a day. An install that already has a provider keeps it.", "新安装默认用 Groq：语音 whisper-large-v3-turbo，改写 openai/gpt-oss-20b，每天约 200 次大约 $1.8/月。已经选过供应商的安装保持不变。")}</li>
-      </ol>
-      <p class="status">Updates are not Developer ID signed. Microphone and Accessibility may need to be granted again after an update. That has to be checked on a real Mac.</p>
+      <h2 id="install-heading"></h2>
+      <ol id="install-steps"></ol>
+      <p class="status" id="install-note"></p>
     </section>
     <section>
-      <h2>About</h2>
+      <h2 id="about-heading"></h2>
       <p class="status" id="about-licenses">Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.</p>
     </section>
   `;
   wireUpdates();
+  refreshChrome();
   if (preview) {
     snap = JSON.parse(JSON.stringify(previewSnapshot)) as Snapshot;
     history = previewHistory;
@@ -265,11 +260,59 @@ async function reload(): Promise<void> {
   paint();
 }
 
+function refreshChrome(): void {
+  const set = (id: string, text: string) => {
+    const node = document.querySelector(id);
+    if (node) {
+      node.textContent = text;
+    }
+  };
+  set("#tagline", ui(
+    "Cloud when the provider is reachable. Auto uses local models if it is not, and strict offline never leaves this computer.",
+    "供应商能连通时走云端。不能连通时自动改用本地模型。严格离线不会离开这台电脑。",
+  ));
+  set("#updates-heading", ui("Updates", "更新"));
+  set("#channel-legend", ui("Channel", "通道"));
+  set("#channel-dev", ui("Every push to main.", "main 上的每次推送。"));
+  set("#channel-stable", ui("Only version tags.", "只有版本标签。"));
+  set("#check", ui("Check for updates", "检查更新"));
+  set("#install-heading", ui("First install", "首次安装"));
+  set("#about-heading", ui("About", "关于"));
+  set("#install-note", ui(
+    "Updates are not Developer ID signed. Microphone and Accessibility may need to be granted again after an update.",
+    "更新没有开发者签名。更新后可能需要重新允许麦克风和辅助功能。",
+  ));
+  const steps = document.querySelector("#install-steps");
+  if (steps) {
+    const items = [
+      ui(
+        "macOS: drag newtype to Applications. Do not double-click the first time. Right-click, then Open. If a double-click was blocked, use System Settings, Privacy & Security, Open Anyway.",
+        "macOS：把 newtype 拖到应用程序。第一次不要双击。右键，然后打开。如果双击被拦截，到系统设置的隐私与安全性里选择仍要打开。",
+      ),
+      ui(
+        "Windows: if the system safety prompt appears, choose More info, then Run anyway.",
+        "Windows：如果出现系统安全提示，选择更多信息，然后仍要运行。",
+      ),
+      ui(
+        "The dictate key defaults to Right Ctrl. If this keyboard has no Right Ctrl key, use Hotkey below: click Capture, press a key that exists, then click Set.",
+        "口授键默认是右 Ctrl。如果键盘没有右 Ctrl，用下面的快捷键：点击捕获，按一个存在的键，再点击设置。",
+      ),
+      ui(
+        "A new install uses Groq: whisper-large-v3-turbo for speech and openai/gpt-oss-20b for rewrite, about $1.8/month at 200 dictations a day. An install that already has a provider keeps it.",
+        "新安装默认用 Groq：语音 whisper-large-v3-turbo，改写 openai/gpt-oss-20b，每天约 200 次大约 $1.8/月。已经选过供应商的安装保持不变。",
+      ),
+    ];
+    steps.innerHTML = items.map((item) => `<li>${item}</li>`).join("");
+  }
+}
+
 function paint(): void {
   const host = document.querySelector("#dictate");
   if (!host) {
     return;
   }
+  applyLanguage(snap.settings.uiLanguage || "auto", snap.language || "");
+  refreshChrome();
   syncEditorsFromSnapshot();
   const settings = snap.settings;
   const asr = preset(settings.asrProvider);
@@ -303,14 +346,14 @@ function paint(): void {
       <p class="status" id="connectivity">${escapeHtml(snap.connectivity)}</p>
       <p class="status" id="route-detail">${escapeHtml(snap.routeDetail)}</p>
       <p class="status" id="route-notice" ${snap.routeNotice ? "" : "hidden"}>${escapeHtml(snap.routeNotice)}</p>
-      <p class="status">Hotkey listener: ${escapeHtml(snap.listener)}</p>
-      <p class="status">Log file: ${escapeHtml(snap.logPath || "not open yet")}</p>
-      ${snap.secureStore === "ready" ? "" : `<p class="status warn">Credential store: ${escapeHtml(snap.secureStore)}</p>`}
+      <p class="status">${ui("Hotkey listener", "快捷键监听")}：${escapeHtml(snap.listener)}</p>
+      <p class="status">${ui("Log file", "日志文件")}：${escapeHtml(snap.logPath || ui("not open yet", "尚未打开"))}</p>
+      ${snap.secureStore === "ready" ? "" : `<p class="status warn">${ui("Credential store", "凭据存储")}：${escapeHtml(snap.secureStore)}</p>`}
       ${radios("preference", [
-        ["cloudDefault", "Auto", "Cloud when the provider answers. If it stays unreachable, use local models, then return to cloud after the connection is stable."],
-        ["cloudOnly", "Cloud only", "Always the configured provider. A failure does not use local models."],
-        ["localOnly", "Local only", "Always on this computer. Coming back online does not switch to cloud."],
-        ["strictOffline", "Strict offline", "On this computer, and no outbound network: no cloud calls, probes, update checks, or model downloads."],
+        ["cloudDefault", ui("Auto", "自动"), ui("Cloud when the provider answers. If it stays unreachable, use local models, then return to cloud after the connection is stable.", "供应商能连通时走云端。一直连不上就用本地模型，连接稳定后再回到云端。")],
+        ["cloudOnly", ui("Cloud only", "仅云端"), ui("Always the configured provider. A failure does not use local models.", "始终使用配置的供应商。失败时不用本地模型。")],
+        ["localOnly", ui("Local only", "仅本地"), ui("Always on this computer. Coming back online does not switch to cloud.", "始终在这台电脑上。恢复联网也不会改走云端。")],
+        ["strictOffline", ui("Strict offline", "严格离线"), ui("On this computer, and no outbound network: no cloud calls, probes, update checks, or model downloads.", "在这台电脑上，并且没有出站网络：没有云端调用、探测、更新检查或模型下载。")],
       ], settings.preference)}
     </section>
     ${localPanel(snap.local, settings.preference)}
@@ -318,7 +361,7 @@ function paint(): void {
       <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
       ${snap.permissions.prompt ? `<p class="banner warn" id="permission-prompt">${escapeHtml(snap.permissions.prompt)}</p><div class="row">${promptButtons(snap.permissions.promptAction)}</div>` : ""}
       <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
-      <p class="status">Microphone: ${escapeHtml(snap.permissions.microphone)} · Accessibility: ${escapeHtml(snap.permissions.accessibility)}</p>
+      <p class="status">${ui("Microphone", "麦克风")}：${escapeHtml(snap.permissions.microphone)} · ${ui("Accessibility", "辅助功能")}：${escapeHtml(snap.permissions.accessibility)}</p>
       <div class="row">
         <button type="button" id="perm-mic" class="primary">${ui("Allow microphone", "允许麦克风")}</button>
         <button type="button" id="perm-ax">${ui("Allow Accessibility", "允许辅助功能")}</button>
@@ -339,23 +382,23 @@ function paint(): void {
       <p class="status">${presetCostLine(settings)}</p>
       ${groqFallbackControl(settings)}
       ${keyStatus(settings)}
-      <p class="status">Model ids were checked ${escapeHtml(snap.verifiedOn)}. The fields stay editable. Load models asks the provider what this key can see.</p>
-      ${snap.devKeyStore ? `<p class="status warn">This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.</p>` : `<p class="status">API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.</p>`}
-      <label class="field">Speech<select id="asr-provider">${options(snap.presets, settings.asrProvider, (item) => item.asrReady)}</select></label>
+      <p class="status">${ui("Model ids were checked", "模型编号核对于")} ${escapeHtml(snap.verifiedOn)}. ${ui("The fields stay editable. Load models asks the provider what this key can see.", "字段仍可编辑。加载模型会询问这个密钥能看到哪些模型。")}</p>
+      ${snap.devKeyStore ? `<p class="status warn">${ui("This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.", "这台电脑不是 macOS 或 Windows。密钥存在本地开发文件里，不在系统钥匙串。")}</p>` : `<p class="status">${ui("API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.", "密钥存在 macOS 钥匙串或 Windows 凭据管理器里，不会写入设置。")}</p>`}
+      <label class="field">${ui("Speech", "语音")}<select id="asr-provider">${options(snap.presets, settings.asrProvider, (item) => item.asrReady)}</select></label>
       <p class="status">${badge(asr)} ${escapeHtml(asr?.note ?? "")}</p>
-      <label class="field">Rewrite<select id="llm-provider">${options(snap.presets, settings.llmProvider, (item) => item.llmReady)}</select></label>
+      <label class="field">${ui("Rewrite", "改写")}<select id="llm-provider">${options(snap.presets, settings.llmProvider, (item) => item.llmReady)}</select></label>
       <p class="status">${badge(llm)} ${escapeHtml(llm?.note ?? "")}</p>
       ${providerFields(settings)}
-      <label class="field">Thinking
+      <label class="field">${ui("Thinking", "思考")}
         <select id="thinking">
-          <option value="auto" ${settings.thinking === "auto" ? "selected" : ""}>Auto (off where the model allows it)</option>
-          <option value="off" ${settings.thinking === "off" ? "selected" : ""}>Force off</option>
-          <option value="low" ${settings.thinking === "low" ? "selected" : ""}>Low effort when off is rejected</option>
+          <option value="auto" ${settings.thinking === "auto" ? "selected" : ""}>${ui("Auto (off where the model allows it)", "自动（模型允许时关闭）")}</option>
+          <option value="off" ${settings.thinking === "off" ? "selected" : ""}>${ui("Force off", "强制关闭")}</option>
+          <option value="low" ${settings.thinking === "low" ? "selected" : ""}>${ui("Low effort when off is rejected", "关闭被拒绝时用低强度")}</option>
         </select>
       </label>
       <p class="status">${ui("Speech key", "语音密钥")} (${escapeHtml(preset(settings.asrProvider)?.label ?? settings.asrProvider)}): ${snap.keys[settings.asrProvider] ? ui("saved", "已保存") : ui("missing", "缺少")}</p>
       <label class="field">${ui("API key for", "密钥")} ${escapeHtml(settings.asrProvider)}
-        <input id="api-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.asrProvider] ? "Saved. Enter a new key to replace it." : "Not saved"}" />
+        <input id="api-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.asrProvider] ? ui("Saved. Enter a new key to replace it.", "已保存。输入新密钥以替换。") : ui("Not saved", "未保存")}" />
       </label>
       ${settings.llmProvider !== settings.asrProvider ? `<p class="status">${ui("Rewrite key", "改写密钥")} (${escapeHtml(preset(settings.llmProvider)?.label ?? settings.llmProvider)}): ${snap.keys[settings.llmProvider] ? ui("saved", "已保存") : ui("missing", "缺少")}</p><label class="field">${ui("API key for", "密钥")} ${escapeHtml(settings.llmProvider)}<input id="llm-key" type="password" autocomplete="off" placeholder="${snap.keys[settings.llmProvider] ? ui("Saved. Enter a new key to replace it.", "已保存。输入新密钥以替换。") : ui("Not saved", "未保存")}" /></label>` : ""}
       <div class="row">
@@ -368,17 +411,24 @@ function paint(): void {
     </section>
     <section>
       <h2 id="sec-hotkey">${ui("Hotkeys", "快捷键")}</h2>
-      <p class="status hotkey-hint">The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A Typeless clash is a warning, and Set still keeps the chord.</p>
-      ${radios("talk", [["toggle", "Toggle", "Press to start, press again to stop."], ["hold", "Hold to talk", "Release to stop."]], settings.talkMode)}
+      <p class="status hotkey-hint">${ui("The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A Typeless clash is a warning, and Set still keeps the chord.", "默认组合是右 Ctrl。如果键盘没有右 Ctrl，点击捕获，按一个存在的键（右 Alt 可以），再点击设置。设置会立刻保存并使用。取消或 Esc 保留原来的组合。和 Typeless 冲突只是警告，设置仍会保留这个组合。")}</p>
+      ${radios("talk", [["toggle", ui("Toggle", "切换"), ui("Press to start, press again to stop.", "按一次开始，再按一次停止。")], ["hold", ui("Hold to talk", "按住说话"), ui("Release to stop.", "松开即停止。")]], settings.talkMode)}
       <div id="hotkey-editor">${hotkeyEditorInner()}</div>
     </section>
     <section>
       <h2 id="sec-polish">${ui("Polish", "润色")}</h2>
-      ${radios("polish", [["polish", "Polish", "Smoother wording. Does not answer or carry out the request."], ["literal", "Literal", "Minimal cleanup. Wording stays close to the transcript."]], settings.polishLevel)}
+      ${radios("polish", [["polish", ui("Polish", "润色"), ui("Smoother wording. Does not answer or carry out the request.", "语句更顺。不会回答或执行请求。")], ["literal", ui("Literal", "逐字"), ui("Minimal cleanup. Wording stays close to the transcript.", "只做少量整理。用词接近转写。")]], settings.polishLevel)}
     </section>
     <section id="sec-language">
       <h2>${ui("Language", "语言")}</h2>
-      <p class="status">${ui("The window follows the system language. Translation has one target.", "界面跟随系统语言。翻译使用一个目标语言。")}</p>
+      <label class="field">${ui("Language", "语言")}
+        <select id="ui-language">
+          <option value="auto" ${(settings.uiLanguage || "auto") === "auto" ? "selected" : ""}>Auto</option>
+          <option value="zh" ${settings.uiLanguage === "zh" ? "selected" : ""}>中文</option>
+          <option value="en" ${settings.uiLanguage === "en" ? "selected" : ""}>English</option>
+        </select>
+      </label>
+      <p class="status">${ui("Auto follows the system language. Translation has one target.", "自动跟随系统语言。翻译使用一个目标语言。")}</p>
       <label class="field">${ui("Translation target", "翻译目标语言")}
         <input id="target-language" list="target-languages" maxlength="40" value="${escapeHtml(settings.targetLanguage || "English")}" />
       </label>
@@ -399,9 +449,9 @@ function paint(): void {
     </section>
     <section>
       <h2 id="sec-audio">${ui("Audio", "语音")}</h2>
-      <label class="field">Device<input id="microphone" list="mic-list" value="${escapeHtml(settings.microphone)}" placeholder="System default" /></label>
+      <label class="field">${ui("Device", "设备")}<input id="microphone" list="mic-list" value="${escapeHtml(settings.microphone)}" placeholder="${ui("System default", "系统默认")}" /></label>
       <datalist id="mic-list"></datalist>
-      <div class="row"><button type="button" id="refresh-mics">List devices</button><button type="button" id="probe-mic">Test microphone</button><button type="button" id="record">Record a test</button></div>
+      <div class="row"><button type="button" id="refresh-mics">${ui("List devices", "列出设备")}</button><button type="button" id="probe-mic">${ui("Test microphone", "测试麦克风")}</button><button type="button" id="record">${ui("Record a test", "试录一段")}</button></div>
     </section>
     <section>
       <div class="row"><button type="button" id="save" class="primary">${ui("Save settings", "保存设置")}</button><button type="button" id="reset-models">${ui("Reset suggested models", "恢复建议模型")}</button></div>
@@ -465,6 +515,11 @@ function bind(): void {
   document.querySelector("#window-translucent")?.addEventListener("change", (event) => {
     snap.settings.windowTranslucent = (event.target as HTMLInputElement).checked;
     syncTranslucency();
+    void save();
+  });
+  document.querySelector("#ui-language")?.addEventListener("change", (event) => {
+    snap.settings.uiLanguage = (event.target as HTMLSelectElement).value || "auto";
+    applyLanguage(snap.settings.uiLanguage, snap.language || "");
     void save();
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
@@ -546,6 +601,7 @@ function readForm(): void {
   const target = read("#target-language").trim();
   settings.targetLanguage = target || "English";
   settings.historyRetention = document.querySelector<HTMLSelectElement>("#retention")?.value || settings.historyRetention || "month";
+  settings.uiLanguage = document.querySelector<HTMLSelectElement>("#ui-language")?.value || settings.uiLanguage || "auto";
   const translucent = document.querySelector<HTMLInputElement>("#window-translucent");
   if (translucent) {
     settings.windowTranslucent = translucent.checked;
@@ -636,7 +692,8 @@ async function save(): Promise<void> {
   }
   try {
     snap = await call<Snapshot>("dictation_save", { settings: snap.settings });
-    notice = "Saved.";
+    applyLanguage(snap.settings.uiLanguage || "auto", snap.language || "");
+    notice = ui("Saved.", "已保存。");
     paint();
   } catch (error) {
     notice = String(error);
@@ -1205,8 +1262,8 @@ function providerFields(settings: DictationSettings): string {
     : "";
   const baseBlock = `${asrBase}${llmBase}${customBlock}${volcBlock}`;
   return `${baseBlock}
-    <label class="field">Speech model<input id="asr-model" list="model-list" value="${escapeHtml(asr.asrModel)}" /></label>
-    <label class="field">Rewrite model<input id="llm-model" list="model-list" value="${escapeHtml(same ? asr.llmModel : llm.llmModel)}" /></label>
+    <label class="field">${ui("Speech model", "语音模型")}<input id="asr-model" list="model-list" value="${escapeHtml(asr.asrModel)}" /></label>
+    <label class="field">${ui("Rewrite model", "改写模型")}<input id="llm-model" list="model-list" value="${escapeHtml(same ? asr.llmModel : llm.llmModel)}" /></label>
     <datalist id="model-list">${list}</datalist>`;
 }
 
@@ -1218,7 +1275,7 @@ function hotkeyRow(mode: HotkeyModeName, title: string, index: number): string {
   const activeWarning = editor.phase === "pending" ? null : knownConflict(activeChord);
   const activeWarningLine = activeWarning ? `<p class="status warn">${escapeHtml(activeWarning)}</p>` : "";
   const pendingWarningLine = pendingWarning ? `<p class="status warn">${escapeHtml(pendingWarning)}</p>` : "";
-  let controls = `<div class="row"><button type="button" data-capture="${mode}">Capture</button></div>`;
+  let controls = `<div class="row"><button type="button" data-capture="${mode}">${ui("Capture", "捕获")}</button></div>`;
   if (editor.phase === "capturing") {
     const previewKeys = preview
       ? `<div class="row">${PREVIEW_CHORDS.map(
@@ -1229,11 +1286,11 @@ function hotkeyRow(mode: HotkeyModeName, title: string, index: number): string {
     const heard = editor.pendingLabel
       ? `<p class="status">${ui("Heard", "已按下")}: <strong>${escapeHtml(editor.pendingLabel)}</strong></p>`
       : "";
-    controls = `<p class="status">${preview ? "Preview has no keyboard hook. Choose a chord." : ui("Press the keys, then release them. Escape cancels.", "按下按键后松开。Esc 取消。")}</p>${heard}${previewKeys}<div class="row"><button type="button" data-cancel="${mode}">Cancel</button></div>`;
+    controls = `<p class="status">${preview ? ui("Preview has no keyboard hook. Choose a chord.", "预览没有键盘钩子。请选一个组合。") : ui("Press the keys, then release them. Escape cancels.", "按下按键后松开。Esc 取消。")}</p>${heard}${previewKeys}<div class="row"><button type="button" data-cancel="${mode}">${ui("Cancel", "取消")}</button></div>`;
   } else if (editor.phase === "pending") {
-    controls = `<p class="status">Captured: <strong>${escapeHtml(editor.pendingLabel)}</strong> <code>${escapeHtml(editor.pendingChord)}</code></p>${pendingWarningLine}<div class="row"><button type="button" class="primary" data-set="${mode}">Set</button><button type="button" data-capture="${mode}">Capture again</button><button type="button" data-cancel="${mode}">Cancel</button></div>`;
+    controls = `<p class="status">${ui("Captured", "已捕获")}：<strong>${escapeHtml(editor.pendingLabel)}</strong> <code>${escapeHtml(editor.pendingChord)}</code></p>${pendingWarningLine}<div class="row"><button type="button" class="primary" data-set="${mode}">${ui("Set", "设置")}</button><button type="button" data-capture="${mode}">${ui("Capture again", "重新捕获")}</button><button type="button" data-cancel="${mode}">${ui("Cancel", "取消")}</button></div>`;
   }
-  return `<div class="hotkey-row" data-mode="${mode}"><h3>${escapeHtml(title)}</h3><p class="status">Active: <strong>${escapeHtml(activeLabel)}</strong> <code>${escapeHtml(activeChord)}</code></p>${activeWarningLine}${controls}</div>`;
+  return `<div class="hotkey-row" data-mode="${mode}"><h3>${escapeHtml(title)}</h3><p class="status">${ui("Active", "当前")}：<strong>${escapeHtml(activeLabel)}</strong> <code>${escapeHtml(activeChord)}</code></p>${activeWarningLine}${controls}</div>`;
 }
 
 function hotwordRow(word: Hotword, index: number): string {
@@ -1376,7 +1433,7 @@ function radios(name: string, choices: Array<[string, string, string]>, selected
 function options(presets: PresetInfo[], selected: string, ready: (preset: PresetInfo) => boolean): string {
   return presets
     .map((preset) => {
-      const mark = ready(preset) ? "" : " · not finished";
+      const mark = ready(preset) ? "" : ui(" · not finished", " · 未完成");
       return `<option value="${escapeHtml(preset.id)}" ${preset.id === selected ? "selected" : ""}>${escapeHtml(preset.label)}${mark}</option>`;
     })
     .join("");
@@ -1529,12 +1586,13 @@ function renderUpdate(state: UpdateState): void {
     input.checked = input.value === state.channel;
     input.disabled = state.phase === "checking" || state.phase === "downloading";
   }
+  checkButton.textContent = ui("Check for updates", "检查更新");
   checkButton.disabled = state.phase === "checking" || state.phase === "downloading";
   statusLine.textContent = state.message;
   const showApply = state.phase === "ready" && state.availableVersion !== null;
   applyButton.hidden = !showApply;
   if (showApply && state.availableVersion) {
-    applyButton.textContent = `Restart to apply ${state.availableVersion}`;
+    applyButton.textContent = `${ui("Restart to apply", "重启以应用")} ${state.availableVersion}`;
   }
   if (state.phase === "downloading" && state.totalBytes && state.receivedBytes !== null) {
     progress.hidden = false;
