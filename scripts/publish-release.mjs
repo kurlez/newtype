@@ -1,9 +1,10 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectRelease } from "./latest-json.mjs";
+import { verifyMinisign } from "./minisign.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -24,18 +25,11 @@ export function decodeTauriKey(encoded) {
 }
 
 export function verifyUpdaterArtifact({ pubkey, artifact, signature }) {
-  const dir = mkdtempSync(path.join(tmpdir(), "newtype-minisign-"));
-  try {
-    const pubPath = path.join(dir, "key.pub");
-    const sigPath = path.join(dir, "artifact.sig");
-    writeFileSync(pubPath, decodeTauriKey(pubkey));
-    writeFileSync(sigPath, decodeTauriKey(signature));
-    execFileSync("minisign", ["-V", "-p", pubPath, "-x", sigPath, "-m", artifact], {
-      stdio: "pipe",
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  verifyMinisign({
+    publicKeyText: decodeTauriKey(pubkey),
+    signatureText: decodeTauriKey(signature),
+    message: readFileSync(artifact),
+  });
 }
 
 function gh(args, { allowFailure = false } = {}) {

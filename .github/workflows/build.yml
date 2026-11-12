@@ -5,8 +5,11 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 # github.run_number for this file is the dev build number. Renaming the file resets it.
+# One workflow per ref cancels a superseded pull request. Each machine also has its
+# own group so a second job waits instead of sharing a self-hosted runner.
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -16,48 +19,86 @@ permissions:
   actions: write
 
 jobs:
-  build:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macos-arm64
-            os: macos-latest
-            bundles: app,dmg
-          - name: windows-x64
-            os: windows-latest
-            bundles: nsis
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+  windows:
+    name: windows-x64
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, newtype]
+    concurrency:
+      group: newtype-runner-windows
+      cancel-in-progress: false
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Persistent cargo target
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.cache\newtype\cargo-target'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_TARGET_DIR=$dir`n")
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_CACHE_DAYS=14`n")
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_TARGET_CAP_BYTES=8589934592`n")
 
-      - name: Require Apple Silicon
-        if: runner.os == 'macOS'
-        run: "rustc -vV | grep -q 'host: aarch64-apple-darwin'"
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      - name: Prune persistent caches
+        shell: pwsh
+        run: node scripts/runner/prune-cache.mjs
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - name: Require Rust
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            throw "rustup is not on PATH. On this machine run scripts/runner/setup-windows.ps1."
+          }
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+          rustc -vV
+
+      - name: MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere is missing. On this machine run scripts/runner/setup-windows.ps1."
+          }
+          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $install) {
+            throw "MSVC C++ tools are missing. On this machine run scripts/runner/setup-windows.ps1."
+          }
+          $bat = Join-Path $install "VC\Auxiliary\Build\vcvars64.bat"
+          cmd /c "`"$bat`" >nul && set" | ForEach-Object {
+            $pair = $_ -split '=', 2
+            if ($pair.Length -eq 2 -and $pair[0] -match '^[A-Za-z_][A-Za-z0-9_]*$' -and $pair[0] -notlike 'GITHUB_*') {
+              [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$($pair[0])=$($pair[1])`n")
+            }
+          }
+
+      - name: Require Node
+        shell: pwsh
+        run: |
+          if (-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            throw "Node and npm must already be installed. Run scripts/runner/setup-windows.ps1."
+          }
+          node -v
+          npm -v
 
       - name: Install npm dependencies
+        shell: pwsh
         run: npm ci
 
       - name: Test version and release scripts
+        shell: pwsh
         run: npm test
 
       - name: Repair cached sherpa-onnx libraries
         shell: bash
         run: |
           set -euo pipefail
-          root="src-tauri/target/sherpa-onnx-prebuilt"
+          root="${CARGO_TARGET_DIR:-src-tauri/target}"
+          if command -v cygpath >/dev/null 2>&1; then
+            root="$(cygpath -u "$root")"
+          fi
+          root="${root}/sherpa-onnx-prebuilt"
           if [ ! -d "$root" ]; then
             exit 0
           fi
@@ -69,6 +110,145 @@ jobs:
 
       - name: Test the dictation pipeline
         working-directory: src-tauri
+        shell: pwsh
+        run: cargo test --lib
+
+      - name: Updater signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY}"
+            if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
+              echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+            fi
+            {
+              echo "TAURI_SIGNING_PRIVATE_KEY<<NEWTYPE_KEY"
+              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY}"
+              echo "NEWTYPE_KEY"
+              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<NEWTYPE_PASS"
+              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
+              echo "NEWTYPE_PASS"
+            } >> "$GITHUB_ENV"
+            echo "Using TAURI_SIGNING_PRIVATE_KEY from repository secrets."
+          else
+            echo "No TAURI_SIGNING_PRIVATE_KEY secret. Generating an ephemeral key so the bundle step can run."
+            echo "This build's updater signature will not match the committed public key and must not be published."
+            node node_modules/@tauri-apps/cli/tauri.js signer generate --ci -w "$RUNNER_TEMP/ephemeral-updater.key" -f
+            echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/ephemeral-updater.key" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        shell: pwsh
+        run: node scripts/with-version.mjs -- build --bundles nsis
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_root="${CARGO_TARGET_DIR:-src-tauri/target}"
+          if command -v cygpath >/dev/null 2>&1; then
+            target_root="$(cygpath -u "$target_root")"
+          fi
+          mkdir -p dist-release
+          cp build-meta.json dist-release/
+          find "$target_root/release/bundle" -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
+            -exec cp {} dist-release/ \;
+          find dist-release -maxdepth 1 -type f -print
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist-release
+          if-no-files-found: error
+
+  macos:
+    name: macos-arm64
+    if: github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: [self-hosted, macOS, ARM64, newtype]
+    concurrency:
+      group: newtype-runner-mac
+      cancel-in-progress: false
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Persistent cargo target
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="${HOME}/.cache/newtype/cargo-target"
+          mkdir -p "$dir"
+          {
+            printf 'CARGO_TARGET_DIR=%s\n' "$dir"
+            printf 'NEWTYPE_CACHE_DAYS=14\n'
+            printf 'NEWTYPE_TARGET_CAP_BYTES=8589934592\n'
+          } >> "$GITHUB_ENV"
+
+      - name: Prune persistent caches
+        shell: bash
+        run: node scripts/runner/prune-cache.mjs
+
+      - name: Require Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v rustup >/dev/null 2>&1; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+            rustup target add aarch64-apple-darwin
+          elif command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+            echo "Using the preinstalled rustc (Homebrew or otherwise). rustup is not required."
+            rustc -vV
+          else
+            echo "Installing rustup into the runner user home. This does not use sudo."
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+            # shellcheck disable=SC1091
+            . "${HOME}/.cargo/env"
+            echo "${HOME}/.cargo/bin" >> "$GITHUB_PATH"
+            rustup target add aarch64-apple-darwin
+          fi
+          rustc -vV | grep -q 'host: aarch64-apple-darwin'
+
+      - name: Require Node
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v node >/dev/null
+          command -v npm >/dev/null
+          node -v
+          npm -v
+
+      - name: Install npm dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Repair cached sherpa-onnx libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${CARGO_TARGET_DIR:-src-tauri/target}"
+          if command -v cygpath >/dev/null 2>&1; then
+            root="$(cygpath -u "$root")"
+          fi
+          root="${root}/sherpa-onnx-prebuilt"
+          if [ ! -d "$root" ]; then
+            exit 0
+          fi
+          found="$(find "$root" \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' -o -name 'libsherpa-onnx-c-api.lib' \) -print | head -n 1)"
+          if [ -z "$found" ]; then
+            echo "Cached sherpa-onnx directory has no static library. Removing it so the build downloads the archive."
+            rm -rf "$root"
+          fi
+
+      - name: Test the dictation pipeline
+        working-directory: src-tauri
+        shell: bash
         run: cargo test --lib
 
       - name: Updater signing key
@@ -101,7 +281,6 @@ jobs:
           fi
 
       - name: macOS signing identity
-        if: runner.os == 'macOS'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -110,10 +289,10 @@ jobs:
         run: bash scripts/import-macos-identity.sh
 
       - name: Build
-        run: node scripts/with-version.mjs -- build --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: node scripts/with-version.mjs -- build --bundles app,dmg
 
       - name: Check macOS signature
-        if: runner.os == 'macOS'
         shell: bash
         run: bash scripts/verify-macos-signature.sh
 
@@ -121,34 +300,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          target_root="${CARGO_TARGET_DIR:-src-tauri/target}"
           mkdir -p dist-release
           cp build-meta.json dist-release/
-          find src-tauri/target/release/bundle -type f \
+          find "$target_root/release/bundle" -type f \
             \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
             -exec cp {} dist-release/ \;
           find dist-release -maxdepth 1 -type f -print
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
+          name: macos-arm64
           path: dist-release
           if-no-files-found: error
 
   publish:
     name: publish
-    needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-latest
+    needs: [windows, macos]
+    if: |
+      always() &&
+      needs.windows.result == 'success' &&
+      needs.macos.result == 'success' &&
+      (
+        (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+        (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      )
+    runs-on: [self-hosted, Windows, X64, newtype]
+    concurrency:
+      group: newtype-runner-windows
+      cancel-in-progress: false
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install minisign
-        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Require Node
+        shell: pwsh
+        run: |
+          if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+            throw "Node must already be installed. Run scripts/runner/setup-windows.ps1."
+          }
+          node -v
 
       - uses: actions/download-artifact@v4
         with:
@@ -156,11 +347,13 @@ jobs:
 
       - name: Secrets present
         id: gate
+        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           NEWTYPE_RELEASES_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
         run: |
-          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$NEWTYPE_RELEASES_TOKEN" ]; then
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ] || [ -z "${NEWTYPE_RELEASES_TOKEN}" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Updater publish skipped::Publishing needs TAURI_SIGNING_PRIVATE_KEY and NEWTYPE_RELEASES_TOKEN. See SETUP.md."
           else
@@ -169,6 +362,7 @@ jobs:
 
       - name: Verify and publish
         if: steps.gate.outputs.ready == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
         run: node scripts/publish-release.mjs --artifacts artifacts
