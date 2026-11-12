@@ -264,6 +264,13 @@ impl Dictation {
                 engines.reap(Duration::from_secs(u64::from(minutes) * 60));
             })
             .expect("idle thread");
+        let translucent = app
+            .state::<Dictation>()
+            .settings
+            .lock()
+            .expect("settings")
+            .window_translucent;
+        crate::material::apply(&app, translucent);
         spawn_listener(app.clone(), control.clone(), hotkeys, listener);
         if let Some(rx) = rx {
             std::thread::Builder::new()
@@ -516,15 +523,22 @@ fn spawn_listener(
             let (mut seen, mut capturing) = {
                 let share = hotkeys.lock().expect("hotkeys");
                 engine.set_bindings(share.bindings.clone());
-                engine.set_capture(share.capture);
-                (share.generation, share.capture)
+                hotkey::set_altgr_bound(engine.uses_alt_right());
+                let want = hotkey::os_capture();
+                engine.set_capture(want);
+                (share.generation, want)
             };
             let hook_app = app.clone();
-            let on_edge = move |edge: KeyEdge| {
-                if !crate::key_feed::from_webview() {
+            let on_edge = move |edge: KeyEdge| -> bool {
+                let want = hotkey::os_capture();
+                if want != capturing {
+                    capturing = want;
+                    engine.set_capture(capturing);
+                }
+                if !crate::key_feed::from_webview() && !capturing {
                     let until = suppress_hook_until.load(Ordering::Relaxed);
-                    if !capturing && now_ms() < until {
-                        return;
+                    if now_ms() < until {
+                        return false;
                     }
                 }
                 {
@@ -532,14 +546,15 @@ fn spawn_listener(
                     if share.generation != seen {
                         seen = share.generation;
                         engine.set_bindings(share.bindings.clone());
+                        hotkey::set_altgr_bound(engine.uses_alt_right());
                     }
                     if share.capture != capturing {
-                        capturing = share.capture;
+                        capturing = share.capture || hotkey::os_capture();
                         engine.set_capture(capturing);
                     }
                 }
-                let events = engine.on_edge(edge);
-                let capture_ended = events.iter().any(|event| {
+                let outcome = engine.consume(edge);
+                let capture_ended = outcome.events.iter().any(|event| {
                     matches!(
                         event,
                         EngineEvent::Captured(_) | EngineEvent::CaptureCancelled
@@ -547,23 +562,37 @@ fn spawn_listener(
                 });
                 if capture_ended {
                     capturing = false;
+                    hotkey::set_os_capture(false);
                     let mut share = hotkeys.lock().expect("hotkeys");
                     share.capture = false;
                     if crate::key_feed::from_webview() {
                         suppress_hook_until.store(now_ms().saturating_add(400), Ordering::Relaxed);
                     }
                 }
-                let starting = events.iter().any(|event| matches!(event, EngineEvent::Pressed(_)));
+                let starting = outcome
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, EngineEvent::Pressed(_)));
                 if starting {
                     let phase = hook_app.state::<Dictation>().phase.lock().expect("phase").clone();
                     if phase != "recording" && phase != "processing" {
                         focus::remember(&hook_app.state::<Dictation>().focus_target, false);
                     }
                 }
-                for engine_event in events {
+                for engine_event in &outcome.events {
+                    match engine_event {
+                        EngineEvent::Captured(chord) => {
+                            crate::diag::record(&format!("capture result {chord}"));
+                        }
+                        EngineEvent::CaptureCancelled => {
+                            crate::diag::record("capture cancel");
+                        }
+                        _ => {}
+                    }
                     crate::diag::record(&format!("hotkey {engine_event:?}"));
-                    let _ = control.send(Control::Engine(engine_event));
+                    let _ = control.send(Control::Engine(engine_event.clone()));
                 }
+                outcome.suppress || capturing
             };
             set_listener(&app, &listener, "Listening for the right-hand Control key.");
             crate::diag::record("hotkey listener starting");
@@ -1611,7 +1640,6 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     {
         let mut share = state.hotkeys.lock().expect("hotkeys");
         share.bindings = effective.bindings;
-        share.capture = false;
         share.generation = share.generation.wrapping_add(1);
     }
     *state.settings.lock().expect("settings") = settings.clone();
@@ -1620,6 +1648,7 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     apply_route_mode(&state, true);
     drop(state);
     publish_route(app);
+    crate::material::apply(app, settings.window_translucent);
     Ok(app.state::<Dictation>().snapshot(app))
 }
 
@@ -1904,18 +1933,27 @@ fn provider_base(settings: &DictationSettings, provider: &str) -> String {
 
 pub fn begin_capture(app: &AppHandle, mode: &str) -> Result<(), String> {
     if !matches!(mode, "dictate" | "translate" | "command") {
+        crate::diag::record(&format!("capture start rejected mode={mode}"));
         return Err("Unknown hotkey.".into());
     }
+    // Publish capture before any window call. Focusing first let the hook keep
+    // matching Dictate while this command was still inside set_focus.
+    hotkey::set_os_capture(true);
+    {
+        let state = app.state::<Dictation>();
+        let mut share = state.hotkeys.lock().expect("hotkeys");
+        share.capture = true;
+        share.capture_mode = mode.to_string();
+        share.generation = share.generation.wrapping_add(1);
+    }
+    crate::diag::record(&format!("capture start mode={mode}"));
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
-        let _ = window.set_focus();
+        if !window.is_focused().unwrap_or(false) {
+            let _ = window.set_focus();
+        }
     }
-    let state = app.state::<Dictation>();
-    let mut share = state.hotkeys.lock().expect("hotkeys");
-    share.capture = true;
-    share.capture_mode = mode.to_string();
-    share.generation = share.generation.wrapping_add(1);
     Ok(())
 }
 
@@ -1948,10 +1986,13 @@ pub fn remember_focus(app: &AppHandle) {
 }
 
 pub fn cancel_capture(app: &AppHandle) {
+    hotkey::set_os_capture(false);
     let state = app.state::<Dictation>();
     let mut share = state.hotkeys.lock().expect("hotkeys");
     share.capture = false;
     share.generation = share.generation.wrapping_add(1);
+    drop(share);
+    crate::diag::record("capture cancel");
 }
 
 fn job_for(mode: HotkeyMode, effective: &dictate_config::Effective) -> Job {

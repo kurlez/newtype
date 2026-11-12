@@ -120,6 +120,9 @@ export async function mount(previewMode: boolean): Promise<void> {
     return;
   }
   window.addEventListener("focus", () => {
+    if (HOTKEY_MODES.some(([mode]) => editors[mode].phase === "capturing")) {
+      return;
+    }
     void reload();
   });
   const { listen } = await import("@tauri-apps/api/event");
@@ -238,6 +241,22 @@ async function refreshLocal(): Promise<void> {
   }
 }
 
+function windowSection(settings: DictationSettings): string {
+  if (snap.permissions.platform !== "windows") {
+    return "";
+  }
+  const checked = settings.windowTranslucent !== false ? "checked" : "";
+  return `<section id="sec-window">
+      <h2>${ui("Window", "窗口")}</h2>
+      <label class="choice"><input type="checkbox" id="window-translucent" ${checked} /><span>${ui("Translucent window", "半透明窗口")}<small>${ui("Windows 11 uses Mica or Acrylic. Windows 10 uses a light transparency. Text stays on a readable panel.", "Windows 11 使用 Mica 或 Acrylic。Windows 10 使用轻微透明。文字仍在可读的面板上。")}</small></span></label>
+    </section>`;
+}
+
+function syncTranslucency(): void {
+  const on = snap.settings.windowTranslucent !== false && snap.permissions.platform === "windows";
+  document.documentElement.classList.toggle("translucent", on);
+}
+
 async function reload(): Promise<void> {
   snap = await call<Snapshot>("dictation_snapshot");
   history = await call<HistoryEntry[]>("dictation_history");
@@ -275,6 +294,7 @@ function paint(): void {
       </section>
     </div>
     <div id="panel-settings" role="tabpanel" ${mainTab === "settings" ? "" : "hidden"}>
+    ${windowSection(settings)}
     <section>
       <h2 id="sec-path">${ui("Path", "路径")}</h2>
       <p class="banner" id="route-banner">${escapeHtml(snap.routeLabel)}</p>
@@ -383,6 +403,7 @@ function paint(): void {
   }
   bind();
   bindLocal(preview, refreshLocal);
+  syncTranslucency();
 }
 
 function bind(): void {
@@ -420,6 +441,11 @@ function bind(): void {
     });
   }
   document.querySelector("#save")?.addEventListener("click", () => void save());
+  document.querySelector("#window-translucent")?.addEventListener("change", (event) => {
+    snap.settings.windowTranslucent = (event.target as HTMLInputElement).checked;
+    syncTranslucency();
+    void save();
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
     button.addEventListener("click", () => {
       const next = button.dataset.tab;
@@ -499,6 +525,10 @@ function readForm(): void {
   const target = read("#target-language").trim();
   settings.targetLanguage = target || "English";
   settings.historyRetention = document.querySelector<HTMLSelectElement>("#retention")?.value || settings.historyRetention || "month";
+  const translucent = document.querySelector<HTMLInputElement>("#window-translucent");
+  if (translucent) {
+    settings.windowTranslucent = translucent.checked;
+  }
   settings.thinking = document.querySelector<HTMLSelectElement>("#thinking")?.value ?? settings.thinking;
   writeProvider(settings, settings.asrProvider, true);
   if (settings.llmProvider !== settings.asrProvider) {
@@ -800,6 +830,7 @@ async function capture(mode: HotkeyModeName): Promise<void> {
     editors[mode] = cancelEditor(editors[mode]);
     setHotkeyMessage(String(error), true);
     renderHotkeys();
+    await call("dictation_cancel_capture").catch(() => undefined);
   }
 }
 
