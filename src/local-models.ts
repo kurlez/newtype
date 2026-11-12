@@ -1,3 +1,4 @@
+import { confirmSkip } from "./skipWarning";
 import { escapeHtml, type LocalLibrary, type LocalProgress, type Snapshot } from "./types";
 
 let wired = false;
@@ -28,7 +29,7 @@ export function localPanel(local: LocalLibrary, preference: string): string {
   const strict = preference === "strictOffline"
     ? `<p class="status warn">Strict offline is on. Downloads, probes, and update checks stay off until you choose another path.</p>`
     : "";
-  return `<section id="local-models" data-asr="${escapeHtml(local.recommendedAsr)}" data-llm="${escapeHtml(local.recommendedLlm)}">
+  return `<section id="local-models" data-asr="${escapeHtml(local.recommendedAsr)}" data-llm="${escapeHtml(local.recommendedLlm)}" data-skip-warning="${escapeHtml(local.skipWarning)}">
     <h2>Local models</h2>
     ${reminder}
     <p class="status">${escapeHtml(local.hardwareSummary)}</p>
@@ -78,6 +79,10 @@ export function bindLocal(preview: boolean, reloadLocal: () => Promise<void>): v
     void startDownload(preview, reloadLocal, [asr, llm].filter(Boolean), allow);
   });
   document.querySelector("#local-skip")?.addEventListener("click", () => {
+    const message = document.querySelector("#local-models")?.getAttribute("data-skip-warning") ?? "";
+    if (!confirmSkip(message, (text) => window.confirm(text))) {
+      return;
+    }
     void run(preview, reloadLocal, () => call("local_skip_download"));
   });
   document.querySelector("#local-cancel")?.addEventListener("click", () => {

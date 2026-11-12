@@ -1631,11 +1631,7 @@ pub fn shutdown(app: &AppHandle) {
 
 pub fn fallback_line(app: &AppHandle) -> String {
     let state = app.state::<Dictation>();
-    if readiness_of(&state).fallback_ready() {
-        "Local fallback: ready".into()
-    } else {
-        "Local fallback: not ready".into()
-    }
+    library::fallback_menu(readiness_of(&state).fallback_ready()).into()
 }
 
 pub fn local_download(app: &AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {

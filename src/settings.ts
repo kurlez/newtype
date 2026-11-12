@@ -307,6 +307,7 @@ function paint(): void {
     </section>
     <section>
       <h2 id="sec-cloud">${ui("Cloud", "云端")}</h2>
+      <p class="status">${ui("Cloud dictation sends the recording and the transcript to the provider you configure. The key stays on this computer.", "使用云端时会把录音和转写发到你配置的供应商。密钥只留在这台电脑上。")}</p>
       <p class="status">Model ids were checked ${escapeHtml(snap.verifiedOn)}. The fields stay editable. Load models asks the provider what this key can see.</p>
       ${snap.devKeyStore ? `<p class="status warn">This machine is not macOS or Windows. The key is kept in a local dev file, not the OS keychain.</p>` : `<p class="status">API keys are stored in the macOS Keychain or Windows Credential Manager. They are not written to settings.</p>`}
       <label class="field">Speech<select id="asr-provider">${options(snap.presets, settings.asrProvider, (item) => item.asrReady)}</select></label>

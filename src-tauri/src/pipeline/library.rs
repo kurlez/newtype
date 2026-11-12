@@ -108,6 +108,8 @@ pub struct LibraryView {
     pub active_llm: String,
     pub downloading: String,
     pub attribution: String,
+    /// Shown before a skip is recorded. Both local speech and local rewrite are required.
+    pub skip_warning: String,
     pub models: Vec<ModelRow>,
 }
 
@@ -184,7 +186,20 @@ pub fn view(
         active_llm,
         downloading: downloading.to_string(),
         attribution: catalog::attribution(sensevoice_installed),
+        skip_warning: skip_warning().to_string(),
         models,
+    }
+}
+
+pub fn skip_warning() -> &'static str {
+    "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. 断网后无法自动改用本地模型，直到这两个都安装并校验完成。 This reminder stays until both are installed."
+}
+
+pub fn fallback_menu(ready: bool) -> &'static str {
+    if ready {
+        "Local fallback: ready"
+    } else {
+        "Local fallback: not ready"
     }
 }
 
@@ -604,6 +619,8 @@ mod tests {
         assert!(!shown.fallback_ready);
         assert!(shown.reminder.contains("skipped") || shown.reminder.contains("Skipped") || shown.reminder.contains("skip"));
         assert!(shown.reminder.contains("断网"));
+        assert!(shown.skip_warning.contains("断网"));
+        assert!(shown.skip_warning.contains("speech") && shown.skip_warning.contains("rewrite"));
         assert_eq!(shown.recommended_asr, "qwen3-asr-1.7b-q8");
         assert!(shown.disk_bytes == 0);
         assert!(shown.models.iter().any(|model| model.id == "qwen3-asr-0.6b-int8" && model.state == "missing"));
@@ -619,5 +636,11 @@ mod tests {
         assert!(!reminder(true, false, false).is_empty());
         assert!(!reminder(false, true, true).is_empty());
         assert!(reminder(true, true, true).is_empty());
+        let warning = skip_warning();
+        assert!(warning.contains("speech"));
+        assert!(warning.contains("rewrite"));
+        assert!(warning.contains("断网"));
+        assert_eq!(fallback_menu(true), "Local fallback: ready");
+        assert_eq!(fallback_menu(false), "Local fallback: not ready");
     }
 }
