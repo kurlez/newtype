@@ -252,13 +252,29 @@ def transcribe_http(port: int, wav: Path) -> tuple[float, str]:
 
 
 def interesting_log_lines(log_text: str) -> list[str]:
-    keys = ("metal", "gpu", "offload", "error", "oom", "failed", "audio", "experimental")
+    keys = (
+        "metal",
+        "mtl",
+        "gpu",
+        "offload",
+        "flash",
+        "mmproj",
+        "unsupported",
+        "n_slots",
+        "error",
+        "oom",
+        "failed",
+        "audio",
+        "experimental",
+    )
     lines = []
     for line in log_text.splitlines():
         lowered = line.lower()
+        if "type = " in lowered and "ne =" in lowered:
+            continue
         if any(key in lowered for key in keys):
             lines.append(line[:400])
-    return lines[:80]
+    return lines[:40]
 
 
 def benchmark_llama(clips: list[dict]) -> dict:
@@ -273,6 +289,7 @@ def benchmark_llama(clips: list[dict]) -> dict:
         "ctx_size": 2048,
         "cache_ram_mib": 0,
         "gpu_layers": 99,
+        "parallel_slots": 1,
     }
     try:
         archive = CACHE / f"llama-{LLAMA_TAG}-macos-arm64.tar.gz"
@@ -300,6 +317,8 @@ def benchmark_llama(clips: list[dict]) -> dict:
             "2048",
             "-ngl",
             "99",
+            "--parallel",
+            "1",
             "--cache-ram",
             "0",
             "--no-warmup",
