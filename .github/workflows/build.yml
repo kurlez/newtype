@@ -97,16 +97,25 @@ jobs:
               exit 1
             fi
             echo "Stable macOS signing identity is configured. Hardened runtime stays off; this is not Developer ID notarization."
+            echo "::add-mask::${APPLE_CERTIFICATE}"
+            echo "::add-mask::${APPLE_CERTIFICATE_PASSWORD}"
+            {
+              echo "APPLE_CERTIFICATE<<NEWTYPE_APPLE_CERT"
+              printf '%s\n' "${APPLE_CERTIFICATE}"
+              echo "NEWTYPE_APPLE_CERT"
+              echo "APPLE_CERTIFICATE_PASSWORD<<NEWTYPE_APPLE_PASS"
+              printf '%s\n' "${APPLE_CERTIFICATE_PASSWORD}"
+              echo "NEWTYPE_APPLE_PASS"
+              echo "APPLE_SIGNING_IDENTITY<<NEWTYPE_APPLE_ID"
+              printf '%s\n' "${APPLE_SIGNING_IDENTITY}"
+              echo "NEWTYPE_APPLE_ID"
+            } >> "$GITHUB_ENV"
           else
             echo "No Apple certificate secret. The app will be ad-hoc signed (signingIdentity -)."
             echo "The cdhash changes every build, so Accessibility and Microphone grants may not survive updates."
           fi
 
       - name: Build
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: node scripts/with-version.mjs -- build --bundles ${{ matrix.bundles }}
 
       - name: Collect release files

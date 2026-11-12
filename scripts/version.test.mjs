@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configOverlay, resolveVersion, updaterPlatform } from "./with-version.mjs";
+import { appleSigningIdentity, configOverlay, resolveVersion, updaterPlatform } from "./with-version.mjs";
 
 test("local builds use dev.0 and a display commit", () => {
   const resolved = resolveVersion({
@@ -60,6 +60,26 @@ test("rejects prerelease tags and bad run numbers", () => {
   assert.throws(() => resolveVersion({ base: "0.1.0", ref: "refs/tags/v0.1.0-dev.1" }));
   assert.throws(() => resolveVersion({ base: "0.1.0", runNumber: "01" }));
   assert.throws(() => resolveVersion({ base: "0.1.0-dev.1", runNumber: "3" }));
+});
+
+test("missing Apple secrets are not forwarded as empty certificate env", () => {
+  const env = {
+    APPLE_CERTIFICATE: "",
+    APPLE_CERTIFICATE_PASSWORD: "   ",
+    APPLE_SIGNING_IDENTITY: "",
+    KEEP: "yes",
+  };
+  assert.equal(appleSigningIdentity(env), "");
+  assert.equal("APPLE_CERTIFICATE" in env, false);
+  assert.equal("APPLE_CERTIFICATE_PASSWORD" in env, false);
+  assert.equal(env.KEEP, "yes");
+  assert.throws(() =>
+    appleSigningIdentity({
+      APPLE_CERTIFICATE: "cert",
+      APPLE_CERTIFICATE_PASSWORD: "",
+      APPLE_SIGNING_IDENTITY: "newtype-self-signed",
+    }),
+  );
 });
 
 test("stable signing identity is a config overlay", () => {

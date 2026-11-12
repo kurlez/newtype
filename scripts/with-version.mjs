@@ -87,6 +87,29 @@ export function resolveVersion({
   };
 }
 
+const APPLE_ENV = [
+  "APPLE_CERTIFICATE",
+  "APPLE_CERTIFICATE_PASSWORD",
+  "APPLE_SIGNING_IDENTITY",
+];
+
+// GitHub Actions sets an env var to "" when the secret is missing. Tauri treats
+// any present APPLE_CERTIFICATE as a PKCS#12 to import, including an empty one.
+export function appleSigningIdentity(env) {
+  for (const name of APPLE_ENV) {
+    if (typeof env[name] === "string" && env[name].trim() === "") {
+      delete env[name];
+    }
+  }
+  const present = APPLE_ENV.filter((name) => env[name]);
+  if (present.length !== 0 && present.length !== APPLE_ENV.length) {
+    throw new Error(
+      "Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY, or none of them.",
+    );
+  }
+  return present.length === APPLE_ENV.length ? env.APPLE_SIGNING_IDENTITY : "";
+}
+
 export function configOverlay(version, signingIdentity) {
   const overlay = { version };
   if (signingIdentity) {
@@ -140,17 +163,17 @@ if (isDirectRun()) {
     runNumber: process.env.GITHUB_RUN_NUMBER ?? "",
     sha,
   });
-  const signingIdentity =
-    process.platform === "darwin" && process.env.APPLE_CERTIFICATE
-      ? process.env.APPLE_SIGNING_IDENTITY || ""
-      : "";
-  if (process.platform === "darwin" && process.env.APPLE_CERTIFICATE && !signingIdentity) {
-    console.error(
-      "APPLE_CERTIFICATE is set but APPLE_SIGNING_IDENTITY is empty. Set all of APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, and APPLE_SIGNING_IDENTITY, or none of them.",
-    );
+  let signingIdentity = "";
+  try {
+    signingIdentity = appleSigningIdentity(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
     process.exit(1);
   }
-  const overlay = configOverlay(resolved.version, signingIdentity);
+  const overlay = configOverlay(
+    resolved.version,
+    process.platform === "darwin" ? signingIdentity : "",
+  );
   const metaPath = path.join(root, "build-meta.json");
   writeFileSync(metaPath, `${JSON.stringify(resolved, null, 2)}\n`);
   console.log(
