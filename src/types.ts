@@ -34,8 +34,20 @@ export interface DictationSettings {
   targetLanguage: string;
   historyRetention: string;
   windowTranslucent: boolean;
+  groqRateLimitFallback: boolean;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
+}
+
+export interface BundleInfo {
+  id: string;
+  label: string;
+  asrProvider: string;
+  llmProvider: string;
+  asrModel: string;
+  llmModel: string;
+  monthlyUsd: string;
+  note: string;
 }
 
 export interface PresetInfo {
@@ -118,6 +130,7 @@ export interface Snapshot {
   verifiedOn: string;
   keys: Record<string, boolean>;
   presets: PresetInfo[];
+  bundles: BundleInfo[];
   permissions: PermissionInfo;
   listener: string;
   secureStore: string;

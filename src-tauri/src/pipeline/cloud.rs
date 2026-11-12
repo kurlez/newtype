@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 
 use super::asr::AsrProvider;
+use super::failover::{self, ProviderError};
 use super::polish::{LlmComplete, LlmRequest};
 
 pub const VERIFIED_ON: &str = "2026-11-12";
@@ -81,6 +82,25 @@ pub struct Preset {
 pub fn presets() -> &'static [Preset] {
     &[
         Preset {
+            id: "groq",
+            label: "Groq",
+            asr_ready: true,
+            llm_ready: true,
+            base_editable: false,
+            default_base: "https://api.groq.com/openai/v1",
+            default_asr: "whisper-large-v3-turbo",
+            default_llm: "openai/gpt-oss-20b",
+            asr_models: &["whisper-large-v3-turbo", "whisper-large-v3"],
+            llm_models: &[
+                "openai/gpt-oss-20b",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3.8-27b",
+            ],
+            asr_wire: AsrWire::Transcriptions,
+            note: "Recommended for a new install. Speech is POST /audio/transcriptions with whisper-large-v3-turbo. Rewrite is openai/gpt-oss-20b with reasoning effort low, the lowest that model accepts. The model id can be edited.",
+            verified: "console.groq.com/docs/models and the speech-to-text and reasoning pages, checked 2026-11-12. llama-3.1-8b-instant is not used.",
+        },
+        Preset {
             id: "openai",
             label: "OpenAI",
             asr_ready: true,
@@ -88,31 +108,12 @@ pub fn presets() -> &'static [Preset] {
             base_editable: false,
             default_base: "https://api.openai.com/v1",
             default_asr: "gpt-transcribe",
-            default_llm: "gpt-6-luna",
+            default_llm: "gpt-4o-mini",
             asr_models: &["gpt-transcribe"],
-            llm_models: &["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"],
+            llm_models: &["gpt-4o-mini"],
             asr_wire: AsrWire::Transcriptions,
-            note: "Default. File transcription plus a chat rewrite. gpt-6-luna can turn thinking off. gpt-6-astra and gpt-6.1-sol cannot; they use the low effort setting.",
-            verified: "developers.openai.com model pages for gpt-transcribe, gpt-6-luna, gpt-6.1-sol, and gpt-6-astra, checked 2026-11-12. whisper-1 and gpt-4o-transcribe are deprecated and are not suggested.",
-        },
-        Preset {
-            id: "groq",
-            label: "Groq",
-            asr_ready: true,
-            llm_ready: true,
-            base_editable: false,
-            default_base: "https://api.groq.com/openai/v1",
-            default_asr: "whisper-large-v3",
-            default_llm: "openai/gpt-oss-20b",
-            asr_models: &["whisper-large-v3", "whisper-large-v3-turbo"],
-            llm_models: &[
-                "openai/gpt-oss-20b",
-                "openai/gpt-oss-120b",
-                "qwen/qwen3.8-27b",
-            ],
-            asr_wire: AsrWire::Transcriptions,
-            note: "OpenAI-compatible. Whisper's Chinese error rate is weaker than Qwen or Doubao; whisper-large-v3 is the default, turbo is the faster option. gpt-oss cannot fully disable reasoning (low is the minimum). qwen/qwen3.8-27b is optional and can disable it.",
-            verified: "console.groq.com/docs/models and the speech-to-text and reasoning pages, checked 2026-11-12.",
+            note: "Speech is gpt-transcribe. Rewrite, translate, and command use gpt-4o-mini. The model id can be edited. gpt-5-nano, whisper-1, gpt-4o-transcribe, and gpt-4o-mini-transcribe are not suggested.",
+            verified: "developers.openai.com model pages, checked 2026-11-12. gpt-5-nano shuts down 2026-12-11. gpt-4o-mini-transcribe, whisper-1, and gpt-4o-transcribe are deprecated.",
         },
         Preset {
             id: "dashscope",
@@ -169,6 +170,59 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
     presets().iter().find(|preset| preset.id == id)
 }
 
+/// A speech provider plus a rewrite provider. Prices are approximate USD per
+/// month at 200 dictations a day, checked 2026-11-12.
+#[derive(Debug, Clone, Copy)]
+pub struct Bundle {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub asr_provider: &'static str,
+    pub llm_provider: &'static str,
+    pub asr_model: &'static str,
+    pub llm_model: &'static str,
+    pub monthly_usd: &'static str,
+    pub note: &'static str,
+}
+
+pub fn bundles() -> &'static [Bundle] {
+    &[
+        Bundle {
+            id: "groq",
+            label: "Groq",
+            asr_provider: "groq",
+            llm_provider: "groq",
+            asr_model: "whisper-large-v3-turbo",
+            llm_model: "openai/gpt-oss-20b",
+            monthly_usd: "1.8",
+            note: "Recommended. One Groq key. Speech is whisper-large-v3-turbo. Rewrite is openai/gpt-oss-20b at reasoning effort low.",
+        },
+        Bundle {
+            id: "groq-openai",
+            label: "Groq + GPT-4o mini",
+            asr_provider: "groq",
+            llm_provider: "openai",
+            asr_model: "whisper-large-v3-turbo",
+            llm_model: "gpt-4o-mini",
+            monthly_usd: "2.5",
+            note: "Needs a Groq key for speech and a separate OpenAI key for rewrite, translate, and command.",
+        },
+        Bundle {
+            id: "openai",
+            label: "OpenAI",
+            asr_provider: "openai",
+            llm_provider: "openai",
+            asr_model: "gpt-transcribe",
+            llm_model: "gpt-4o-mini",
+            monthly_usd: "8",
+            note: "One OpenAI key. Speech is gpt-transcribe. Rewrite is gpt-4o-mini.",
+        },
+    ]
+}
+
+pub fn bundle(id: &str) -> Option<&'static Bundle> {
+    bundles().iter().find(|bundle| bundle.id == id)
+}
+
 pub fn thinking_for(provider: &str, model: &str, preference: &str, custom_style: &str) -> Thinking {
     let preference = if provider == "custom" && preference == "auto" {
         custom_style
@@ -208,6 +262,7 @@ fn auto_thinking(provider: &str, model: &str, custom_style: &str) -> Thinking {
     match provider {
         "openai" => match model {
             "gpt-6-astra" | "gpt-6.1-sol" => Thinking::OpenAiLow,
+            "gpt-4o" | "gpt-4o-mini" => Thinking::Off,
             _ => Thinking::OpenAiNone,
         },
         "groq" => {
@@ -226,6 +281,15 @@ fn auto_thinking(provider: &str, model: &str, custom_style: &str) -> Thinking {
             "off" => Thinking::Off,
             _ => Thinking::OpenAiNone,
         },
+    }
+}
+
+/// gpt-oss on Groq spends part of the budget on reasoning. A short cap can
+/// come back empty, so low effort keeps at least 512 tokens.
+pub fn budgeted_max_tokens(thinking: Thinking, requested: u32) -> u32 {
+    match thinking {
+        Thinking::GroqLow => requested.max(512),
+        _ => requested,
     }
 }
 
@@ -344,19 +408,30 @@ pub fn transcribe(
     prompt: &str,
     wav: &[u8],
 ) -> Result<String, String> {
-    let base = normalize_base(base)?;
+    transcribe_detailed(base, key, model, wire, prompt, wav).map_err(|err| err.message)
+}
+
+pub fn transcribe_detailed(
+    base: &str,
+    key: &str,
+    model: &str,
+    wire: AsrWire,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
+    let base = normalize_base(base).map_err(ProviderError::plain)?;
     if model.trim().is_empty() {
-        return Err("Speech model id is empty.".into());
+        return Err(ProviderError::plain("Speech model id is empty."));
     }
     match wire {
-        AsrWire::Unfinished => Err(
-            "This provider's speech API is not implemented. Pick another speech provider.".into(),
-        ),
+        AsrWire::Unfinished => Err(ProviderError::plain(
+            "This provider's speech API is not implemented. Pick another speech provider.",
+        )),
         AsrWire::Transcriptions => transcribe_file(&base, key, model, prompt, wav),
         AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, prompt, wav),
-        AsrWire::Volcengine => Err(
-            "Volcengine speech is sent by the openspeech adapter, not this HTTP client.".into(),
-        ),
+        AsrWire::Volcengine => Err(ProviderError::plain(
+            "Volcengine speech is sent by the openspeech adapter, not this HTTP client.",
+        )),
     }
 }
 
@@ -369,22 +444,33 @@ pub fn complete(
     user: &str,
     max_tokens: u32,
 ) -> Result<String, String> {
-    let base = normalize_base(base)?;
+    complete_detailed(base, key, model, thinking, system, user, max_tokens).map_err(|err| err.message)
+}
+
+pub fn complete_detailed(
+    base: &str,
+    key: &str,
+    model: &str,
+    thinking: Thinking,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, ProviderError> {
+    let base = normalize_base(base).map_err(ProviderError::plain)?;
     if model.trim().is_empty() {
-        return Err("Rewrite model id is empty.".into());
+        return Err(ProviderError::plain("Rewrite model id is empty."));
     }
+    let max_tokens = budgeted_max_tokens(thinking, max_tokens);
     let body = chat_body(model, system, user, max_tokens, thinking);
     match post_chat(&base, key, &body, LLM_TIMEOUT) {
         Ok(text) => Ok(text),
-        Err(err) if err.status == 400 => {
+        Err(err) if err.status == 400 && !failover::is_rate_limit(err.status, &err.code) => {
             if let Some(retry) = retry_body(&body, thinking) {
-                return post_chat(&base, key, &retry, LLM_TIMEOUT)
-                    .map(|text| text)
-                    .map_err(|retry_err| redact(&retry_err.message, key));
+                return post_chat(&base, key, &retry, LLM_TIMEOUT).map_err(|retry_err| retry_err.into_error(key));
             }
-            Err(redact(&err.message, key))
+            Err(err.into_error(key))
         }
-        Err(err) => Err(redact(&err.message, key)),
+        Err(err) => Err(err.into_error(key)),
     }
 }
 
@@ -445,14 +531,42 @@ pub fn list_model_ids(base: &str, key: &str) -> Result<Vec<String>, String> {
 
 struct HttpFailure {
     status: u16,
+    code: String,
+    retry_after_secs: Option<u64>,
     message: String,
 }
 
-fn transcribe_file(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
+impl HttpFailure {
+    fn new(status: u16, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: String::new(),
+            retry_after_secs: None,
+            message: message.into(),
+        }
+    }
+
+    fn into_error(self, key: &str) -> ProviderError {
+        ProviderError {
+            status: self.status,
+            code: self.code,
+            retry_after_secs: self.retry_after_secs,
+            message: redact(&self.message, key),
+        }
+    }
+}
+
+fn transcribe_file(
+    base: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
     let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
         .file_name("speech.wav")
         .mime_str("audio/wav")
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| ProviderError::plain(err.to_string()))?;
     let mut form = reqwest::blocking::multipart::Form::new()
         .text("model", model.to_string())
         .text("response_format", "json")
@@ -460,35 +574,18 @@ fn transcribe_file(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8])
     if !prompt.trim().is_empty() {
         form = form.text("prompt", prompt.to_string());
     }
-    let response = client(ASR_TIMEOUT)?
+    let response = client(ASR_TIMEOUT)
+        .map_err(ProviderError::plain)?
         .post(format!("{base}/audio/transcriptions"))
         .bearer_auth(key)
         .header("user-agent", user_agent())
         .multipart(form)
         .send()
-        .map_err(|err| redact(&format!("Speech request failed: {err}"), key))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .map_err(|err| redact(&format!("Could not read the transcript: {err}"), key))?;
-    if !status.is_success() {
-        return Err(redact(
-            &format!("Speech request failed ({status}). {}", clip(&body)),
-            key,
-        ));
-    }
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|_| "The transcript response was not JSON.".to_string())?;
-    parsed
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "The transcript response had no text.".to_string())
+        .map_err(|err| ProviderError::plain(redact(&format!("Speech request failed: {err}"), key)))?;
+    read_provider_text(response, key, "Speech", "transcript")
 }
 
-fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, String> {
+fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, ProviderError> {
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
     let mut content = Vec::new();
     if !prompt.trim().is_empty() {
@@ -510,43 +607,80 @@ fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &
         "stream": false,
         "asr_options": {"enable_itn": false}
     });
-    post_chat(base, key, &body, ASR_TIMEOUT).map_err(|err| redact(&err.message, key))
+    post_chat(base, key, &body, ASR_TIMEOUT).map_err(|err| err.into_error(key))
 }
 
 fn post_chat(base: &str, key: &str, body: &Value, timeout: std::time::Duration) -> Result<String, HttpFailure> {
     let response = client(timeout)
-        .map_err(|err| HttpFailure {
-            status: 0,
-            message: err,
-        })?
+        .map_err(|err| HttpFailure::new(0, err))?
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key)
         .header("user-agent", user_agent())
         .json(body)
         .send()
-        .map_err(|err| HttpFailure {
-            status: 0,
-            message: format!("Rewrite request failed: {err}"),
-        })?;
+        .map_err(|err| HttpFailure::new(0, format!("Rewrite request failed: {err}")))?;
+    let retry_after_secs = retry_after_secs(&response);
     let status = response.status();
-    let text = response.text().map_err(|err| HttpFailure {
-        status: status.as_u16(),
-        message: format!("Could not read the rewrite: {err}"),
-    })?;
+    let text = response
+        .text()
+        .map_err(|err| HttpFailure::new(status.as_u16(), format!("Could not read the rewrite: {err}")))?;
     if !status.is_success() {
         return Err(HttpFailure {
             status: status.as_u16(),
+            code: failover::error_code(&text),
+            retry_after_secs,
             message: format!("Rewrite request failed ({}). {}", status, clip(&text)),
         });
     }
-    let parsed: Value = serde_json::from_str(&text).map_err(|_| HttpFailure {
-        status: status.as_u16(),
-        message: "The rewrite response was not JSON.".into(),
+    let parsed: Value = serde_json::from_str(&text).map_err(|_| {
+        HttpFailure::new(status.as_u16(), "The rewrite response was not JSON.")
     })?;
-    message_text(&parsed).ok_or_else(|| HttpFailure {
-        status: status.as_u16(),
-        message: "The rewrite response had no text.".into(),
-    })
+    message_text(&parsed).ok_or_else(|| HttpFailure::new(status.as_u16(), "The rewrite response had no text."))
+}
+
+fn read_provider_text(
+    response: reqwest::blocking::Response,
+    key: &str,
+    step: &str,
+    noun: &str,
+) -> Result<String, ProviderError> {
+    let retry_after_secs = retry_after_secs(&response);
+    let status = response.status();
+    let body = response.text().map_err(|err| {
+        ProviderError::plain(redact(
+            &format!("Could not read the {noun}: {err}"),
+            key,
+        ))
+    })?;
+    if !status.is_success() {
+        return Err(ProviderError {
+            status: status.as_u16(),
+            code: failover::error_code(&body),
+            retry_after_secs,
+            message: redact(
+                &format!("{step} request failed ({status}). {}", clip(&body)),
+                key,
+            ),
+        });
+    }
+    let parsed: Value = serde_json::from_str(&body).map_err(|_| {
+        ProviderError::plain(format!("The {noun} response was not JSON."))
+    })?;
+    parsed
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| ProviderError::plain(format!("The {noun} response had no text.")))
+}
+
+fn retry_after_secs(response: &reqwest::blocking::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(failover::parse_retry_after)
 }
 
 fn retry_body(body: &Value, thinking: Thinking) -> Option<Value> {
@@ -624,8 +758,45 @@ mod tests {
     fn suggested_models_match_the_verified_defaults() {
         let openai = preset("openai").unwrap();
         assert_eq!(openai.default_asr, "gpt-transcribe");
-        assert_eq!(openai.default_llm, "gpt-6-luna");
+        assert_eq!(openai.default_llm, "gpt-4o-mini");
         assert!(openai.asr_ready && openai.llm_ready);
+        let groq = preset("groq").unwrap();
+        assert_eq!(groq.default_asr, "whisper-large-v3-turbo");
+        assert_eq!(groq.default_llm, "openai/gpt-oss-20b");
+        let recommended = bundles().iter().find(|bundle| bundle.id == "groq").unwrap();
+        assert_eq!(recommended.asr_model, "whisper-large-v3-turbo");
+        assert_eq!(recommended.llm_model, "openai/gpt-oss-20b");
+        assert_eq!(recommended.monthly_usd, "1.8");
+        let mixed = bundle("groq-openai").unwrap();
+        assert_eq!(mixed.asr_provider, "groq");
+        assert_eq!(mixed.llm_provider, "openai");
+        assert_eq!(mixed.llm_model, "gpt-4o-mini");
+        assert_eq!(mixed.monthly_usd, "2.5");
+        assert_eq!(bundle("openai").unwrap().monthly_usd, "8");
+        let suggested = presets()
+            .iter()
+            .flat_map(|preset| {
+                preset
+                    .asr_models
+                    .iter()
+                    .chain(preset.llm_models)
+                    .copied()
+                    .chain([preset.default_asr, preset.default_llm])
+            })
+            .chain(bundles().iter().flat_map(|bundle| {
+                [bundle.asr_model, bundle.llm_model]
+            }))
+            .collect::<Vec<_>>();
+        let joined = suggested.join(" ");
+        for retired in [
+            "llama-3.1-8b-instant",
+            "gpt-5-nano",
+            "whisper-1",
+            "gpt-4o-transcribe",
+            "gpt-4o-mini-transcribe",
+        ] {
+            assert!(!joined.split_whitespace().any(|id| id == retired), "{retired}");
+        }
         let volc = preset("volcengine").unwrap();
         assert!(volc.asr_ready && volc.llm_ready);
         assert_eq!(volc.default_asr, "bigmodel");
@@ -659,6 +830,23 @@ mod tests {
             thinking_for("groq", "openai/gpt-oss-20b", "auto", ""),
             Thinking::GroqLow
         );
+        let oss = chat_body(
+            "openai/gpt-oss-20b",
+            "sys",
+            "user",
+            budgeted_max_tokens(Thinking::GroqLow, 64),
+            Thinking::GroqLow,
+        );
+        assert_eq!(oss["reasoning_effort"], "low");
+        assert_eq!(oss["max_tokens"], 512);
+        assert_eq!(budgeted_max_tokens(Thinking::GroqLow, 800), 800);
+        assert_eq!(
+            thinking_for("openai", "gpt-4o-mini", "auto", ""),
+            Thinking::Off
+        );
+        let mini = chat_body("gpt-4o-mini", "sys", "user", 64, Thinking::Off);
+        assert!(mini.get("reasoning_effort").is_none());
+        assert_eq!(mini["max_tokens"], 64);
         let dash = chat_body("qwen3.8-flash", "sys", "user", 64, Thinking::Dashscope);
         assert_eq!(dash["enable_thinking"], false);
         assert_eq!(dash["temperature"], 0);

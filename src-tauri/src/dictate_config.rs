@@ -69,6 +69,9 @@ pub struct DictationSettings {
     /// Windows main window uses Mica, Acrylic, or a Win10 alpha fallback.
     #[serde(default = "default_window_translucent")]
     pub window_translucent: bool,
+    /// When Groq returns 429, 503, or rate_limit_exceeded, retry that step on OpenAI.
+    #[serde(default = "default_window_translucent")]
+    pub groq_rate_limit_fallback: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -84,8 +87,8 @@ impl Default for DictationSettings {
             providers.insert(preset.id.to_string(), config_from_preset(preset));
         }
         Self {
-            asr_provider: "openai".into(),
-            llm_provider: "openai".into(),
+            asr_provider: "groq".into(),
+            llm_provider: "groq".into(),
             talk_mode: "toggle".into(),
             polish_level: "polish".into(),
             preference: RoutePreference::CloudDefault.as_str().into(),
@@ -102,6 +105,7 @@ impl Default for DictationSettings {
             target_language: "English".into(),
             history_retention: Retention::Month.as_str().into(),
             window_translucent: true,
+            groq_rate_limit_fallback: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -160,10 +164,10 @@ pub fn load(path: &Path) -> DictationSettings {
 
 pub fn normalize(settings: &mut DictationSettings) {
     if settings.asr_provider.is_empty() {
-        settings.asr_provider = "openai".into();
+        settings.asr_provider = "groq".into();
     }
     if settings.llm_provider.is_empty() {
-        settings.llm_provider = "openai".into();
+        settings.llm_provider = "groq".into();
     }
     if settings.talk_mode.is_empty() {
         settings.talk_mode = "toggle".into();
@@ -428,11 +432,39 @@ mod tests {
         assert!(!json.contains("apiKey"));
         assert!(!json.contains("secret"));
         assert!(json.contains("gpt-transcribe"));
-        assert!(json.contains("gpt-6-luna"));
+        assert!(json.contains("whisper-large-v3-turbo"));
+        assert!(json.contains("openai/gpt-oss-20b"));
+        assert!(json.contains("gpt-4o-mini"));
+        assert!(!json.contains("llama-3.1-8b-instant"));
         let mut parsed: DictationSettings = serde_json::from_str(r#"{"thinking":"low"}"#).unwrap();
         normalize(&mut parsed);
-        assert_eq!(parsed.asr_provider, "openai");
+        assert_eq!(parsed.asr_provider, "groq");
+        assert_eq!(parsed.llm_provider, "groq");
         assert_eq!(parsed.thinking, "low");
+        assert!(parsed.groq_rate_limit_fallback);
+        assert_eq!(
+            parsed.providers["groq"].asr_model,
+            "whisper-large-v3-turbo"
+        );
+        assert_eq!(parsed.providers["groq"].llm_model, "openai/gpt-oss-20b");
+    }
+
+    #[test]
+    fn a_saved_provider_and_its_model_ids_are_not_rewritten() {
+        let mut parsed: DictationSettings = serde_json::from_str(
+            r#"{"asrProvider":"openai","llmProvider":"openai","providers":{"openai":{"asrModel":"gpt-6-luna","llmModel":"gpt-6-luna","base":"https://api.openai.com/v1","asrBase":"","llmBase":"","asrWire":"transcriptions","thinking":"auto","volcAppId":""},"groq":{"asrModel":"whisper-large-v3","llmModel":"openai/gpt-oss-20b","base":"https://api.groq.com/openai/v1","asrBase":"","llmBase":"","asrWire":"transcriptions","thinking":"auto","volcAppId":""}}}"#,
+        )
+        .unwrap();
+        normalize(&mut parsed);
+        assert_eq!(parsed.asr_provider, "openai");
+        assert_eq!(parsed.llm_provider, "openai");
+        assert_eq!(parsed.providers["openai"].asr_model, "gpt-6-luna");
+        assert_eq!(parsed.providers["openai"].llm_model, "gpt-6-luna");
+        assert_eq!(parsed.providers["groq"].asr_model, "whisper-large-v3");
+        let effective = effective(&parsed, OsKind::Windows).unwrap();
+        assert_eq!(effective.asr_provider, "openai");
+        assert_eq!(effective.asr_model, "gpt-6-luna");
+        assert_eq!(effective.llm_model, "gpt-6-luna");
     }
 
     #[test]
@@ -440,7 +472,10 @@ mod tests {
         let settings = DictationSettings::default();
         let windows = effective(&settings, OsKind::Windows).unwrap();
         assert_eq!(windows.hotkey_labels[0], "Right Ctrl");
-        assert_eq!(windows.asr_model, "gpt-transcribe");
+        assert_eq!(windows.asr_provider, "groq");
+        assert_eq!(windows.llm_provider, "groq");
+        assert_eq!(windows.asr_model, "whisper-large-v3-turbo");
+        assert_eq!(windows.llm_model, "openai/gpt-oss-20b");
         assert!(windows.asr_implemented);
         let mac = effective(&settings, OsKind::Mac).unwrap();
         assert_eq!(mac.hotkey_labels[0], "Right Ctrl");
