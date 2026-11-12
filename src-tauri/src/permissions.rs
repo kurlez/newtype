@@ -169,7 +169,9 @@ fn macos_microphone_state() -> String {
 fn windows_microphone_state() -> String {
     #[cfg(target_os = "windows")]
     {
-        return windows_consent(win::consent(None), win::consent(Some(&win::exe_key()))).into();
+        let global = win::consent(None);
+        let app = win::consent(Some(&win::exe_key()));
+        return windows_consent(global.as_deref(), app.as_deref()).into();
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -270,6 +272,8 @@ mod tests {
 
 #[cfg(target_os = "macos")]
 mod mac_av {
+    use core_foundation::base::TCFType;
+
     pub fn authorization_status() -> i64 {
         #[link(name = "AVFoundation", kind = "framework")]
         extern "C" {}
