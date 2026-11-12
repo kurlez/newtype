@@ -118,6 +118,9 @@ export async function mount(previewMode: boolean): Promise<void> {
     });
     return;
   }
+  window.addEventListener("focus", () => {
+    void reload();
+  });
   const { listen } = await import("@tauri-apps/api/event");
   await listen<UpdateState>("update://state", (event) => renderUpdate(event.payload));
   await listen<{ routeLabel: string; routeDetail: string; routeNotice: string; connectivity: string }>("dictation://route", (event) => {
@@ -243,6 +246,7 @@ function paint(): void {
     ${localPanel(snap.local, settings.preference)}
     <section>
       <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
+      ${snap.permissions.prompt ? `<p class="banner warn" id="permission-prompt">${escapeHtml(snap.permissions.prompt)}</p><div class="row">${promptButtons(snap.permissions.promptAction)}</div>` : ""}
       <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
       <p class="status">Microphone: ${escapeHtml(snap.permissions.microphone)} · Accessibility: ${escapeHtml(snap.permissions.accessibility)}</p>
       <div class="row">
@@ -277,8 +281,8 @@ function paint(): void {
       <div class="row">
         <button type="button" id="save-key" class="primary">${ui("Save key", "保存密钥")}</button>
         <button type="button" id="clear-key">${ui("Clear speech key", "清除语音密钥")}</button>
-        <button type="button" id="test-key">${ui("Test speech connection", "测试语音连接")}</button>
-        <button type="button" id="test-llm">${ui("Test rewrite connection", "测试改写连接")}</button>
+        <button type="button" id="test-key" data-kind="speech">${ui("Test speech connection", "测试语音连接")}</button>
+        <button type="button" id="test-llm" data-kind="rewrite">${ui("Test rewrite connection", "测试改写连接")}</button>
         <button type="button" id="load-models">${ui("Load models", "加载模型")}</button>
       </div>
     </section>
@@ -376,8 +380,8 @@ function bind(): void {
   document.querySelector("#save")?.addEventListener("click", () => void save());
   document.querySelector("#save-key")?.addEventListener("click", () => void saveKeys());
   document.querySelector("#clear-key")?.addEventListener("click", () => void clearKey(snap.settings.asrProvider));
-  document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider));
-  document.querySelector("#test-llm")?.addEventListener("click", () => void testKey(snap.settings.llmProvider));
+  document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider, "speech"));
+  document.querySelector("#test-llm")?.addEventListener("click", () => void testKey(snap.settings.llmProvider, "rewrite"));
   document.querySelector("#load-models")?.addEventListener("click", () => void loadModels(snap.settings.asrProvider));
   document.querySelector("#reset-models")?.addEventListener("click", () => void resetModels());
   document.querySelector("#add-hotword")?.addEventListener("click", () => {
@@ -416,6 +420,8 @@ function bind(): void {
   document.querySelector("#open-mic")?.addEventListener("click", () => void openPrivacy("microphone"));
   document.querySelector("#open-ax")?.addEventListener("click", () => void openPrivacy("accessibility"));
   document.querySelector("#open-input")?.addEventListener("click", () => void openPrivacy("input"));
+  document.querySelector("#prompt-mic")?.addEventListener("click", () => void openPrivacy("microphone"));
+  document.querySelector("#prompt-ax")?.addEventListener("click", () => void openPrivacy("accessibility"));
   document.querySelector("#refresh-mics")?.addEventListener("click", () => void listMics());
   document.querySelector("#probe-mic")?.addEventListener("click", () => void probe());
   document.querySelector("#record")?.addEventListener("click", () => void record());
@@ -453,6 +459,10 @@ function readForm(): void {
 
 function writeProvider(settings: DictationSettings, id: string, speech: boolean): void {
   const config = ensure(settings, id);
+  const appId = document.querySelector<HTMLInputElement>("#volc-app-id");
+  if (appId && id === "volcengine") {
+    config.volcAppId = appId.value.trim();
+  }
   if (speech) {
     const model = document.querySelector<HTMLInputElement>("#asr-model");
     if (model) {
@@ -533,6 +543,8 @@ async function save(): Promise<void> {
 async function saveKeys(): Promise<void> {
   const speech = document.querySelector<HTMLInputElement>("#api-key")?.value ?? "";
   const rewrite = document.querySelector<HTMLInputElement>("#llm-key")?.value ?? "";
+  const volcSpeech = document.querySelector<HTMLInputElement>("#volc-speech-key")?.value ?? "";
+  const volcToken = document.querySelector<HTMLInputElement>("#volc-token")?.value ?? "";
   if (preview) {
     if (speech.trim()) {
       snap.keys[snap.settings.asrProvider] = true;
@@ -541,7 +553,7 @@ async function saveKeys(): Promise<void> {
     paint();
     return;
   }
-  if (!speech.trim() && !rewrite.trim()) {
+  if (!speech.trim() && !rewrite.trim() && !volcSpeech.trim() && !volcToken.trim()) {
     notice = "Enter an API key before saving.";
     const node = document.querySelector("#notice");
     if (node) {
@@ -556,6 +568,12 @@ async function saveKeys(): Promise<void> {
     }
     if (rewrite.trim()) {
       messages.push(await call<string>("dictation_set_key", { provider: snap.settings.llmProvider, key: rewrite }));
+    }
+    if (volcSpeech.trim()) {
+      messages.push(await call<string>("dictation_set_key", { provider: "volcengine-speech", key: volcSpeech }));
+    }
+    if (volcToken.trim()) {
+      messages.push(await call<string>("dictation_set_key", { provider: "volcengine-token", key: volcToken }));
     }
     await reload();
     notice = messages.join(" ");
@@ -584,14 +602,14 @@ async function clearKey(provider: string): Promise<void> {
   await reload();
 }
 
-async function testKey(provider: string): Promise<void> {
+async function testKey(provider: string, kind: string): Promise<void> {
   if (preview) {
-    notice = "Preview cannot reach a provider.";
+    notice = ui("Preview cannot reach a provider.", "预览无法连接供应商。");
     paint();
     return;
   }
   try {
-    notice = await call<string>("dictation_test_connection", { provider });
+    notice = await call<string>("dictation_test_connection", { provider, kind });
   } catch (error) {
     notice = String(error);
   }
@@ -1070,7 +1088,14 @@ function providerFields(settings: DictationSettings): string {
   const llmBase = !same && llmPreset?.baseEditable && settings.llmProvider !== "custom"
     ? `<label class="field">Rewrite base URL<input id="llm-provider-base" value="${escapeHtml(llm.base)}" /></label>`
     : "";
-  const baseBlock = `${asrBase}${llmBase}${customBlock}`;
+  const volc = settings.asrProvider === "volcengine" || settings.llmProvider === "volcengine";
+  const volcBlock = volc
+    ? `<p class="status">${ui("New console: speech API key. Old console: App ID and access token. The rewrite key is the Ark key.", "新版控制台填语音 API Key。旧版填 App ID 和 Access Token。改写用方舟的 Key。")}</p>
+       <label class="field">${ui("Volcengine App ID", "火山 App ID")}<input id="volc-app-id" value="${escapeHtml(ensure(settings, "volcengine").volcAppId)}" placeholder="123456789" /></label>
+       <label class="field">${ui("Speech API key", "语音 API Key")}<input id="volc-speech-key" type="password" autocomplete="off" placeholder="${snap.keys["volcengine-speech"] ? ui("Saved. Enter a new key to replace it.", "已保存。输入新密钥以替换。") : ui("Not saved", "未保存")}" /></label>
+       <label class="field">${ui("Access token", "Access Token")}<input id="volc-token" type="password" autocomplete="off" placeholder="${snap.keys["volcengine-token"] ? ui("Saved. Enter a new token to replace it.", "已保存。输入新 token 以替换。") : ui("Not saved", "未保存")}" /></label>`
+    : "";
+  const baseBlock = `${asrBase}${llmBase}${customBlock}${volcBlock}`;
   return `${baseBlock}
     <label class="field">Speech model<input id="asr-model" list="model-list" value="${escapeHtml(asr.asrModel)}" /></label>
     <label class="field">Rewrite model<input id="llm-model" list="model-list" value="${escapeHtml(same ? asr.llmModel : llm.llmModel)}" /></label>
@@ -1170,6 +1195,18 @@ function retentionOptions(selected: string): string {
     .join("");
 }
 
+function promptButtons(action: string): string {
+  const mic = `<button type="button" id="prompt-mic">${ui("Open Microphone settings", "打开麦克风设置")}</button>`;
+  const ax = `<button type="button" id="prompt-ax">${ui("Open Accessibility settings", "打开辅助功能设置")}</button>`;
+  if (action === "microphone") {
+    return mic;
+  }
+  if (action === "both") {
+    return `${mic}${ax}`;
+  }
+  return ax;
+}
+
 function radios(name: string, choices: Array<[string, string, string]>, selected: string): string {
   return `<fieldset>${choices
     .map(
@@ -1215,6 +1252,7 @@ function ensure(settings: DictationSettings, id: string): ProviderConfig {
     llmBase: "",
     asrWire: "transcriptions",
     thinking: "auto",
+    volcAppId: "",
   };
   settings.providers[id] = created;
   return created;

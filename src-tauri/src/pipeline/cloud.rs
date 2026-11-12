@@ -19,6 +19,7 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 pub enum AsrWire {
     Transcriptions,
     DashscopeAudio,
+    Volcengine,
     Unfinished,
 }
 
@@ -26,6 +27,7 @@ impl AsrWire {
     pub fn parse(value: &str) -> Self {
         match value {
             "dashscope" | "dashscopeAudio" => Self::DashscopeAudio,
+            "volcengine" | "openspeech" => Self::Volcengine,
             "unfinished" => Self::Unfinished,
             _ => Self::Transcriptions,
         }
@@ -35,6 +37,7 @@ impl AsrWire {
         match self {
             Self::Transcriptions => "transcriptions",
             Self::DashscopeAudio => "dashscope",
+            Self::Volcengine => "volcengine",
             Self::Unfinished => "unfinished",
         }
     }
@@ -129,20 +132,20 @@ pub fn presets() -> &'static [Preset] {
         Preset {
             id: "volcengine",
             label: "Volcengine · 火山",
-            asr_ready: false,
+            asr_ready: true,
             llm_ready: true,
             base_editable: true,
             default_base: "https://ark.cn-beijing.volces.com/api/v3",
-            default_asr: "",
+            default_asr: "bigmodel",
             default_llm: "doubao-seed-2-1-lite-260915",
-            asr_models: &[],
+            asr_models: &["bigmodel"],
             llm_models: &[
                 "doubao-seed-2-1-lite-260915",
                 "doubao-seed-2-1-pro-260915",
             ],
-            asr_wire: AsrWire::Unfinished,
-            note: "Partial. The language model works through the Ark OpenAI-compatible API with thinking disabled. Speech does not: official Doubao ASR is a separate openspeech WebSocket (resource volc.seedasr.sauc.duration, model name bigmodel) and is not implemented. Use another provider for speech. doubao-seed-asr-1-0 is not used.",
-            verified: "Volcengine Ark model list, deep-thinking page, and the openspeech streaming ASR page, checked 2026-11-12. Lite and pro snapshot ids both support thinking.type=disabled.",
+            asr_wire: AsrWire::Volcengine,
+            note: "Speech uses openspeech (volc.seedasr.sauc.duration, model name bigmodel). New console: speech API key. Old console: App ID plus access token. The rewrite model uses the Ark key with thinking disabled. doubao-seed-asr-1-0 is not used.",
+            verified: "Volcengine openspeech streaming ASR page and the Ark model list, checked 2026-11-12. Lite and pro snapshot ids both support thinking.type=disabled.",
         },
         Preset {
             id: "custom",
@@ -351,6 +354,9 @@ pub fn transcribe(
         ),
         AsrWire::Transcriptions => transcribe_file(&base, key, model, prompt, wav),
         AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, prompt, wav),
+        AsrWire::Volcengine => Err(
+            "Volcengine speech is sent by the openspeech adapter, not this HTTP client.".into(),
+        ),
     }
 }
 
@@ -620,14 +626,14 @@ mod tests {
         assert_eq!(openai.default_asr, "gpt-transcribe");
         assert_eq!(openai.default_llm, "gpt-6-luna");
         assert!(openai.asr_ready && openai.llm_ready);
-        assert!(!preset("volcengine").unwrap().asr_ready);
-        assert!(preset("volcengine").unwrap().llm_ready);
-        assert_eq!(
-            preset("volcengine").unwrap().default_llm,
-            "doubao-seed-2-1-lite-260915"
-        );
+        let volc = preset("volcengine").unwrap();
+        assert!(volc.asr_ready && volc.llm_ready);
+        assert_eq!(volc.default_asr, "bigmodel");
+        assert_eq!(volc.asr_wire, AsrWire::Volcengine);
+        assert_eq!(volc.default_llm, "doubao-seed-2-1-lite-260915");
+        assert!(!volc.note.contains("doubao-seed-asr-1-0 is the default"));
+        assert!(volc.note.contains("bigmodel"));
         assert!(preset("dashscope").unwrap().note.contains("Partial"));
-        assert!(preset("volcengine").unwrap().note.contains("not implemented"));
     }
 
     #[test]

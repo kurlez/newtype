@@ -53,6 +53,20 @@ jobs:
       - name: Test version and release scripts
         run: npm test
 
+      - name: Repair cached sherpa-onnx libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="src-tauri/target/sherpa-onnx-prebuilt"
+          if [ ! -d "$root" ]; then
+            exit 0
+          fi
+          found="$(find "$root" \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' -o -name 'libsherpa-onnx-c-api.lib' \) -print | head -n 1)"
+          if [ -z "$found" ]; then
+            echo "Cached sherpa-onnx directory has no static library. Removing it so the build downloads the archive."
+            rm -rf "$root"
+          fi
+
       - name: Test the dictation pipeline
         working-directory: src-tauri
         run: cargo test --lib

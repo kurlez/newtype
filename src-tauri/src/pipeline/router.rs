@@ -305,7 +305,7 @@ pub fn block_message_for(block: Block, preference: RoutePreference) -> Option<&'
             "The local speech model is not installed yet. Download it in settings. This recording stays on this computer and is saved in History.",
         ),
         Block::AsrNotFinished => {
-            Some("This speech provider is not finished. Pick OpenAI, Groq, DashScope, or a custom endpoint for speech.")
+            Some("This speech provider is not finished. Pick OpenAI, Groq, DashScope, Volcengine, or a custom endpoint for speech.")
         }
         Block::CloudUnreachable => Some(
             "The cloud provider is unreachable. Cloud only does not use local models. This recording stays on this computer and is saved in History.",
