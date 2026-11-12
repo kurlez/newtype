@@ -47,21 +47,56 @@ pub fn run() -> Result<(), String> {
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
-        if let Some(edge) = edge_from(wparam, lparam) {
-            crate::key_feed::push(edge, false);
+        if let Some(raw) = raw_key(wparam, lparam) {
+            if should_swallow(raw) {
+                return 1;
+            }
         }
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
-fn edge_from(wparam: WPARAM, lparam: LPARAM) -> Option<hotkey::KeyEdge> {
+struct RawKey {
+    vk: u32,
+    scan: u32,
+    flags: u32,
+    up: bool,
+}
+
+fn raw_key(wparam: WPARAM, lparam: LPARAM) -> Option<RawKey> {
     let up = match wparam {
         WM_KEYUP | WM_SYSKEYUP => true,
         WM_KEYDOWN | WM_SYSKEYDOWN => false,
         _ => return None,
     };
     let info = unsafe { *(lparam as *const KBDLLHOOKSTRUCT) };
-    hotkey::edge_from_windows(info.vkCode, info.scanCode, info.flags, up || info.flags & LLKHF_UP != 0)
+    Some(RawKey {
+        vk: info.vkCode,
+        scan: info.scanCode,
+        flags: info.flags,
+        up: up || info.flags & LLKHF_UP != 0,
+    })
+}
+
+fn should_swallow(raw: RawKey) -> bool {
+    let capturing = hotkey::os_capture();
+    let altgr = hotkey::is_altgr_synthetic_ctrl(raw.vk, raw.scan, raw.flags);
+    if capturing {
+        let dir = if raw.up { "up" } else { "down" };
+        if altgr {
+            crate::diag::record(&format!("capture key vk={} {dir} ignored=altgr", raw.vk));
+        } else {
+            crate::diag::record(&format!("capture key vk={} {dir}", raw.vk));
+        }
+    }
+    if altgr {
+        return capturing || hotkey::altgr_bound();
+    }
+    let Some(edge) = hotkey::edge_from_windows(raw.vk, raw.scan, raw.flags, raw.up) else {
+        return capturing;
+    };
+    let suppress = crate::key_feed::push(edge, false);
+    suppress || capturing
 }
 
 // Silence unused import if the compiler treats HHOOK as unused through the cast.

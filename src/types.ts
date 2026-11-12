@@ -33,6 +33,7 @@ export interface DictationSettings {
   localIdleMinutes: number;
   targetLanguage: string;
   historyRetention: string;
+  windowTranslucent: boolean;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
 }

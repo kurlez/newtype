@@ -6,11 +6,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::cloud::{self, AsrWire, Preset, Thinking};
+use crate::pipeline::history::Retention;
 use crate::pipeline::hotkey::{
     self, binding_error, binding_warnings, HotkeyMode, OsKind, TalkMode,
 };
 use crate::pipeline::hotwords::{self, Hotword};
-use crate::pipeline::history::Retention;
 use crate::pipeline::polish::PolishLevel;
 use crate::pipeline::router::RoutePreference;
 use crate::pipeline::task;
@@ -66,8 +66,15 @@ pub struct DictationSettings {
     pub target_language: String,
     /// `forever`, `year`, `month`, `week`, `day`, or `off`.
     pub history_retention: String,
+    /// Windows main window uses Mica, Acrylic, or a Win10 alpha fallback.
+    #[serde(default = "default_window_translucent")]
+    pub window_translucent: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
+}
+
+fn default_window_translucent() -> bool {
+    true
 }
 
 impl Default for DictationSettings {
@@ -94,6 +101,7 @@ impl Default for DictationSettings {
             local_idle_minutes: 5,
             target_language: "English".into(),
             history_retention: Retention::Month.as_str().into(),
+            window_translucent: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -177,7 +185,9 @@ pub fn normalize(settings: &mut DictationSettings) {
         settings.local_idle_minutes = 5;
     }
     settings.target_language = task::normalize_target(&settings.target_language);
-    settings.history_retention = Retention::parse(&settings.history_retention).as_str().into();
+    settings.history_retention = Retention::parse(&settings.history_retention)
+        .as_str()
+        .into();
     fill_missing_providers(settings);
     for preset in cloud::presets() {
         if let Some(config) = settings.providers.get_mut(preset.id) {
@@ -513,7 +523,9 @@ mod tests {
         assert_eq!(parsed.dictate_hotkey, "AltRight");
         let loaded = effective(&parsed, OsKind::Mac).unwrap();
         assert_eq!(loaded.preference, RoutePreference::CloudDefault);
-        assert!(loaded.hotkey_labels[0].contains("Alt") || loaded.hotkey_labels[0].contains("Option"));
+        assert!(
+            loaded.hotkey_labels[0].contains("Alt") || loaded.hotkey_labels[0].contains("Option")
+        );
         let auto: DictationSettings = serde_json::from_str(r#"{"preference":"auto"}"#).unwrap();
         assert_eq!(
             RoutePreference::parse(&auto.preference),
@@ -527,6 +539,7 @@ mod tests {
         );
         assert_eq!(parsed.target_language, "English");
         assert_eq!(parsed.history_retention, "month");
+        assert!(parsed.window_translucent);
         assert_eq!(
             effective(&parsed, OsKind::Windows).unwrap().target_language,
             "English"

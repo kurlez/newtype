@@ -5,8 +5,31 @@
 //! all start a recording. The dictate chord also ends the other two modes.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::ModuleStatus;
+
+static OS_CAPTURE: AtomicBool = AtomicBool::new(false);
+static ALTGR_BOUND: AtomicBool = AtomicBool::new(false);
+
+/// The hook reads this on every key. It is set before any window focus call.
+pub fn set_os_capture(on: bool) {
+    OS_CAPTURE.store(on, Ordering::SeqCst);
+}
+
+pub fn os_capture() -> bool {
+    OS_CAPTURE.load(Ordering::SeqCst)
+}
+
+pub fn set_altgr_bound(on: bool) {
+    ALTGR_BOUND.store(on, Ordering::SeqCst);
+}
+
+/// A saved chord uses Right Alt, so the AltGr synthetic Left Ctrl must not leak.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn altgr_bound() -> bool {
+    ALTGR_BOUND.load(Ordering::SeqCst)
+}
 
 pub fn status() -> ModuleStatus {
     ModuleStatus {
@@ -49,6 +72,23 @@ pub enum KeyId {
     Fn,
     Letter(u8),
     Function(u8),
+    Slash,
+    Backslash,
+    Comma,
+    Period,
+    Minus,
+    Equal,
+    Semicolon,
+    Quote,
+    BracketLeft,
+    BracketRight,
+    Backquote,
+    Tab,
+    Backspace,
+    Delete,
+    Digit(u8),
+    /// A key without a name. The payload keeps two different keys distinct.
+    Vk(u16),
     /// A key we saw but do not name. It still blocks a modifier-only chord.
     Other,
 }
@@ -92,6 +132,13 @@ pub enum EngineEvent {
     CaptureCancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeOutcome {
+    pub events: Vec<EngineEvent>,
+    /// Swallow this key so it does not reach the foreground app.
+    pub suppress: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct HotkeyEngine {
     bindings: Vec<(HotkeyMode, Chord)>,
@@ -100,6 +147,8 @@ pub struct HotkeyEngine {
     extra_sent: bool,
     capturing: bool,
     captured: Chord,
+    /// Non-modifier keys swallowed on the way down. Their key-up is swallowed too.
+    suppressed: Chord,
 }
 
 impl Default for HotkeyEngine {
@@ -111,6 +160,7 @@ impl Default for HotkeyEngine {
             extra_sent: false,
             capturing: false,
             captured: Chord::new(),
+            suppressed: Chord::new(),
         }
     }
 }
@@ -121,40 +171,80 @@ impl HotkeyEngine {
     }
 
     pub fn set_capture(&mut self, capturing: bool) {
-        if capturing && !self.capturing {
-            self.down.clear();
-            self.captured.clear();
-            self.active = None;
-            self.extra_sent = false;
+        if capturing == self.capturing {
+            return;
         }
+        self.down.clear();
+        self.captured.clear();
+        self.suppressed.clear();
+        self.active = None;
+        self.extra_sent = false;
         self.capturing = capturing;
     }
 
+    pub fn uses_alt_right(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|(_, chord)| chord.contains(&KeyId::AltRight))
+    }
+
     pub fn on_edge(&mut self, edge: KeyEdge) -> Vec<EngineEvent> {
+        self.consume(edge).events
+    }
+
+    /// Capture mode never matches a saved hotkey. A matched non-modifier is swallowed.
+    pub fn consume(&mut self, edge: KeyEdge) -> EdgeOutcome {
         if self.capturing {
-            return self.on_capture(edge);
+            return EdgeOutcome {
+                events: self.on_capture(edge),
+                suppress: true,
+            };
         }
         match edge {
-            KeyEdge::Down(KeyId::Escape) => vec![EngineEvent::Escape],
+            KeyEdge::Down(KeyId::Escape) => EdgeOutcome {
+                events: vec![EngineEvent::Escape],
+                suppress: false,
+            },
             KeyEdge::Down(key) => {
                 if !self.down.insert(key) {
-                    return Vec::new();
+                    return EdgeOutcome {
+                        events: Vec::new(),
+                        suppress: self.suppressed.contains(&key),
+                    };
                 }
-                self.promote()
+                let events = self.promote();
+                let suppress = self.arm_suppress(key);
+                EdgeOutcome { events, suppress }
             }
             KeyEdge::Up(key) => {
+                let suppress = self.suppressed.remove(&key);
                 self.down.remove(&key);
+                let mut events = Vec::new();
                 if let Some((mode, chord)) = &self.active {
                     if !chord.is_subset(&self.down) {
                         let mode = *mode;
                         self.active = None;
                         self.extra_sent = false;
-                        return vec![EngineEvent::Released(mode)];
+                        events.push(EngineEvent::Released(mode));
                     }
                 }
-                Vec::new()
+                EdgeOutcome { events, suppress }
             }
         }
+    }
+
+    fn arm_suppress(&mut self, key: KeyId) -> bool {
+        if is_modifier(key) || matches!(key, KeyId::Escape | KeyId::Other) {
+            return false;
+        }
+        let swallow = self
+            .active
+            .as_ref()
+            .is_some_and(|(_, chord)| chord.contains(&key));
+        if swallow {
+            self.suppressed.insert(key);
+        }
+        swallow
     }
 
     fn promote(&mut self) -> Vec<EngineEvent> {
@@ -189,20 +279,26 @@ impl HotkeyEngine {
                 self.capturing = false;
                 self.captured.clear();
                 self.down.clear();
+                self.suppressed.clear();
                 self.active = None;
                 vec![EngineEvent::CaptureCancelled]
             }
             KeyEdge::Down(KeyId::Other) | KeyEdge::Up(KeyId::Other) => Vec::new(),
             KeyEdge::Down(key) => {
+                let fresh = self.down.insert(key);
                 self.captured.insert(key);
-                self.down.insert(key);
-                vec![EngineEvent::CaptureProgress(canonical(&self.captured))]
+                if fresh {
+                    vec![EngineEvent::CaptureProgress(canonical(&self.captured))]
+                } else {
+                    Vec::new()
+                }
             }
             KeyEdge::Up(key) => {
                 self.down.remove(&key);
                 if self.down.is_empty() && !self.captured.is_empty() {
                     let chord = std::mem::take(&mut self.captured);
                     self.capturing = false;
+                    self.suppressed.clear();
                     vec![EngineEvent::Captured(canonical(&chord))]
                 } else if !self.captured.is_empty() {
                     vec![EngineEvent::CaptureProgress(canonical(&self.captured))]
@@ -212,6 +308,21 @@ impl HotkeyEngine {
             }
         }
     }
+}
+
+fn is_modifier(key: KeyId) -> bool {
+    matches!(
+        key,
+        KeyId::AltLeft
+            | KeyId::AltRight
+            | KeyId::ControlLeft
+            | KeyId::ControlRight
+            | KeyId::ShiftLeft
+            | KeyId::ShiftRight
+            | KeyId::MetaLeft
+            | KeyId::MetaRight
+            | KeyId::Fn
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +581,20 @@ fn parse_key(token: &str) -> Result<KeyId, String> {
         "space" | "spacebar" => KeyId::Space,
         "escape" | "esc" => KeyId::Escape,
         "fn" | "function" => KeyId::Fn,
+        "slash" | "/" | "oem2" => KeyId::Slash,
+        "backslash" | "\\" => KeyId::Backslash,
+        "comma" | "," => KeyId::Comma,
+        "period" | "dot" | "." => KeyId::Period,
+        "minus" | "-" => KeyId::Minus,
+        "equal" | "equals" | "=" => KeyId::Equal,
+        "semicolon" | ";" => KeyId::Semicolon,
+        "quote" | "'" => KeyId::Quote,
+        "bracketleft" | "[" => KeyId::BracketLeft,
+        "bracketright" | "]" => KeyId::BracketRight,
+        "backquote" | "`" => KeyId::Backquote,
+        "tab" => KeyId::Tab,
+        "backspace" => KeyId::Backspace,
+        "delete" | "del" => KeyId::Delete,
         "alt" | "option" | "opt" => {
             return Err("Say which side: Right Option or Left Option.".into());
         }
@@ -488,10 +613,27 @@ fn parse_key(token: &str) -> Result<KeyId, String> {
                     }
                 }
             }
+            if let Some(rest) = other.strip_prefix("digit") {
+                if let Ok(number) = rest.parse::<u8>() {
+                    if number <= 9 {
+                        return Ok(KeyId::Digit(number));
+                    }
+                }
+            }
+            if let Some(rest) = other.strip_prefix("vk") {
+                if let Ok(code) = rest.parse::<u16>() {
+                    if code > 0 {
+                        return Ok(KeyId::Vk(code));
+                    }
+                }
+            }
             let mut chars = other.chars();
             if let (Some(ch), None) = (chars.next(), chars.next()) {
                 if ch.is_ascii_alphabetic() {
                     return Ok(KeyId::Letter(ch.to_ascii_uppercase() as u8));
+                }
+                if ch.is_ascii_digit() {
+                    return Ok(KeyId::Digit(ch.to_digit(10).unwrap_or(0) as u8));
                 }
             }
             if let Some(rest) = other.strip_prefix("key") {
@@ -535,6 +677,22 @@ fn key_token(key: KeyId) -> String {
         KeyId::Fn => "Fn".into(),
         KeyId::Letter(ch) => format!("{}", ch as char),
         KeyId::Function(n) => format!("F{n}"),
+        KeyId::Slash => "Slash".into(),
+        KeyId::Backslash => "Backslash".into(),
+        KeyId::Comma => "Comma".into(),
+        KeyId::Period => "Period".into(),
+        KeyId::Minus => "Minus".into(),
+        KeyId::Equal => "Equal".into(),
+        KeyId::Semicolon => "Semicolon".into(),
+        KeyId::Quote => "Quote".into(),
+        KeyId::BracketLeft => "BracketLeft".into(),
+        KeyId::BracketRight => "BracketRight".into(),
+        KeyId::Backquote => "Backquote".into(),
+        KeyId::Tab => "Tab".into(),
+        KeyId::Backspace => "Backspace".into(),
+        KeyId::Delete => "Delete".into(),
+        KeyId::Digit(n) => format!("Digit{n}"),
+        KeyId::Vk(code) => format!("Vk{code}"),
         KeyId::Other => "Other".into(),
     }
 }
@@ -580,6 +738,22 @@ pub fn key_label(key: KeyId, os: OsKind) -> String {
         KeyId::Fn => "Fn".into(),
         KeyId::Letter(ch) => format!("{}", ch as char),
         KeyId::Function(n) => format!("F{n}"),
+        KeyId::Slash => "Slash".into(),
+        KeyId::Backslash => "Backslash".into(),
+        KeyId::Comma => "Comma".into(),
+        KeyId::Period => "Period".into(),
+        KeyId::Minus => "Minus".into(),
+        KeyId::Equal => "Equal".into(),
+        KeyId::Semicolon => "Semicolon".into(),
+        KeyId::Quote => "Quote".into(),
+        KeyId::BracketLeft => "BracketLeft".into(),
+        KeyId::BracketRight => "BracketRight".into(),
+        KeyId::Backquote => "Backquote".into(),
+        KeyId::Tab => "Tab".into(),
+        KeyId::Backspace => "Backspace".into(),
+        KeyId::Delete => "Delete".into(),
+        KeyId::Digit(n) => format!("{n}"),
+        KeyId::Vk(code) => format!("Vk{code}"),
         KeyId::Other => "Other".into(),
     }
 }
@@ -607,7 +781,11 @@ pub fn edge_from_windows(vk: u32, scan: u32, flags: u32, key_up: bool) -> Option
         return None;
     }
     let released = key_up || flags & 0x80 != 0;
-    Some(if released { KeyEdge::Up(key) } else { KeyEdge::Down(key) })
+    Some(if released {
+        KeyEdge::Up(key)
+    } else {
+        KeyEdge::Down(key)
+    })
 }
 
 fn key_from_windows_detail(vk: u32, scan: u32, flags: u32) -> KeyId {
@@ -656,12 +834,37 @@ pub fn edge_from_code(code: &str, down: bool, alt: bool) -> Option<KeyEdge> {
         "Enter" | "NumpadEnter" => KeyId::Enter,
         "Space" => KeyId::Space,
         "Escape" => KeyId::Escape,
+        "Slash" | "NumpadDivide" => KeyId::Slash,
+        "Backslash" => KeyId::Backslash,
+        "Comma" => KeyId::Comma,
+        "Period" => KeyId::Period,
+        "Minus" => KeyId::Minus,
+        "Equal" => KeyId::Equal,
+        "Semicolon" => KeyId::Semicolon,
+        "Quote" => KeyId::Quote,
+        "BracketLeft" => KeyId::BracketLeft,
+        "BracketRight" => KeyId::BracketRight,
+        "Backquote" => KeyId::Backquote,
+        "Tab" => KeyId::Tab,
+        "Backspace" => KeyId::Backspace,
+        "Delete" => KeyId::Delete,
         other => code_to_key(other)?,
     };
-    Some(if down { KeyEdge::Down(key) } else { KeyEdge::Up(key) })
+    Some(if down {
+        KeyEdge::Down(key)
+    } else {
+        KeyEdge::Up(key)
+    })
 }
 
 fn code_to_key(code: &str) -> Option<KeyId> {
+    if let Some(rest) = code.strip_prefix("Digit") {
+        if let Ok(number) = rest.parse::<u8>() {
+            if number <= 9 {
+                return Some(KeyId::Digit(number));
+            }
+        }
+    }
     if let Some(rest) = code.strip_prefix("Key") {
         let mut chars = rest.chars();
         if let (Some(ch), None) = (chars.next(), chars.next()) {
@@ -694,8 +897,25 @@ pub fn key_from_windows_vk(code: u32) -> KeyId {
         13 => KeyId::Enter,
         27 => KeyId::Escape,
         32 => KeyId::Space,
+        0x08 => KeyId::Backspace,
+        0x09 => KeyId::Tab,
+        0x2E => KeyId::Delete,
+        0x10 | 0x11 | 0x12 => KeyId::Other,
+        0x30..=0x39 => KeyId::Digit((code - 0x30) as u8),
         0x41..=0x5A => KeyId::Letter(code as u8),
         0x70..=0x7B => KeyId::Function((code - 0x6F) as u8),
+        0xBA => KeyId::Semicolon,
+        0xBB => KeyId::Equal,
+        0xBC => KeyId::Comma,
+        0xBD => KeyId::Minus,
+        0xBE => KeyId::Period,
+        0xBF => KeyId::Slash,
+        0xC0 => KeyId::Backquote,
+        0xDB => KeyId::BracketLeft,
+        0xDC => KeyId::Backslash,
+        0xDD => KeyId::BracketRight,
+        0xDE => KeyId::Quote,
+        1..=65535 => KeyId::Vk(code as u16),
         _ => KeyId::Other,
     }
 }
@@ -754,6 +974,31 @@ pub fn key_from_rdev(key: &rdev::Key) -> Option<KeyId> {
         F10 => KeyId::Function(10),
         F11 => KeyId::Function(11),
         F12 => KeyId::Function(12),
+        Slash | KpDivide => KeyId::Slash,
+        BackSlash | IntlBackslash => KeyId::Backslash,
+        Comma => KeyId::Comma,
+        Dot => KeyId::Period,
+        Minus => KeyId::Minus,
+        Equal => KeyId::Equal,
+        SemiColon => KeyId::Semicolon,
+        Quote => KeyId::Quote,
+        LeftBracket => KeyId::BracketLeft,
+        RightBracket => KeyId::BracketRight,
+        BackQuote => KeyId::Backquote,
+        Tab => KeyId::Tab,
+        Backspace => KeyId::Backspace,
+        Delete => KeyId::Delete,
+        Num0 | Kp0 => KeyId::Digit(0),
+        Num1 | Kp1 => KeyId::Digit(1),
+        Num2 | Kp2 => KeyId::Digit(2),
+        Num3 | Kp3 => KeyId::Digit(3),
+        Num4 | Kp4 => KeyId::Digit(4),
+        Num5 | Kp5 => KeyId::Digit(5),
+        Num6 | Kp6 => KeyId::Digit(6),
+        Num7 | Kp7 => KeyId::Digit(7),
+        Num8 | Kp8 => KeyId::Digit(8),
+        Num9 | Kp9 => KeyId::Digit(9),
+        Unknown(code) if *code > 0 && *code <= u16::MAX as u32 => KeyId::Vk(*code as u16),
         Unknown(_) => KeyId::Other,
         _ => KeyId::Other,
     })
@@ -1060,10 +1305,7 @@ mod tests {
             edge_from_windows(0xA2, 0x1D, 0, false),
             Some(KeyEdge::Down(KeyId::ControlLeft))
         );
-        assert_eq!(
-            edge_from_code("ControlLeft", true, true),
-            None
-        );
+        assert_eq!(edge_from_code("ControlLeft", true, true), None);
         assert_eq!(
             edge_from_code("AltRight", true, false),
             Some(KeyEdge::Down(KeyId::AltRight))
@@ -1090,7 +1332,10 @@ mod tests {
 
         engine.set_bindings(vec![
             (HotkeyMode::Dictate, parse_chord("AltRight").unwrap()),
-            (HotkeyMode::Translate, parse_chord("AltRight+ShiftRight").unwrap()),
+            (
+                HotkeyMode::Translate,
+                parse_chord("AltRight+ShiftRight").unwrap(),
+            ),
             (HotkeyMode::Command, parse_chord("AltRight+Enter").unwrap()),
         ]);
         assert_eq!(
@@ -1108,6 +1353,84 @@ mod tests {
         assert_eq!(
             with_enter.on_edge(KeyEdge::Up(KeyId::AltRight)),
             vec![EngineEvent::Captured("AltRight+Enter".into())]
+        );
+    }
+
+    #[test]
+    fn capture_mode_suppresses_matching_and_right_alt_slash_is_the_chord() {
+        let mut engine = HotkeyEngine::default();
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, parse_chord("AltRight").unwrap()),
+            (
+                HotkeyMode::Translate,
+                parse_chord("AltRight+ShiftRight").unwrap(),
+            ),
+            (HotkeyMode::Command, parse_chord("AltRight+Enter").unwrap()),
+        ]);
+        assert_eq!(
+            engine.on_edge(KeyEdge::Down(KeyId::AltRight)),
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        engine.on_edge(KeyEdge::Up(KeyId::AltRight));
+
+        engine.set_capture(true);
+        let alt = engine.consume(KeyEdge::Down(KeyId::AltRight));
+        assert!(
+            alt.events
+                .iter()
+                .all(|event| !matches!(event, EngineEvent::Pressed(_))),
+            "capture must not start dictation"
+        );
+        assert_eq!(
+            alt.events,
+            vec![EngineEvent::CaptureProgress("AltRight".into())]
+        );
+        assert!(alt.suppress);
+
+        assert!(edge_from_windows(0xA2, 0x021D, 0x01, false).is_none());
+        assert_eq!(
+            edge_from_windows(0xA5, 0x38, 0x01, false),
+            Some(KeyEdge::Down(KeyId::AltRight))
+        );
+        let slash_down = edge_from_windows(0xBF, 0x35, 0, false).unwrap();
+        assert_eq!(slash_down, KeyEdge::Down(KeyId::Slash));
+        let slash = engine.consume(slash_down);
+        assert_eq!(
+            slash.events,
+            vec![EngineEvent::CaptureProgress("AltRight+Slash".into())]
+        );
+        assert!(slash.suppress);
+        engine.consume(KeyEdge::Up(KeyId::Slash));
+        let done = engine.consume(KeyEdge::Up(KeyId::AltRight));
+        assert_eq!(
+            done.events,
+            vec![EngineEvent::Captured("AltRight+Slash".into())]
+        );
+        assert!(done.suppress);
+
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, parse_chord("AltRight+Slash").unwrap()),
+            (
+                HotkeyMode::Translate,
+                parse_chord("AltRight+ShiftRight").unwrap(),
+            ),
+            (HotkeyMode::Command, parse_chord("AltRight+Space").unwrap()),
+        ]);
+        assert!(engine
+            .consume(KeyEdge::Down(KeyId::AltRight))
+            .events
+            .is_empty());
+        let matched = engine.consume(KeyEdge::Down(KeyId::Slash));
+        assert_eq!(
+            matched.events,
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        assert!(matched.suppress);
+        let released = engine.consume(KeyEdge::Up(KeyId::Slash));
+        assert!(released.suppress);
+        assert_eq!(
+            released.events,
+            vec![EngineEvent::Released(HotkeyMode::Dictate)]
         );
     }
 }

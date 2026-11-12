@@ -5,6 +5,7 @@ mod dictate_config;
 mod dictation;
 mod key_feed;
 mod locale;
+mod material;
 mod overlay;
 mod permissions;
 mod pipeline;

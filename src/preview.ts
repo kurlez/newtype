@@ -19,6 +19,7 @@ export const previewSnapshot: Snapshot = {
     localIdleMinutes: 5,
     targetLanguage: "English",
     historyRetention: "month",
+    windowTranslucent: true,
     providers: {
       openai: {
         asrModel: "gpt-transcribe",
