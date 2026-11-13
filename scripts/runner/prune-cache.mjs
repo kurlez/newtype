@@ -101,11 +101,53 @@ function pruneTarget(dir, { now, maxBytes, maxAgeMs }) {
   );
 }
 
-function pruneOldTrees(dirs, cutoffMs) {
-  for (const dir of dirs) {
-    deleteOlderFiles(dir, cutoffMs);
-    console.log(`pruned files older than the cutoff under ${dir}`);
+export function planPackagePrune({ hasManifest, dirMtimeMs, cutoffMs, dropBroken }) {
+  if (dropBroken && !hasManifest) {
+    return "delete-broken";
   }
+  if (Number.isFinite(dirMtimeMs) && dirMtimeMs < cutoffMs) {
+    return "delete-stale";
+  }
+  return "keep";
+}
+
+function childDirs(dir) {
+  let entries = [];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+}
+
+function prunePackageDirs(root, cutoffMs, dropBroken) {
+  for (const indexDir of childDirs(root)) {
+    for (const pkg of childDirs(indexDir)) {
+      let info;
+      try {
+        info = statSync(pkg);
+      } catch {
+        continue;
+      }
+      let hasManifest = false;
+      try {
+        hasManifest = statSync(path.join(pkg, "Cargo.toml")).isFile();
+      } catch {
+        hasManifest = false;
+      }
+      const action = planPackagePrune({
+        hasManifest,
+        dirMtimeMs: info.mtimeMs,
+        cutoffMs,
+        dropBroken,
+      });
+      if (action !== "keep") {
+        rmSync(pkg, { recursive: true, force: true });
+      }
+    }
+  }
+  console.log(`pruned package directories under ${root}`);
 }
 
 function main() {
@@ -116,14 +158,11 @@ function main() {
   const target = process.env.CARGO_TARGET_DIR || path.join(os.homedir(), ".cache", "newtype", "cargo-target");
   const cargoHome = process.env.CARGO_HOME || path.join(os.homedir(), ".cargo");
   pruneTarget(target, { now, maxBytes, maxAgeMs });
-  pruneOldTrees(
-    [
-      path.join(cargoHome, "registry", "src"),
-      path.join(cargoHome, "registry", "cache"),
-      path.join(cargoHome, "git", "checkouts"),
-    ],
-    now - maxAgeMs,
-  );
+  const cutoffMs = now - maxAgeMs;
+  prunePackageDirs(path.join(cargoHome, "registry", "src"), cutoffMs, true);
+  deleteOlderFiles(path.join(cargoHome, "registry", "cache"), cutoffMs);
+  console.log(`pruned files older than the cutoff under ${path.join(cargoHome, "registry", "cache")}`);
+  prunePackageDirs(path.join(cargoHome, "git", "checkouts"), cutoffMs, false);
   const npmCache = path.join(os.homedir(), ".npm");
   const npm = walk(npmCache);
   if (npm.bytes > 2 * 1024 * 1024 * 1024) {

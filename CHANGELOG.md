@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-13: Cache pruning removes an extracted crate directory, not the files inside it. Crate archives keep their original timestamps, and deleting those files made the next cargo run fail.
 - 2026-11-13: Windows bash steps call Git's `find`, because `System32\find.exe` is earlier on the runner PATH.
 - 2026-11-13: The cloud-only rewrite test accepts the Chinese notice on a Chinese Windows UI language.
 - 2026-11-13: The Windows job takes rustup from the runner `.env` Path and keeps the crate registry in the runner directory, so a SYSTEM job does not reuse the interactive account's cargo config.
