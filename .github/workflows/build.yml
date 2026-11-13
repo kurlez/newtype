@@ -50,10 +50,27 @@ jobs:
       - name: Require Rust
         shell: powershell
         run: |
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
+          $envFile = Join-Path $runnerRoot '.env'
+          Write-Output "runner env file: $envFile"
+          if (Test-Path $envFile) {
+            foreach ($line in [System.IO.File]::ReadAllLines($envFile)) {
+              if (-not $line -or $line.StartsWith('#')) { continue }
+              $idx = $line.IndexOf('=')
+              if ($idx -lt 1) { continue }
+              $key = $line.Substring(0, $idx)
+              $value = $line.Substring($idx + 1)
+              if ($key -eq 'CARGO_HOME' -or $key -eq 'RUSTUP_HOME' -or $key -eq 'Path' -or $key -eq 'PATH') {
+                Set-Item -Path "Env:$key" -Value $value
+                [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$key=$value`n", $utf8)
+              }
+            }
+          }
           Write-Output "CARGO_HOME=$env:CARGO_HOME"
           Write-Output "RUSTUP_HOME=$env:RUSTUP_HOME"
           if (-not $env:CARGO_HOME -or -not $env:RUSTUP_HOME) {
-            throw "CARGO_HOME and RUSTUP_HOME must be set by the runner .env. The SYSTEM service does not use a user-profile rustup."
+            throw "CARGO_HOME and RUSTUP_HOME must be set in the runner .env at $envFile. Re-run setup-windows.ps1 so the SYSTEM service uses the verified rustup."
           }
           $cargoBin = Join-Path $env:CARGO_HOME 'bin'
           $rustup = Join-Path $cargoBin 'rustup.exe'
