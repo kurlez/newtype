@@ -144,7 +144,8 @@ jobs:
         shell: powershell
         run: |
           $utf8 = New-Object System.Text.UTF8Encoding $false
-          $dir = Join-Path $env:USERPROFILE '.cache\newtype\cargo-target'
+          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
+          $dir = Join-Path $runnerRoot 'cargo-target'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_TARGET_DIR=$dir`n", $utf8)
           [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_CACHE_DAYS=14`n", $utf8)
