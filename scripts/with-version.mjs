@@ -13,7 +13,7 @@ export function readBaseVersion(confPath = path.join(root, "src-tauri/tauri.conf
   const version = conf.version;
   if (typeof version !== "string" || !BASE_VERSION.test(version)) {
     throw new Error(
-      `src-tauri/tauri.conf.json version must be plain semver like 0.1.0 (the next stable). Found ${JSON.stringify(version)}. Dev builds append -dev.<build>; do not put a prerelease in the file.`,
+      `src-tauri/tauri.conf.json version must be plain semver like 0.2.0 (the latest stable). Found ${JSON.stringify(version)}. Dev builds use the next patch, as 0.2.1-dev.<build>. Do not put a prerelease in the file.`,
     );
   }
   return version;
@@ -37,12 +37,77 @@ export function shortCommit(sha) {
   return "unknown";
 }
 
+/** The next patch after the stable version in tauri.conf.json. `0.2.0` becomes `0.2.1`. */
+export function nextDevBase(base) {
+  if (!BASE_VERSION.test(base)) {
+    throw new Error(`base version must look like 0.2.0, found ${base}`);
+  }
+  const [major, minor, patch] = base.split(".").map((part) => Number(part));
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+/**
+ * Semver order used by the updater, without build metadata.
+ * A release sorts above its own prereleases: `0.2.0-dev.9 < 0.2.0 < 0.2.1-dev.1`.
+ */
+export function compareVersions(left, right) {
+  const a = parseSemver(left);
+  const b = parseSemver(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a.nums[index] !== b.nums[index]) {
+      return a.nums[index] < b.nums[index] ? -1 : 1;
+    }
+  }
+  if (a.pre.length === 0 && b.pre.length === 0) {
+    return 0;
+  }
+  if (a.pre.length === 0) {
+    return 1;
+  }
+  if (b.pre.length === 0) {
+    return -1;
+  }
+  const count = Math.max(a.pre.length, b.pre.length);
+  for (let index = 0; index < count; index += 1) {
+    if (a.pre[index] === undefined) {
+      return -1;
+    }
+    if (b.pre[index] === undefined) {
+      return 1;
+    }
+    const aNumeric = /^\d+$/.test(a.pre[index]);
+    const bNumeric = /^\d+$/.test(b.pre[index]);
+    if (aNumeric && bNumeric && a.pre[index] !== b.pre[index]) {
+      return Number(a.pre[index]) < Number(b.pre[index]) ? -1 : 1;
+    }
+    if (aNumeric !== bNumeric) {
+      return aNumeric ? -1 : 1;
+    }
+    if (a.pre[index] !== b.pre[index]) {
+      return a.pre[index] < b.pre[index] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+function parseSemver(version) {
+  const bare = String(version).split("+")[0];
+  const [core, pre = ""] = bare.split("-");
+  const nums = core.split(".").map((part) => Number(part));
+  while (nums.length < 3) {
+    nums.push(0);
+  }
+  return { nums, pre: pre ? pre.split(".") : [] };
+}
+
 /**
  * Comparable updater version.
  *
- * Dev builds are `{base}-dev.{github.run_number}`. The `+commit` form is display-only:
- * Tauri compares `semver::Version`'s Ord, which orders build metadata lexicographically,
- * and `+` is unsafe in artifact file names. See README.
+ * The file version is the latest stable release. Dev builds are the next patch,
+ * `{next}-dev.{github.run_number}`, so they sort above that stable release.
+ * A `v*` tag uses the tag number and ignores the file. The `+commit` form is
+ * display-only: Tauri compares `semver::Version`'s Ord, which orders build
+ * metadata lexicographically, and `+` is unsafe in artifact file names.
  */
 export function resolveVersion({
   base,
@@ -53,7 +118,7 @@ export function resolveVersion({
   arch = process.arch,
 }) {
   if (!BASE_VERSION.test(base)) {
-    throw new Error(`base version must look like 0.1.0, found ${base}`);
+    throw new Error(`base version must look like 0.2.0, found ${base}`);
   }
   const commit = shortCommit(sha);
   let version;
@@ -72,10 +137,10 @@ export function resolveVersion({
     if (!/^[1-9]\d*$/.test(String(runNumber))) {
       throw new Error(`GITHUB_RUN_NUMBER must be a positive integer, found ${runNumber}`);
     }
-    version = `${base}-dev.${runNumber}`;
+    version = `${nextDevBase(base)}-dev.${runNumber}`;
     channel = "dev";
   } else {
-    version = `${base}-dev.0`;
+    version = `${nextDevBase(base)}-dev.0`;
     channel = "dev";
   }
   return {

@@ -1,7 +1,7 @@
 {
   "name": "newtype",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "AI voice input for macOS and Windows. Auto uses cloud when it is reachable and local models when it is not.",
   "scripts": {

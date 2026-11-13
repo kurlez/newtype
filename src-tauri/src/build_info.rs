@@ -24,8 +24,9 @@ mod tests {
             "0.1.0-dev.2",
             "0.1.0-dev.10",
             "0.1.0",
-            "0.2.0-dev.1",
             "0.2.0",
+            "0.2.1-dev.1",
+            "0.2.1-dev.10",
         ];
         for pair in versions.windows(2) {
             assert!(

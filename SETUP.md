@@ -121,10 +121,21 @@ After the secrets and the public key are on `main`, the publish job uploads a **
 - macOS: download the `.dmg`.
 - Windows: download the NSIS `-setup.exe`.
 
-First-launch steps are in the README. After that install, leave the in-app channel on **dev**. Later pushes to `main` publish a higher `0.1.0-dev.<run>` build; the app checks at startup and about once an hour, downloads in the background, and asks you to restart.
+First-launch steps are in the README. After that install, leave the in-app channel on **dev**. Later pushes to `main` publish a higher `0.2.1-dev.<run>` build; the app checks at startup and about once an hour, downloads in the background, and asks you to restart.
 
-## 7. After the first stable tag
+## 7. After the 0.2.0 tag
 
-Tagging `v0.1.0` publishes version `0.1.0` on the stable channel. That version is newer than every `0.1.0-dev.N`. Before further work lands on `main`, bump the plain version in both `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` to the next stable number (`0.2.0`). Dev builds then become `0.2.0-dev.<run>`, which is newer than `0.1.0`. If you skip the bump, anyone who installed `0.1.0` will not be offered the older-looking dev builds.
+On the merge commit of the 0.2.0 release:
+
+```bash
+git checkout main
+git pull origin main
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The workflow does not create the tag. That push builds version `0.2.0` and uploads a non-prerelease `v0.2.0` on `kurlez/newtype-releases`, including the macOS and Windows installers, the signed updater files, and `latest.json`. The stable channel reads `https://github.com/kurlez/newtype-releases/releases/latest/download/latest.json`. The same publish copies those files onto the `dev` tag when the dev feed is older than `0.2.0`, so dev-channel installs are offered `0.2.0`.
+
+The plain version in the repo stays `0.2.0`. Main builds are `0.2.1-dev.<run>`, which is newer than `0.2.0`. After you publish `v0.2.1`, bump `tauri.conf.json`, `src-tauri/Cargo.toml`, and `package.json` to `0.2.1` before the next main push. Dev builds then become `0.2.2-dev.<run>`. If you skip the bump, `0.2.1-dev.N` stays older than `0.2.1`.
 
 Do not rename `.github/workflows/build.yml`. Its `github.run_number` is the dev build counter, and renaming the file starts that counter over.
