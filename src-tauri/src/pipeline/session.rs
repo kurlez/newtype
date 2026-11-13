@@ -492,7 +492,11 @@ mod tests {
                 assert_eq!(done.label, PathLabel::Cloud);
                 assert_eq!(done.body.text, "ruled hello");
                 assert!(done.keep_audio);
-                assert!(done.message.contains("Cloud only"));
+                assert!(
+                    done.message.contains("Cloud only") || done.message.contains("仅云端"),
+                    "{}",
+                    done.message
+                );
             }
             Outcome::Failed(failed) => panic!("{}", failed.message),
         }
