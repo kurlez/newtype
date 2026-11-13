@@ -13,6 +13,7 @@ use crate::dictate_config::{self, DictationSettings};
 use crate::permissions::{self, PermissionSnapshot};
 use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::catalog::{self, Mirror};
+use crate::pipeline::compare::{self, CompareReport, CompareRow};
 use crate::pipeline::cloud::{self, AsrWire, CloudAsr, Preset, Thinking};
 use crate::pipeline::egress::{self, NetMode};
 use crate::pipeline::engines::Engines;
@@ -78,6 +79,9 @@ pub struct Dictation {
     focus_target: Mutex<Option<focus::FocusTarget>>,
     /// Groq Retry-After, in unix millis. Zero means try Groq on the next request.
     groq_cooldown_until_ms: Arc<AtomicU64>,
+    last_wav: Mutex<Vec<u8>>,
+    compare_tx: Mutex<Option<Sender<CompareMic>>>,
+    last_compare: Mutex<String>,
 }
 
 struct LockedSession {
@@ -253,6 +257,9 @@ impl Dictation {
             generation: Arc::new(AtomicU64::new(1)),
             focus_target: Mutex::new(None),
             groq_cooldown_until_ms: Arc::new(AtomicU64::new(0)),
+            last_wav: Mutex::new(Vec::new()),
+            compare_tx: Mutex::new(None),
+            last_compare: Mutex::new(String::new()),
         })
     }
 
@@ -1317,6 +1324,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     drop(state);
 
     let wav = audio::encode_wav_16k(&clip);
+    *app.state::<Dictation>().last_wav.lock().expect("last wav") = wav.clone();
     let local_clip = AudioClip {
         samples: clip.samples.clone(),
         sample_rate: clip.sample_rate,
@@ -1412,6 +1420,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let thinking = effective.thinking;
     let llm_implemented = effective.llm_implemented;
     let hotwords_cloud = effective.hotwords.clone();
+    let native = native_terms_for(&hotwords_cloud, &asr_provider, &asr_model);
     let volc_app_id = settings
         .providers
         .get("volcengine")
@@ -1434,6 +1443,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         let dev_secrets = dev_secrets.clone();
         let cooldown = Arc::clone(&groq_cooldown);
         let hotwords_for_asr = hotwords_cloud.clone();
+        let native_terms = native.terms.clone();
         let openai_base = openai_base.clone();
         move |audio: &[u8]| {
             if asr_provider != "groq" {
@@ -1448,14 +1458,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         .ok()
                         .flatten()
                         .unwrap_or_default();
-                    let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
                     return volcengine::transcribe_wav(
                         &VolcAuth {
                             api_key: speech_key,
                             app_id: volc_app_id.clone(),
                             token,
                         },
-                        &prompt,
+                        &native_terms,
                         audio,
                     )
                     .map_err(|message| {
@@ -1481,12 +1490,26 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         ProviderError::plain("Speech API key is missing."),
                     ));
                 };
+                let dashscope = asr_wire == AsrWire::DashscopeAudio;
                 return match (CloudAsr {
                     base: asr_base.clone(),
                     key,
-                    model: asr_model.clone(),
+                    model: if dashscope {
+                        cloud::dashscope_speech_model(&asr_model)
+                    } else {
+                        asr_model.clone()
+                    },
                     wire: asr_wire,
-                    prompt: cloud_speech_prompt(&hotwords_for_asr, &asr_provider),
+                    prompt: if dashscope {
+                        String::new()
+                    } else {
+                        cloud_speech_prompt(&hotwords_for_asr, &asr_provider)
+                    },
+                    hotwords: if dashscope {
+                        native_terms.clone()
+                    } else {
+                        Vec::new()
+                    },
                 })
                 .recognize(audio)
                 {
@@ -1512,14 +1535,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         .ok()
                         .flatten()
                         .unwrap_or_default();
-                    let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
                     return volcengine::transcribe_wav(
                         &VolcAuth {
                             api_key: speech_key,
                             app_id: volc_app_id.clone(),
                             token,
                         },
-                        &prompt,
+                        &native_terms,
                         audio,
                     )
                     .map_err(ProviderError::plain);
@@ -1528,13 +1550,24 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     .map_err(ProviderError::plain)?
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| ProviderError::plain("Speech API key is missing."))?;
-                let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
+                let dashscope = asr_wire == AsrWire::DashscopeAudio;
+                let prompt = if dashscope {
+                    String::new()
+                } else {
+                    cloud_speech_prompt(&hotwords_for_asr, &asr_provider)
+                };
+                let terms = if dashscope {
+                    native_terms.clone()
+                } else {
+                    Vec::new()
+                };
                 cloud::transcribe_detailed(
                     &asr_base,
                     &key,
                     &asr_model,
                     asr_wire,
                     &prompt,
+                    &terms,
                     audio,
                 )
                 .map_err(|err| {
@@ -1561,6 +1594,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     model,
                     AsrWire::Transcriptions,
                     &prompt,
+                    &[],
                     audio,
                 )
                 .map_err(|err| {
@@ -2650,6 +2684,387 @@ fn volc_auth(settings: &DictationSettings, secrets_path: &std::path::Path) -> Vo
         api_key: speech,
         app_id,
         token,
+    }
+}
+
+fn native_terms_for(
+    words: &[crate::pipeline::hotwords::Hotword],
+    provider: &str,
+    model: &str,
+) -> crate::pipeline::hotwords::NativeHotwords {
+    let model = if provider == "dashscope" {
+        cloud::dashscope_speech_model(model)
+    } else {
+        model.to_string()
+    };
+    let list = match provider {
+        "volcengine" => crate::pipeline::hotwords::native_hotwords(words, 5000, |_| true),
+        "dashscope" => crate::pipeline::hotwords::native_hotwords(
+            words,
+            crate::pipeline::hotwords::dashscope_hotword_limit(&model),
+            crate::pipeline::hotwords::dashscope_term_ok,
+        ),
+        _ => crate::pipeline::hotwords::native_hotwords(words, 0, |_| false),
+    };
+    if provider == "volcengine" || provider == "dashscope" {
+        crate::diag::record(&format!(
+            "cloud asr hotwords provider={provider} kept={} of={} limit={}",
+            list.kept, list.offered, list.limit
+        ));
+    }
+    list
+}
+
+const COMPARE_PROVIDERS: &[&str] = &["groq", "volcengine", "dashscope", "openai", "custom"];
+
+enum CompareMic {
+    Start {
+        microphone: String,
+        reply: Sender<Result<(), String>>,
+    },
+    Stop {
+        reply: Sender<Result<AudioClip, String>>,
+    },
+}
+
+fn compare_sender(state: &Dictation) -> Sender<CompareMic> {
+    let mut slot = state.compare_tx.lock().expect("compare mic");
+    if let Some(sender) = slot.clone() {
+        return sender;
+    }
+    let (sender, receiver) = mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("newtype-compare-mic".into())
+        .spawn(move || {
+            let mut session = None;
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    CompareMic::Start { microphone, reply } => {
+                        if session.is_some() {
+                            let _ = reply.send(Err("A comparison recording is already running.".into()));
+                            continue;
+                        }
+                        match MicSession::start(&microphone) {
+                            Ok(started) => {
+                                session = Some(started);
+                                let _ = reply.send(Ok(()));
+                            }
+                            Err(err) => {
+                                let _ = reply.send(Err(err));
+                            }
+                        }
+                    }
+                    CompareMic::Stop { reply } => match session.take() {
+                        Some(started) => {
+                            let _ = reply.send(Ok(started.stop()));
+                        }
+                        None => {
+                            let _ = reply.send(Err("Record a clip before comparing.".into()));
+                        }
+                    },
+                }
+            }
+        });
+    *slot = Some(sender.clone());
+    sender
+}
+
+pub fn compare_arm(app: &AppHandle) -> Result<String, String> {
+    let state = app.state::<Dictation>();
+    let phase = state.phase.lock().expect("phase").clone();
+    if phase == "recording" || phase == "processing" {
+        return Err("Finish the current dictation before recording a comparison.".into());
+    }
+    let microphone = state.settings.lock().expect("settings").microphone.clone();
+    let sender = compare_sender(&state);
+    drop(state);
+    let (reply_tx, reply_rx) = mpsc::channel();
+    sender
+        .send(CompareMic::Start {
+            microphone,
+            reply: reply_tx,
+        })
+        .map_err(|_| "The comparison recorder stopped.".to_string())?;
+    reply_rx
+        .recv()
+        .map_err(|_| "The comparison recorder stopped.".to_string())??;
+    Ok("Recording. Speak, then stop and compare.".into())
+}
+
+pub fn compare_finish(app: &AppHandle) -> Result<CompareReport, String> {
+    let state = app.state::<Dictation>();
+    let sender = state
+        .compare_tx
+        .lock()
+        .expect("compare mic")
+        .clone()
+        .ok_or_else(|| "Record a clip before comparing.".to_string())?;
+    drop(state);
+    let (reply_tx, reply_rx) = mpsc::channel();
+    sender
+        .send(CompareMic::Stop { reply: reply_tx })
+        .map_err(|_| "The comparison recorder stopped.".to_string())?;
+    let clip = reply_rx
+        .recv()
+        .map_err(|_| "The comparison recorder stopped.".to_string())??;
+    if clip.samples.is_empty() {
+        return Err("The microphone recorded nothing.".into());
+    }
+    let wav = audio::encode_wav_16k(&clip);
+    *app.state::<Dictation>().last_wav.lock().expect("last wav") = wav.clone();
+    run_compare(app, &wav)
+}
+
+pub fn compare_last(app: &AppHandle) -> Result<CompareReport, String> {
+    let state = app.state::<Dictation>();
+    let mut wav = state.last_wav.lock().expect("last wav").clone();
+    if wav.is_empty() {
+        wav = newest_history_wav(&state).unwrap_or_default();
+    }
+    drop(state);
+    if wav.is_empty() {
+        return Err("There is no recording to compare yet. Dictate once, or record a clip.".into());
+    }
+    run_compare(app, &wav)
+}
+
+pub fn last_compare_json(app: &AppHandle) -> Result<String, String> {
+    let body = app
+        .state::<Dictation>()
+        .last_compare
+        .lock()
+        .expect("compare")
+        .clone();
+    if body.trim().is_empty() {
+        Err("Run a comparison before saving it.".into())
+    } else {
+        Ok(body)
+    }
+}
+
+fn newest_history_wav(state: &Dictation) -> Option<Vec<u8>> {
+    let history = state.history.lock().expect("history");
+    let entry = history
+        .iter()
+        .filter(|entry| entry.audio_kept)
+        .max_by_key(|entry| entry.created_at_ms)?;
+    std::fs::read(audio_file(&state.history_path, &entry.id)).ok()
+}
+
+fn run_compare(app: &AppHandle, wav: &[u8]) -> Result<CompareReport, String> {
+    let state = app.state::<Dictation>();
+    let settings = state.settings.lock().expect("settings").clone();
+    let secrets_path = state.dev_secrets.clone();
+    drop(state);
+    let polish = PolishLevel::parse(&settings.polish_level).unwrap_or(PolishLevel::Polish);
+    let mut rows = Vec::new();
+    for id in COMPARE_PROVIDERS {
+        if speech_credentials_ready(id, &settings, &secrets_path) {
+            rows.push(compare_provider(id, &settings, &secrets_path, polish, wav));
+        }
+    }
+    if rows.is_empty() {
+        return Err("Save a key for at least one speech provider first.".into());
+    }
+    let report = CompareReport {
+        created_at: compare::now_stamp(),
+        rows,
+    };
+    let json = report.to_json()?;
+    *app.state::<Dictation>().last_compare.lock().expect("compare") = json;
+    crate::diag::record(&format!(
+        "compare finished providers={}",
+        report.rows.len()
+    ));
+    Ok(report)
+}
+
+fn compare_provider(
+    id: &str,
+    settings: &DictationSettings,
+    secrets_path: &std::path::Path,
+    polish: PolishLevel,
+    wav: &[u8],
+) -> CompareRow {
+    let label = cloud::preset(id)
+        .map(|preset| preset.label.to_string())
+        .unwrap_or_else(|| id.to_string());
+    let speech = dictate_config::provider_endpoint(settings, id, true);
+    let rewrite = dictate_config::provider_endpoint(settings, id, false);
+    let asr_model = speech.as_ref().map(|end| end.model.clone()).unwrap_or_default();
+    let llm_model = rewrite.as_ref().map(|end| end.model.clone()).unwrap_or_default();
+    let native = native_terms_for(&settings.hotwords, id, &asr_model);
+    let mut row = CompareRow {
+        provider: id.to_string(),
+        label,
+        asr_model,
+        llm_model,
+        raw: String::new(),
+        polished: String::new(),
+        asr_ms: 0,
+        total_ms: 0,
+        error: String::new(),
+        hotwords_kept: native.kept,
+        hotwords_offered: native.offered,
+        hotword_limit: if id == "volcengine" || id == "dashscope" {
+            native.limit
+        } else {
+            0
+        },
+    };
+    let started = Instant::now();
+    let secrets = provider_secrets(id, settings, secrets_path);
+    let recognized = recognize_for_compare(id, settings, secrets_path, &native.terms, wav);
+    row.asr_ms = started.elapsed().as_millis() as u64;
+    let raw = match recognized {
+        Ok(text) => text,
+        Err(err) => {
+            row.total_ms = row.asr_ms;
+            row.error = compare::public_error(&err, &secret_refs(&secrets));
+            crate::diag::record(&format!(
+                "compare provider={id} asr_ms={} total_ms={} error={}",
+                row.asr_ms, row.total_ms, row.error
+            ));
+            return row;
+        }
+    };
+    row.raw = raw;
+    match polish_for_compare(id, settings, secrets_path, polish, &row.raw, &row.llm_model) {
+        Ok((text, fallback)) => {
+            row.polished = text;
+            if !fallback.is_empty() {
+                row.error = compare::public_error(&fallback, &secret_refs(&secrets));
+            }
+        }
+        Err(err) => {
+            row.error = compare::public_error(&err, &secret_refs(&secrets));
+        }
+    }
+    row.total_ms = started.elapsed().as_millis() as u64;
+    crate::diag::record(&format!(
+        "compare provider={id} asr_ms={} total_ms={} error={}",
+        row.asr_ms,
+        row.total_ms,
+        if row.error.is_empty() { "none" } else { row.error.as_str() }
+    ));
+    row
+}
+
+struct HeldSecrets {
+    values: Vec<String>,
+}
+
+fn secret_refs(secrets: &HeldSecrets) -> Vec<&str> {
+    secrets.values.iter().map(String::as_str).collect()
+}
+
+fn provider_secrets(id: &str, settings: &DictationSettings, secrets_path: &std::path::Path) -> HeldSecrets {
+    let mut values = Vec::new();
+    if id == "volcengine" {
+        let auth = volc_auth(settings, secrets_path);
+        values.push(auth.api_key);
+        values.push(auth.token);
+        values.push(auth.app_id);
+        if let Some(key) = secrets::get_key("volcengine", secrets_path).ok().flatten() {
+            values.push(key);
+        }
+    } else if let Some(key) = secrets::get_key(id, secrets_path).ok().flatten() {
+        values.push(key);
+    }
+    HeldSecrets { values }
+}
+
+fn recognize_for_compare(
+    id: &str,
+    settings: &DictationSettings,
+    secrets_path: &std::path::Path,
+    terms: &[String],
+    wav: &[u8],
+) -> Result<String, String> {
+    if id == "volcengine" {
+        return volcengine::transcribe_wav(&volc_auth(settings, secrets_path), terms, wav);
+    }
+    let end = dictate_config::provider_endpoint(settings, id, true)?;
+    if end.base.trim().is_empty() {
+        return Err("This provider needs a base URL.".into());
+    }
+    if end.model.trim().is_empty() {
+        return Err("This provider needs a speech model id.".into());
+    }
+    let key = secrets::get_key(id, secrets_path)?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Speech API key is missing.".to_string())?;
+    let prompt = if end.wire == AsrWire::DashscopeAudio {
+        String::new()
+    } else {
+        cloud_speech_prompt(&settings.hotwords, id)
+    };
+    let hotwords = if end.wire == AsrWire::DashscopeAudio {
+        terms.to_vec()
+    } else {
+        Vec::new()
+    };
+    let model = if end.wire == AsrWire::DashscopeAudio {
+        cloud::dashscope_speech_model(&end.model)
+    } else {
+        end.model
+    };
+    cloud::transcribe_detailed(&end.base, &key, &model, end.wire, &prompt, &hotwords, wav)
+        .map_err(|err| err.short())
+}
+
+fn polish_for_compare(
+    id: &str,
+    settings: &DictationSettings,
+    secrets_path: &std::path::Path,
+    level: PolishLevel,
+    transcript: &str,
+    model: &str,
+) -> Result<(String, String), String> {
+    let end = dictate_config::provider_endpoint(settings, id, false)?;
+    if end.base.trim().is_empty() || model.trim().is_empty() {
+        return Err("No rewrite model is configured for this provider.".into());
+    }
+    let key = secrets::get_key(id, secrets_path)?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Rewrite API key is missing.".to_string())?;
+    let config = settings.providers.get(id).cloned().unwrap_or_default();
+    let preference = if settings.thinking.is_empty() {
+        "auto"
+    } else {
+        settings.thinking.as_str()
+    };
+    let thinking = cloud::thinking_for(id, model, preference, &config.thinking);
+    let slot = Arc::new(Mutex::new(None));
+    let llm = DetailedLlm {
+        base: end.base,
+        key,
+        model: model.to_string(),
+        thinking,
+        error: Arc::clone(&slot),
+    };
+    match rewrite::attempt_job(
+        Audience::Cloud,
+        &Job::Polish(level),
+        transcript,
+        &settings.hotwords,
+        &front::front_app_name(),
+        &llm,
+    ) {
+        Ok(finished) => Ok((
+            finished.text,
+            if finished.used_fallback {
+                finished.reason
+            } else {
+                String::new()
+            },
+        )),
+        Err(message) => Err(slot
+            .lock()
+            .expect("llm error")
+            .take()
+            .map(|err| err.short())
+            .unwrap_or(message)),
     }
 }
 

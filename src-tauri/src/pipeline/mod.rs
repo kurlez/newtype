@@ -8,6 +8,7 @@ pub(crate) mod asr;
 pub(crate) mod asr_text;
 pub(crate) mod audio;
 pub(crate) mod catalog;
+pub(crate) mod compare;
 pub(crate) mod checksum;
 pub(crate) mod codesign;
 pub(crate) mod cloud;

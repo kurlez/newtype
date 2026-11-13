@@ -122,13 +122,13 @@ pub fn presets() -> &'static [Preset] {
             llm_ready: true,
             base_editable: true,
             default_base: "",
-            default_asr: "qwen3-asr-flash",
+            default_asr: "qwen-audio-3.1-asr-flash",
             default_llm: "qwen3.8-flash",
-            asr_models: &["qwen3-asr-flash"],
+            asr_models: &["qwen-audio-3.1-asr-flash"],
             llm_models: &["qwen3.8-flash", "qwen3.8-max"],
             asr_wire: AsrWire::DashscopeAudio,
-            note: "Partial. Speech uses the OpenAI-compatible chat endpoint with input audio, not a WebSocket. Paste the workspace base URL, for example https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1. The one-shot message WebSocket model is not implemented. Thinking is requested off.",
-            verified: "Aliyun Model Studio ASR and chat-completions docs, checked 2026-11-12. qwen3-asr-flash and qwen3.8-flash are the documented ids. qwen-audio-3.1-asr-flash-message and qwen3.7-plus were not in that model list, so they are not suggested.",
+            note: "Speech is Qwen-Audio ASR on the multimodal generation endpoint, with the dictionary as instant hotwords (parameters.vocabulary, weight 4). Paste the workspace base URL, for example https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1. A model id starting with paraformer uses the 500-term cap. Thinking is requested off.",
+            verified: "Model Studio improve-recognition and Qwen-ASR docs, checked 2026-11-13. Instant hotwords: POST /api/v1/services/aigc/multimodal-generation/generation. Qwen-Audio allows 2000 terms; Paraformer allows 500. A term with non-ASCII is at most 15 characters; an ASCII term is at most 7 words.",
         },
         Preset {
             id: "volcengine",
@@ -145,8 +145,8 @@ pub fn presets() -> &'static [Preset] {
                 "doubao-seed-2-1-pro-260915",
             ],
             asr_wire: AsrWire::Volcengine,
-            note: "Speech uses openspeech (volc.seedasr.sauc.duration, model name bigmodel). New console: speech API key. Old console: App ID plus access token. The rewrite model uses the Ark key with thinking disabled. doubao-seed-asr-1-0 is not used.",
-            verified: "Volcengine openspeech streaming ASR page and the Ark model list, checked 2026-11-12. Lite and pro snapshot ids both support thinking.type=disabled.",
+            note: "Speech uses openspeech (volc.seedasr.sauc.duration, model name bigmodel) and sends the dictionary as direct hotwords in corpus.context, up to 5000 terms. New console: speech API key. Old console: App ID plus access token. The rewrite model uses the Ark key with thinking disabled. doubao-seed-asr-1-0 is not used.",
+            verified: "Volcengine openspeech streaming ASR and hot-word docs, checked 2026-11-13. bigmodel_nostream direct hotwords: 5000 terms. Lite and pro snapshot ids both support thinking.type=disabled.",
         },
         Preset {
             id: "custom",
@@ -367,6 +367,7 @@ pub struct CloudAsr {
     pub model: String,
     pub wire: AsrWire,
     pub prompt: String,
+    pub hotwords: Vec<String>,
 }
 
 impl CloudAsr {
@@ -377,6 +378,7 @@ impl CloudAsr {
             &self.model,
             self.wire,
             &self.prompt,
+            &self.hotwords,
             wav,
         )
     }
@@ -421,7 +423,7 @@ pub fn transcribe(
     prompt: &str,
     wav: &[u8],
 ) -> Result<String, String> {
-    transcribe_detailed(base, key, model, wire, prompt, wav).map_err(|err| err.message)
+    transcribe_detailed(base, key, model, wire, prompt, &[], wav).map_err(|err| err.message)
 }
 
 pub fn transcribe_detailed(
@@ -430,6 +432,7 @@ pub fn transcribe_detailed(
     model: &str,
     wire: AsrWire,
     prompt: &str,
+    hotwords: &[String],
     wav: &[u8],
 ) -> Result<String, ProviderError> {
     let base = normalize_base(base).map_err(ProviderError::plain)?;
@@ -441,7 +444,7 @@ pub fn transcribe_detailed(
             "This provider's speech API is not implemented. Pick another speech provider.",
         )),
         AsrWire::Transcriptions => transcribe_file(&base, key, model, prompt, wav),
-        AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, prompt, wav),
+        AsrWire::DashscopeAudio => transcribe_dashscope(&base, key, model, hotwords, wav),
         AsrWire::Volcengine => Err(ProviderError::plain(
             "Volcengine speech is sent by the openspeech adapter, not this HTTP client.",
         )),
@@ -624,52 +627,156 @@ fn post_transcription(
     read_provider_text(response, key, "Speech", "transcript")
 }
 
-fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, ProviderError> {
-    match post_dashscope(base, key, model, prompt, wav) {
+pub fn dashscope_speech_model(model: &str) -> String {
+    match model.trim() {
+        "" | "qwen3-asr-flash" => "qwen-audio-3.1-asr-flash".to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub fn dashscope_generation_url(base: &str) -> Result<String, String> {
+    let normalized = normalize_base(base)?;
+    const PATH: &str = "/api/v1/services/aigc/multimodal-generation/generation";
+    if normalized.ends_with(PATH) {
+        return Ok(normalized);
+    }
+    let root = normalized
+        .trim_end_matches("/compatible-mode/v1")
+        .trim_end_matches("/compatible-mode")
+        .trim_end_matches('/');
+    Ok(format!("{root}{PATH}"))
+}
+
+pub fn dashscope_request(model: &str, terms: &[String], audio_data: &str) -> Value {
+    let mut parameters = json!({
+        "format": "wav",
+        "sample_rate": 16000,
+        "asr_options": {"enable_itn": false}
+    });
+    if !terms.is_empty() {
+        let mut vocabulary = serde_json::Map::new();
+        for term in terms {
+            if !term.trim().is_empty() {
+                vocabulary.insert(term.trim().to_string(), json!(4));
+            }
+        }
+        if !vocabulary.is_empty() {
+            parameters["vocabulary"] = Value::Object(vocabulary);
+        }
+    }
+    json!({
+        "model": model,
+        "input": {
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "input_audio",
+                    "input_audio": { "data": audio_data }
+                }]
+            }]
+        },
+        "parameters": parameters
+    })
+}
+
+pub fn dashscope_transcript(value: &Value) -> Option<String> {
+    let content = value
+        .pointer("/output/choices/0/message/content")
+        .or_else(|| value.pointer("/choices/0/message/content"))?;
+    match content {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Array(parts) => {
+            let mut out = String::new();
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                } else if let Some(text) = part.as_str() {
+                    out.push_str(text);
+                }
+            }
+            let trimmed = out.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        _ => None,
+    }
+}
+
+fn transcribe_dashscope(
+    base: &str,
+    key: &str,
+    model: &str,
+    terms: &[String],
+    wav: &[u8],
+) -> Result<String, ProviderError> {
+    match post_dashscope_native(base, key, model, terms, wav) {
         Ok(text) => Ok(text),
         Err(err)
-            if !prompt.trim().is_empty()
+            if !terms.is_empty()
                 && failover::is_prompt_too_long(err.status, &err.message, &err.detail) =>
         {
             crate::diag::record(&format!(
-                "cloud asr prompt too long model={model} chars={}; retrying with an empty prompt",
-                prompt.chars().count()
+                "cloud asr prompt too long model={model} hotwords={}; retrying with an empty prompt",
+                terms.len()
             ));
-            post_dashscope(base, key, model, "", wav)
+            post_dashscope_native(base, key, model, &[], wav)
         }
         Err(err) => Err(err),
     }
 }
 
-fn post_dashscope(
+fn post_dashscope_native(
     base: &str,
     key: &str,
     model: &str,
-    prompt: &str,
+    terms: &[String],
     wav: &[u8],
 ) -> Result<String, ProviderError> {
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
-    let mut content = Vec::new();
-    if !prompt.trim().is_empty() {
-        content.push(json!({"type": "text", "text": format!("Terms to spell exactly: {prompt}")}));
+    let requested = model.trim();
+    let model = dashscope_speech_model(requested);
+    if model != requested {
+        crate::diag::record(&format!(
+            "cloud asr dashscope model {requested} has no hotword API; using {model}"
+        ));
     }
-    content.push(json!({
-        "type": "input_audio",
-        "input_audio": {
-            "data": format!("data:audio/wav;base64,{encoded}"),
-            "format": "wav"
-        }
-    }));
-    let body = json!({
-        "model": model,
-        "messages": [{
-            "role": "user",
-            "content": content
-        }],
-        "stream": false,
-        "asr_options": {"enable_itn": false}
-    });
-    post_chat(base, key, &body, ASR_TIMEOUT).map_err(|err| err.into_error(key))
+    let url = dashscope_generation_url(base).map_err(ProviderError::plain)?;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
+    let audio = format!("data:audio/wav;base64,{encoded}");
+    let body = dashscope_request(&model, terms, &audio);
+    crate::diag::record(&format!(
+        "cloud asr dashscope model={model} hotwords={} endpoint=multimodal-generation/generation",
+        terms.len()
+    ));
+    let response = client(ASR_TIMEOUT)
+        .map_err(ProviderError::plain)?
+        .post(url)
+        .bearer_auth(key)
+        .header("user-agent", user_agent())
+        .header("X-DashScope-SSE", "disable")
+        .json(&body)
+        .send()
+        .map_err(|err| ProviderError::plain(redact(&format!("Speech request failed: {err}"), key)))?;
+    let retry_after_secs = retry_after_secs(&response);
+    let status = response.status();
+    let text = response.text().map_err(|err| {
+        ProviderError::plain(redact(&format!("Could not read the transcript: {err}"), key))
+    })?;
+    if !status.is_success() {
+        let mut err = ProviderError::plain(redact(
+            &format!("Speech request failed ({status}). {}", clip(&text)),
+            key,
+        ));
+        err.status = status.as_u16();
+        err.code = failover::error_code(&text);
+        err.retry_after_secs = retry_after_secs;
+        err.detail = redact(&failover::provider_detail(&text), key);
+        return Err(err);
+    }
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|_| ProviderError::plain("The transcript response was not JSON.".to_string()))?;
+    dashscope_transcript(&parsed).ok_or_else(|| ProviderError::plain("The transcript response had no text."))
 }
 
 fn post_chat(base: &str, key: &str, body: &Value, timeout: std::time::Duration) -> Result<String, HttpFailure> {
@@ -867,7 +974,10 @@ mod tests {
         assert_eq!(volc.default_llm, "doubao-seed-2-1-lite-260915");
         assert!(!volc.note.contains("doubao-seed-asr-1-0 is the default"));
         assert!(volc.note.contains("bigmodel"));
-        assert!(preset("dashscope").unwrap().note.contains("Partial"));
+        let dash = preset("dashscope").unwrap();
+        assert_eq!(dash.default_asr, "qwen-audio-3.1-asr-flash");
+        assert!(dash.note.contains("vocabulary"));
+        assert!(dash.verified.contains("2000"));
     }
 
     #[test]
@@ -965,5 +1075,34 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("Local only"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn dashscope_sends_native_hotwords_not_a_prompt() {
+        let base = "https://ws.example.maas.aliyuncs.com/compatible-mode/v1";
+        assert_eq!(
+            dashscope_generation_url(base).unwrap(),
+            "https://ws.example.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        );
+        assert_eq!(dashscope_speech_model("qwen3-asr-flash"), "qwen-audio-3.1-asr-flash");
+        assert_eq!(dashscope_speech_model("paraformer-v2"), "paraformer-v2");
+        let body = dashscope_request(
+            "qwen-audio-3.1-asr-flash",
+            &["Fnordix".into(), "青岚计划".into()],
+            "data:audio/wav;base64,QQ==",
+        );
+        let text = body.to_string();
+        assert!(!text.contains("Terms to spell"));
+        assert_eq!(body["parameters"]["vocabulary"]["Fnordix"], 4);
+        assert_eq!(body["parameters"]["vocabulary"]["青岚计划"], 4);
+        assert_eq!(body["model"], "qwen-audio-3.1-asr-flash");
+        let parsed = serde_json::json!({
+            "output": {
+                "choices": [{
+                    "message": { "content": [{ "text": "Fnordix today" }] }
+                }]
+            }
+        });
+        assert_eq!(dashscope_transcript(&parsed).as_deref(), Some("Fnordix today"));
     }
 }

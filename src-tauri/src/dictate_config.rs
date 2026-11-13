@@ -527,6 +527,27 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     })
 }
 
+pub struct ProviderEnd {
+    pub model: String,
+    pub base: String,
+    pub wire: AsrWire,
+    pub implemented: bool,
+}
+
+pub fn provider_endpoint(
+    settings: &DictationSettings,
+    id: &str,
+    speech: bool,
+) -> Result<ProviderEnd, String> {
+    let end = provider_end(settings, id, speech)?;
+    Ok(ProviderEnd {
+        model: end.model,
+        base: end.base,
+        wire: end.wire,
+        implemented: end.implemented,
+    })
+}
+
 struct End {
     model: String,
     base: String,

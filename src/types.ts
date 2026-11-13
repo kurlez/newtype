@@ -124,6 +124,26 @@ export interface LocalProgress {
   message: string;
 }
 
+export interface CompareRow {
+  provider: string;
+  label: string;
+  asrModel: string;
+  llmModel: string;
+  raw: string;
+  polished: string;
+  asrMs: number;
+  totalMs: number;
+  error: string;
+  hotwordsKept: number;
+  hotwordsOffered: number;
+  hotwordLimit: number;
+}
+
+export interface CompareReport {
+  createdAt: string;
+  rows: CompareRow[];
+}
+
 export interface Snapshot {
   settings: DictationSettings;
   hotkeyLabels: string[];
