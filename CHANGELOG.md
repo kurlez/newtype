@@ -1,6 +1,7 @@
 # Changelog
 
-- 2026-11-13: The Windows cargo target cache sits in the runner directory. NSIS is 32-bit and cannot read an executable stored under `C:\windows\system32`.
+- 2026-11-13: Windows bundles keep NSIS next to the build output. The SYSTEM account would otherwise cache it under `C:\windows\system32`, where the 32-bit NSIS launcher cannot start.
+- 2026-11-13: The Windows cargo target cache sits in the runner directory, outside `C:\windows\system32`.
 - 2026-11-13: Cache pruning removes an extracted crate directory, not the files inside it. Crate archives keep their original timestamps, and deleting those files made the next cargo run fail.
 - 2026-11-13: Windows bash steps call Git's `find`, because `System32\find.exe` is earlier on the runner PATH.
 - 2026-11-13: The cloud-only rewrite test accepts the Chinese notice on a Chinese Windows UI language.

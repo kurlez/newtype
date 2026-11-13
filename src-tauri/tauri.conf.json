@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "useLocalToolsDir": true,
     "createUpdaterArtifacts": true,
     "shortDescription": "AI voice input",
     "longDescription": "newtype is a menu-bar voice input app. Cloud dictation is the default. Local Qwen speech and rewrite models download when you choose them.",
