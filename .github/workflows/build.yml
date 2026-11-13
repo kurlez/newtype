@@ -242,7 +242,7 @@ jobs:
           if [ ! -d "$root" ]; then
             exit 0
           fi
-          found="$(find "$root" \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' -o -name 'libsherpa-onnx-c-api.lib' \) -print | head -n 1)"
+          found="$(/usr/bin/find "$root" \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' -o -name 'libsherpa-onnx-c-api.lib' \) -print | /usr/bin/head -n 1)"
           if [ -z "$found" ]; then
             echo "Cached sherpa-onnx directory has no static library. Removing it so the build downloads the archive."
             rm -rf "$root"
@@ -296,10 +296,10 @@ jobs:
           fi
           mkdir -p dist-release
           cp build-meta.json dist-release/
-          find "$target_root/release/bundle" -type f \
+          /usr/bin/find "$target_root/release/bundle" -type f \
             \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
             -exec cp {} dist-release/ \;
-          find dist-release -maxdepth 1 -type f -print
+          /usr/bin/find dist-release -maxdepth 1 -type f -print
 
       - uses: actions/upload-artifact@v4
         with:
