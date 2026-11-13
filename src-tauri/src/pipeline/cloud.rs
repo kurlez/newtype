@@ -579,6 +579,29 @@ fn transcribe_file(
     prompt: &str,
     wav: &[u8],
 ) -> Result<String, ProviderError> {
+    match post_transcription(base, key, model, prompt, wav) {
+        Ok(text) => Ok(text),
+        Err(err)
+            if !prompt.trim().is_empty()
+                && failover::is_prompt_too_long(err.status, &err.message, &err.detail) =>
+        {
+            crate::diag::record(&format!(
+                "cloud asr prompt too long model={model} chars={}; retrying with an empty prompt",
+                prompt.chars().count()
+            ));
+            post_transcription(base, key, model, "", wav)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn post_transcription(
+    base: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
     let part = reqwest::blocking::multipart::Part::bytes(wav.to_vec())
         .file_name("speech.wav")
         .mime_str("audio/wav")
@@ -602,6 +625,29 @@ fn transcribe_file(
 }
 
 fn transcribe_dashscope(base: &str, key: &str, model: &str, prompt: &str, wav: &[u8]) -> Result<String, ProviderError> {
+    match post_dashscope(base, key, model, prompt, wav) {
+        Ok(text) => Ok(text),
+        Err(err)
+            if !prompt.trim().is_empty()
+                && failover::is_prompt_too_long(err.status, &err.message, &err.detail) =>
+        {
+            crate::diag::record(&format!(
+                "cloud asr prompt too long model={model} chars={}; retrying with an empty prompt",
+                prompt.chars().count()
+            ));
+            post_dashscope(base, key, model, "", wav)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn post_dashscope(
+    base: &str,
+    key: &str,
+    model: &str,
+    prompt: &str,
+    wav: &[u8],
+) -> Result<String, ProviderError> {
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, wav);
     let mut content = Vec::new();
     if !prompt.trim().is_empty() {

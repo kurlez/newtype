@@ -149,6 +149,19 @@ fn field(value: &str) -> &str {
     }
 }
 
+/// A 400 whose body says the prompt itself is too long.
+pub fn is_prompt_too_long(status: u16, message: &str, detail: &str) -> bool {
+    if status != 400 {
+        return false;
+    }
+    let text = format!("{message} {detail}").to_ascii_lowercase();
+    text.contains("prompt")
+        && (text.contains("length")
+            || text.contains("character")
+            || text.contains("too long")
+            || text.contains("too many"))
+}
+
 pub fn clip_text(body: &str, limit: usize) -> String {
     let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     compact.chars().take(limit).collect()
@@ -293,6 +306,16 @@ mod tests {
             endpoint_host_path("https://api.groq.com/openai/v1/", "/audio/transcriptions"),
             "api.groq.com/openai/v1/audio/transcriptions"
         );
+    }
+
+    #[test]
+    fn a_prompt_length_400_is_recognized_and_other_errors_are_not() {
+        let body = "prompt length must be 896 characters or fewer, but provided prompt contains 1196 characters";
+        assert!(is_prompt_too_long(400, body, ""));
+        assert!(is_prompt_too_long(400, "Speech request failed (400 Bad Request).", body));
+        assert!(!is_prompt_too_long(401, body, ""));
+        assert!(!is_prompt_too_long(429, body, ""));
+        assert!(!is_prompt_too_long(400, "invalid api key", ""));
     }
 
     #[test]

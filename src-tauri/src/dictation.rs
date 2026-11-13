@@ -1412,7 +1412,6 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let thinking = effective.thinking;
     let llm_implemented = effective.llm_implemented;
     let hotwords_cloud = effective.hotwords.clone();
-    let speech_hint = crate::pipeline::hotwords::asr_hint(&hotwords_cloud);
     let volc_app_id = settings
         .providers
         .get("volcengine")
@@ -1434,7 +1433,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         let asr_served = Arc::clone(&asr_served);
         let dev_secrets = dev_secrets.clone();
         let cooldown = Arc::clone(&groq_cooldown);
-        let speech_hint = speech_hint.clone();
+        let hotwords_for_asr = hotwords_cloud.clone();
         let openai_base = openai_base.clone();
         move |audio: &[u8]| {
             if asr_provider != "groq" {
@@ -1449,13 +1448,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         .ok()
                         .flatten()
                         .unwrap_or_default();
+                    let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
                     return volcengine::transcribe_wav(
                         &VolcAuth {
                             api_key: speech_key,
                             app_id: volc_app_id.clone(),
                             token,
                         },
-                        &speech_hint,
+                        &prompt,
                         audio,
                     )
                     .map_err(|message| {
@@ -1486,7 +1486,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     key,
                     model: asr_model.clone(),
                     wire: asr_wire,
-                    prompt: speech_hint.clone(),
+                    prompt: cloud_speech_prompt(&hotwords_for_asr, &asr_provider),
                 })
                 .recognize(audio)
                 {
@@ -1512,13 +1512,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         .ok()
                         .flatten()
                         .unwrap_or_default();
+                    let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
                     return volcengine::transcribe_wav(
                         &VolcAuth {
                             api_key: speech_key,
                             app_id: volc_app_id.clone(),
                             token,
                         },
-                        &speech_hint,
+                        &prompt,
                         audio,
                     )
                     .map_err(ProviderError::plain);
@@ -1527,12 +1528,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     .map_err(ProviderError::plain)?
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| ProviderError::plain("Speech API key is missing."))?;
+                let prompt = cloud_speech_prompt(&hotwords_for_asr, &asr_provider);
                 cloud::transcribe_detailed(
                     &asr_base,
                     &key,
                     &asr_model,
                     asr_wire,
-                    &speech_hint,
+                    &prompt,
                     audio,
                 )
                 .map_err(|err| {
@@ -1552,12 +1554,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                 let model = cloud::preset("openai")
                     .map(|preset| preset.default_asr)
                     .unwrap_or("gpt-transcribe");
+                let prompt = cloud_speech_prompt(&hotwords_for_asr, "openai");
                 cloud::transcribe_detailed(
                     &openai_base,
                     &key,
                     model,
                     AsrWire::Transcriptions,
-                    &speech_hint,
+                    &prompt,
                     audio,
                 )
                 .map_err(|err| {
@@ -1895,6 +1898,18 @@ fn asr_endpoint(base: &str, wire: AsrWire) -> String {
     } else {
         failover::endpoint_host_path(base, path)
     }
+}
+
+fn cloud_speech_prompt(words: &[crate::pipeline::hotwords::Hotword], provider: &str) -> String {
+    let limit = crate::pipeline::hotwords::asr_prompt_limit(provider);
+    let (prompt, kept, offered) = crate::pipeline::hotwords::asr_prompt_budget(words, limit);
+    if kept < offered {
+        crate::diag::record(&format!(
+            "cloud asr prompt trimmed provider={provider} limit={limit} kept={kept} of={offered} chars={}",
+            prompt.chars().count()
+        ));
+    }
+    prompt
 }
 
 fn note_cloud(
