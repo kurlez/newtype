@@ -3,8 +3,11 @@
 [CmdletBinding()]
 param(
     [string]$Token,
+    [string]$RemoveToken,
     [switch]$Uninstall,
-    [string]$RunnerRoot = (Join-Path $env:USERPROFILE 'actions-runners\newtype-win')
+    [string]$RunnerRoot = (Join-Path $env:USERPROFILE 'actions-runners\newtype-win'),
+    [string]$LogonAccount,
+    [pscredential]$Credential
 )
 
 # Same value as rust-version in src-tauri/Cargo.toml. scripts/runner-msrv.test.mjs checks it.
@@ -17,6 +20,7 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 }
 $RepoUrl = 'https://github.com/kurlez/newtype'
 $RunnerName = 'newtype-win'
+$DefaultLogonAccount = 'NT AUTHORITY\SYSTEM'
 
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -136,14 +140,71 @@ function Add-UserPathFront {
     $env:Path = "$Entry;" + (($env:Path -split ';' | Where-Object { $_ -and ($_ -ine $Entry) }) -join ';')
 }
 
-function Write-RunnerServicePath {
-    param([string]$Root)
-    $cargo = Join-Path $env:USERPROFILE '.cargo\bin'
-    $parts = @($cargo)
-    foreach ($entry in ($env:Path -split ';')) {
-        if ($entry -and ($entry.TrimEnd('\') -ine $cargo.TrimEnd('\'))) {
-            $parts += $entry
+function Test-PathUnderRoot {
+    param([string]$Entry, [string]$Root)
+    if (-not $Entry -or -not $Root) { return $false }
+    $left = $Entry.TrimEnd('\')
+    $right = $Root.TrimEnd('\')
+    return $left.Equals($right, [StringComparison]::OrdinalIgnoreCase) -or
+        $left.StartsWith($right + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Initialize-VerifiedRustup {
+    $profileCargo = Join-Path $env:USERPROFILE '.cargo'
+    $profileRustup = Join-Path $env:USERPROFILE '.rustup'
+    $profileExe = Join-Path $profileCargo 'bin\rustup.exe'
+    $seenCargo = $env:CARGO_HOME
+    $seenRustup = $env:RUSTUP_HOME
+    $cargoHome = $profileCargo
+    $rustupHome = $profileRustup
+    if (-not (Test-Path $profileExe) -and $seenCargo -and (Test-Path (Join-Path $seenCargo 'bin\rustup.exe'))) {
+        $cargoHome = $seenCargo
+        if ($seenRustup -and (Test-Path $seenRustup)) {
+            $rustupHome = $seenRustup
         }
+    }
+    $script:StaleRustRoots = @()
+    foreach ($root in @($seenCargo, $seenRustup)) {
+        if ($root -and -not (Test-PathUnderRoot $root $cargoHome) -and -not (Test-PathUnderRoot $root $rustupHome)) {
+            $script:StaleRustRoots += $root
+        }
+    }
+    $env:CARGO_HOME = $cargoHome
+    $env:RUSTUP_HOME = $rustupHome
+    $cargoBin = Join-Path $cargoHome 'bin'
+    $kept = @($cargoBin)
+    foreach ($entry in ($env:Path -split ';')) {
+        if (-not $entry) { continue }
+        if (Test-PathUnderRoot $entry $cargoBin) { continue }
+        $stale = $false
+        foreach ($root in $script:StaleRustRoots) {
+            if (Test-PathUnderRoot $entry $root) { $stale = $true; break }
+        }
+        if (-not $stale) { $kept += $entry }
+    }
+    $env:Path = $kept -join ';'
+    if ($script:StaleRustRoots.Count -gt 0) {
+        Write-Output "Ignoring stale CARGO_HOME/RUSTUP_HOME ($($script:StaleRustRoots -join ', ')). Using $cargoHome."
+    }
+    return @{ CargoHome = $cargoHome; RustupHome = $rustupHome; CargoBin = $cargoBin }
+}
+
+function Write-RunnerServicePath {
+    param(
+        [string]$Root,
+        [string]$CargoHome,
+        [string]$RustupHome
+    )
+    $cargoBin = Join-Path $CargoHome 'bin'
+    $parts = @($cargoBin)
+    foreach ($entry in ($env:Path -split ';')) {
+        if (-not $entry) { continue }
+        if (Test-PathUnderRoot $entry $cargoBin) { continue }
+        $stale = $false
+        foreach ($root in $script:StaleRustRoots) {
+            if (Test-PathUnderRoot $entry $root) { $stale = $true; break }
+        }
+        if (-not $stale) { $parts += $entry }
     }
     $pathValue = $parts -join ';'
     $utf8 = New-Object System.Text.UTF8Encoding $false
@@ -151,11 +212,13 @@ function Write-RunnerServicePath {
     $envFile = Join-Path $Root '.env'
     $lines = @()
     if (Test-Path $envFile) {
-        $lines = @(Get-Content -Path $envFile | Where-Object { $_ -notmatch '^(PATH|Path)=' })
+        $lines = @(Get-Content -Path $envFile | Where-Object { $_ -notmatch '^(PATH|Path|CARGO_HOME|RUSTUP_HOME)=' })
     }
+    $lines += "CARGO_HOME=$CargoHome"
+    $lines += "RUSTUP_HOME=$RustupHome"
     $lines += "Path=$pathValue"
     [System.IO.File]::WriteAllLines($envFile, $lines, $utf8)
-    Write-Output "Runner Path starts with $cargo."
+    Write-Output "Runner uses CARGO_HOME=$CargoHome and RUSTUP_HOME=$RustupHome."
 }
 
 function Assert-RustMsrv {
@@ -196,11 +259,82 @@ function Install-RunnerPackage {
     }
 }
 
-function Get-LogonAccount {
-    if ($env:USERDOMAIN -eq $env:COMPUTERNAME) {
-        return ".\$env:USERNAME"
+function Test-WellKnownServiceAccount {
+    param([string]$Account)
+    try {
+        $nt = New-Object System.Security.Principal.NTAccount($Account)
+        $sid = $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        return $false
     }
-    return "$env:USERDOMAIN\$env:USERNAME"
+    return $sid -in @('S-1-5-18', 'S-1-5-19', 'S-1-5-20')
+}
+
+function Get-RunnerWindowsService {
+    param([string]$Root)
+    $services = @(Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'actions.runner.*' })
+    $serviceFile = Join-Path $Root '.service'
+    if (Test-Path $serviceFile) {
+        $name = (Get-Content -Raw $serviceFile).Trim()
+        $match = $services | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if ($match) { return $match }
+    }
+    return $services | Where-Object { $_.Name -like '*newtype-win*' } | Select-Object -First 1
+}
+
+function Invoke-RunnerService {
+    param($Service)
+    Set-Service -Name $Service.Name -StartupType Automatic
+    $current = Get-Service -Name $Service.Name
+    if ($current.Status -eq 'Running') {
+        Restart-Service -Name $Service.Name -Force
+    } else {
+        Start-Service -Name $Service.Name
+    }
+    Write-Output "Service $($Service.Name) is Automatic."
+}
+
+function Add-RunnerDirectoryAccess {
+    param([string]$Account, [string[]]$Paths)
+    foreach ($path in $Paths) {
+        if (-not $path) { continue }
+        if (-not (Test-Path $path)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+        }
+        & icacls.exe $path /grant "${Account}:(OI)(CI)M" /C | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not grant modify access on $path to $Account."
+        }
+    }
+}
+
+function Get-GitHubRunnerToken {
+    param([ValidateSet('registration-token', 'remove-token')][string]$Kind)
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    $output = & gh api -X POST "repos/kurlez/newtype/actions/runners/$Kind" --jq .token 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
+        return $null
+    }
+    $text = if ($output -is [array]) { [string]$output[-1] } else { [string]$output }
+    $text = $text.Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+    return $text
+}
+
+function Resolve-RunnerToken {
+    param([string]$Provided, [string]$Kind, [string]$PromptLabel)
+    if (-not [string]::IsNullOrWhiteSpace($Provided)) {
+        return $Provided.Trim()
+    }
+    $minted = Get-GitHubRunnerToken $Kind
+    if ($minted) {
+        return $minted
+    }
+    return Read-Secret $PromptLabel
 }
 
 if (-not (Test-Administrator)) {
@@ -210,21 +344,20 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw "winget is not on PATH."
 }
 
-$plainToken = $Token
+$plainToken = $null
+$plainRemove = $null
 $plainPassword = $null
 try {
     if ($Uninstall) {
-        if ([string]::IsNullOrWhiteSpace($plainToken)) {
-            $plainToken = Read-Secret "Remove token"
+        $plainRemove = Resolve-RunnerToken $RemoveToken 'remove-token' 'Remove token'
+        $service = Get-RunnerWindowsService $RunnerRoot
+        if ($service) {
+            Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path (Join-Path $RunnerRoot 'config.cmd')) {
             Push-Location $RunnerRoot
             try {
-                if (Test-Path .\svc.cmd) {
-                    & .\svc.cmd stop
-                    & .\svc.cmd uninstall
-                }
-                & .\config.cmd remove --token $plainToken
+                & .\config.cmd remove --token $plainRemove
                 if ($LASTEXITCODE -ne 0) {
                     throw "config.cmd remove failed with exit $LASTEXITCODE"
                 }
@@ -255,14 +388,20 @@ try {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         Install-WingetId 'GitHub.cli'
     }
-    $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
-    if (-not (Get-Command rustup -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $cargoBin 'rustup.exe'))) {
+    $rust = Initialize-VerifiedRustup
+    if (-not (Test-Path (Join-Path $rust.CargoBin 'rustup.exe'))) {
         Install-WingetId 'Rustlang.Rustup'
+        $rust = Initialize-VerifiedRustup
     }
-    Add-UserPathFront $cargoBin
-    & rustup toolchain install stable --profile minimal
-    & rustup default stable
-    & rustup target add x86_64-pc-windows-msvc
+    if (-not (Test-Path (Join-Path $rust.CargoBin 'rustup.exe'))) {
+        throw "rustup.exe was not found under $($rust.CargoHome). A CARGO_HOME value that does not contain rustup is ignored."
+    }
+    Add-UserPathFront $rust.CargoBin
+    $rustupExe = Join-Path $rust.CargoBin 'rustup.exe'
+    & $rustupExe toolchain install stable --profile minimal
+    & $rustupExe default stable
+    & $rustupExe target add x86_64-pc-windows-msvc
+    $env:Path = "$($rust.CargoBin);$env:Path"
     Assert-RustMsrv
 
     if (-not (Get-VcInstallPath)) {
@@ -278,40 +417,73 @@ try {
     Write-Output "LLVM/clang is not required for this MSVC build; skipping."
     Write-Output "NSIS and WiX are not installed. The nsis bundle downloads NSIS during the build. This repo does not build an msi."
 
+    $serviceAccount = $DefaultLogonAccount
+    if ($Credential) {
+        $serviceAccount = $Credential.UserName
+        if (-not (Test-WellKnownServiceAccount $serviceAccount)) {
+            $plainPassword = $Credential.GetNetworkCredential().Password
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($LogonAccount)) {
+        $serviceAccount = $LogonAccount
+    }
+    if (-not (Test-WellKnownServiceAccount $serviceAccount) -and [string]::IsNullOrWhiteSpace($plainPassword)) {
+        throw "Pass -Credential for $serviceAccount. This script does not prompt for a Windows password."
+    }
+
     if (-not (Test-Path (Join-Path $RunnerRoot 'config.cmd'))) {
         Install-RunnerPackage $RunnerRoot
     }
-    Write-RunnerServicePath $RunnerRoot
+    Write-RunnerServicePath $RunnerRoot $rust.CargoHome $rust.RustupHome
+    Add-RunnerDirectoryAccess $serviceAccount @($RunnerRoot, $rust.CargoHome, $rust.RustupHome)
     Push-Location $RunnerRoot
     try {
-        if (-not (Test-Path .\.runner)) {
-            if ([string]::IsNullOrWhiteSpace($plainToken)) {
-                $plainToken = Read-Secret "Registration token"
-            }
-            $plainPassword = Read-Secret "Windows password for $(Get-LogonAccount) (service logon, not saved)"
-            & .\config.cmd --unattended `
-                --url $RepoUrl `
-                --token $plainToken `
-                --name $RunnerName `
-                --labels newtype `
-                --replace `
-                --runasservice `
-                --windowslogonaccount (Get-LogonAccount) `
-                --windowslogonpassword $plainPassword
+        $needsConfigure = -not (Test-Path .\.runner)
+        if ((Test-Path .\.runner) -and -not (Get-RunnerWindowsService $RunnerRoot)) {
+            Write-Output "Runner $RunnerName is configured but has no actions.runner service. Removing the registration and configuring it again."
+            $plainRemove = Resolve-RunnerToken $RemoveToken 'remove-token' 'Remove token'
+            & .\config.cmd remove --token $plainRemove
             if ($LASTEXITCODE -ne 0) {
-                throw "config.cmd failed with exit $LASTEXITCODE. If the account cannot log on as a service, grant that right in secpol.msc and run this script again."
+                throw "config.cmd remove failed with exit $LASTEXITCODE"
             }
+            $plainRemove = $null
+            $needsConfigure = $true
+        }
+        if ($needsConfigure) {
+            $plainToken = Resolve-RunnerToken $Token 'registration-token' 'Registration token'
+            $configArgs = @(
+                '--unattended',
+                '--url', $RepoUrl,
+                '--token', $plainToken,
+                '--name', $RunnerName,
+                '--labels', 'newtype',
+                '--replace',
+                '--runasservice',
+                '--windowslogonaccount', $serviceAccount
+            )
+            if (-not [string]::IsNullOrWhiteSpace($plainPassword)) {
+                $configArgs += @('--windowslogonpassword', $plainPassword)
+            }
+            & .\config.cmd @configArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw "config.cmd failed with exit $LASTEXITCODE"
+            }
+            $plainToken = $null
         } else {
             Write-Output "Runner $RunnerName is already configured."
-            & .\svc.cmd stop
-            & .\svc.cmd start
         }
+        $service = Get-RunnerWindowsService $RunnerRoot
+        if (-not $service) {
+            throw "config.cmd did not create an actions.runner service."
+        }
+        Invoke-RunnerService $service
     } finally {
         Pop-Location
     }
-    Write-Output "Runner $RunnerName is installed as $(Get-LogonAccount)."
+    Write-Output "Runner $RunnerName service runs as $serviceAccount."
 } finally {
     $plainToken = $null
+    $plainRemove = $null
     $plainPassword = $null
     $Token = $null
+    $RemoveToken = $null
 }

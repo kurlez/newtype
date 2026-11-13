@@ -29,3 +29,11 @@ test("standalone runner scripts match Cargo.toml rust-version", () => {
   assert.equal(mac, cargo);
   assert.equal(windows, cargo);
 });
+
+test("windows setup does not call svc.cmd and defaults to LocalSystem", () => {
+  const text = readFileSync(path.join(root, "scripts/runner/setup-windows.ps1"), "utf8");
+  assert.equal(text.includes("svc.cmd"), false);
+  assert.equal(text.includes("NT AUTHORITY\\SYSTEM"), true);
+  assert.equal(text.includes("CARGO_HOME="), true);
+  assert.equal(text.includes("RUSTUP_HOME="), true);
+});

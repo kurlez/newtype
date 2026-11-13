@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-13: The Windows runner service defaults to `NT AUTHORITY\SYSTEM` with no password. A registered runner that has no service is removed and configured again. `CARGO_HOME` and `RUSTUP_HOME` in the runner `.env` are the rustup install the script verified.
 - 2026-11-12: The runner setup scripts stand alone. They keep the minimum rustc version in the script instead of reading `Cargo.toml`.
 - 2026-11-12: The Mac runner setup installs rustup stable when it is missing and puts `~/.cargo/bin` first in the runner service PATH. The host check no longer fails when `grep -q` closes `rustc`'s pipe.
 - 2026-11-12: Builds run on the owner's self-hosted Mac and Windows runners. Pull requests test and build Windows only. macOS and publish run on main, version tags, and a manual run of those refs. Publish verifies updater signatures in Node.

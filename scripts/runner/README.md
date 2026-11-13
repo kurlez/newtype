@@ -22,12 +22,12 @@ gh api -X POST repos/kurlez/newtype/actions/runners/registration-token --jq .tok
 gh api -X POST repos/kurlez/newtype/actions/runners/remove-token --jq .token
 ```
 
-Windows（管理员 PowerShell，在仓库目录里）：
+Windows（管理员 PowerShell）。只下载 `setup-windows.ps1` 到 `~/.newtype-runner-setup/` 再运行即可。默认服务账户是 `NT AUTHORITY\SYSTEM`，不需要密码。如果上次已经注册但没有服务，再运行一次会用 remove token 卸掉注册并重新配置。脚本把 `CARGO_HOME` 和 `RUSTUP_HOME` 写成它实际验证过的 rustup 目录，不沿用环境里失效的路径。要用自己的账户时再传 `-LogonAccount` 和 `-Credential`，脚本不会主动问密码。
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\scripts\runner\setup-windows.ps1
-.\scripts\runner\setup-windows.ps1 -Uninstall
+~\.newtype-runner-setup\setup-windows.ps1
+~\.newtype-runner-setup\setup-windows.ps1 -Uninstall
 ```
 
 Mac 上如果没有 `~/.cargo/bin/rustup`，脚本会安装 rustup stable，不使用 Homebrew 里较旧的 rustc。脚本自带最低 rustc 版本，不读取仓库文件。`~/.cargo/bin` 会写在 runner 的 `.path` 和 `.env` 最前面。只下载这一个脚本到 `~/.newtype-runner-setup/` 再运行即可。
@@ -52,7 +52,7 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 ```
 
-如果 Windows 服务起不来，在 `secpol.msc` 里给这个账户加上 “Log on as a service”，再运行一次脚本。脚本不会把令牌或 Windows 密码写到磁盘。
+脚本不会把令牌或 Windows 密码写到磁盘，也不会把令牌打出来。Windows 服务设为自动启动。
 
 ## English
 
@@ -72,12 +72,12 @@ Uninstall needs a remove token:
 gh api -X POST repos/kurlez/newtype/actions/runners/remove-token --jq .token
 ```
 
-Windows, from an elevated PowerShell in the repo:
+Windows, from an elevated PowerShell. Download `setup-windows.ps1` by itself into `~/.newtype-runner-setup/` and run that file. The service account is `NT AUTHORITY\SYSTEM` and no password is requested. If a previous run registered the runner but did not create a service, run the script again: it removes that registration and configures the service. `CARGO_HOME` and `RUSTUP_HOME` in the runner `.env` are the rustup directories the script verified, not a stale value from the user environment. Pass `-LogonAccount` and `-Credential` only when the service should use a different account. The script does not prompt for a password.
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\scripts\runner\setup-windows.ps1
-.\scripts\runner\setup-windows.ps1 -Uninstall
+~\.newtype-runner-setup\setup-windows.ps1
+~\.newtype-runner-setup\setup-windows.ps1 -Uninstall
 ```
 
 On the Mac, a missing `~/.cargo/bin/rustup` is installed as rustup stable. Homebrew's older rustc is not the compiler the runner uses. The script carries its own minimum rustc version and does not read the repo, so download that one file into `~/.newtype-runner-setup/` and run it from there. `~/.cargo/bin` is written first in the runner `.path` and `.env` files.
@@ -104,6 +104,6 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 ```
 
-If the Windows service does not start, grant the account “Log on as a service” in `secpol.msc` and run the script again. The scripts do not write the token or the Windows password to disk.
+The scripts do not write the token or a Windows password to disk, and they do not print tokens. The Windows service is set to start automatically.
 
 Pull requests run tests and the Windows build. macOS and publish run on a push to `main`, a `v*` tag, or a manual run of those refs. Publish stays on the Windows runner and verifies updater signatures in Node, so it does not install minisign and does not use sudo.
