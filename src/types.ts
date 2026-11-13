@@ -34,6 +34,7 @@ export interface DictationSettings {
   targetLanguage: string;
   historyRetention: string;
   windowTranslucent: boolean;
+  indicatorPlace: string;
   groqRateLimitFallback: boolean;
   uiLanguage: string;
   providers: Record<string, ProviderConfig>;

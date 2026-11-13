@@ -15,11 +15,9 @@ use crate::pipeline::asr::AsrProvider;
 use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::catalog::{self, Mirror};
 use crate::pipeline::cloud::{self, AsrWire, CloudAsr, Preset, Thinking};
-use crate::pipeline::failover::{self, ProviderError};
-use crate::pipeline::volcengine::{self, VolcAuth};
+use crate::pipeline::egress::{self, NetMode};
 use crate::pipeline::engines::Engines;
-use crate::pipeline::library::{self, LibraryView};
-use crate::pipeline::local_run;
+use crate::pipeline::failover::{self, ProviderError};
 use crate::pipeline::focus::{self, InsertOutcome};
 use crate::pipeline::front;
 use crate::pipeline::history::{self, HistoryEntry};
@@ -27,14 +25,18 @@ use crate::pipeline::hotkey::{
     self, EngineEvent, HotkeyEngine, HotkeyMode, KeyEdge, TalkController, TalkEffect, TalkMode,
 };
 use crate::pipeline::insert;
-use crate::pipeline::egress::{self, NetMode};
+use crate::pipeline::library::{self, LibraryView};
+use crate::pipeline::local_run;
 use crate::pipeline::polish::{FinishedText, LlmComplete, LlmRequest, PolishLevel};
 use crate::pipeline::probe;
 use crate::pipeline::rewrite::{self, Audience};
+use crate::pipeline::router::{
+    self, Block, PathLabel, Reachability, RouteDecision, RouteInput, RoutePreference, Slot,
+};
 use crate::pipeline::selection;
-use crate::pipeline::task::{self, Job};
-use crate::pipeline::router::{self, Block, PathLabel, Reachability, RouteDecision, RouteInput, RoutePreference, Slot};
 use crate::pipeline::session::{self, Outcome, Via};
+use crate::pipeline::task::{self, Job};
+use crate::pipeline::volcengine::{self, VolcAuth};
 use crate::secrets;
 
 enum Control {
@@ -258,6 +260,8 @@ impl Dictation {
     pub fn launch(app: AppHandle) {
         open_indicator(&app);
         show_indicator(&app);
+        #[cfg(windows)]
+        watch_taskbar(app.clone());
         {
             let state = app.state::<Dictation>();
             apply_route_mode(&state, true);
@@ -515,7 +519,8 @@ fn route_detail(
             }
             PathLabel::LocalAutoFallback if decision.llm == Slot::None => {
                 if zh {
-                    "云端连不上。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                    "云端连不上。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。"
+                        .into()
                 } else {
                     "Cloud is unreachable. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
                 }
@@ -524,12 +529,14 @@ fn route_detail(
                 if zh {
                     "云端连不上。音频留在这台电脑上，并使用本地模型。".into()
                 } else {
-                    "Cloud is unreachable. Audio stays on this computer and uses the local models.".into()
+                    "Cloud is unreachable. Audio stays on this computer and uses the local models."
+                        .into()
                 }
             }
             PathLabel::LocalManual if decision.llm == Slot::None => {
                 if zh {
-                    "仅本地。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                    "仅本地。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。"
+                        .into()
                 } else {
                     "Local only. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
                 }
@@ -538,19 +545,22 @@ fn route_detail(
                 if zh {
                     "仅本地。音频留在这台电脑上，即使云端可以连通。".into()
                 } else {
-                    "Local only. Audio stays on this computer, even when the cloud is reachable.".into()
+                    "Local only. Audio stays on this computer, even when the cloud is reachable."
+                        .into()
                 }
             }
             PathLabel::StrictOffline if decision.llm == Slot::None => {
                 if zh {
-                    "严格离线。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。".into()
+                    "严格离线。音频留在这台电脑上。润色模型未安装，所以口授插入规则整理后的文本。"
+                        .into()
                 } else {
                     "Strict offline. Audio stays on this computer. The rewrite model is not installed, so dictation inserts the ruled transcript.".into()
                 }
             }
             PathLabel::StrictOffline => {
                 if zh {
-                    "严格离线。音频留在这台电脑上。不会发起云端调用、探测、更新检查或模型下载。".into()
+                    "严格离线。音频留在这台电脑上。不会发起云端调用、探测、更新检查或模型下载。"
+                        .into()
                 } else {
                     "Strict offline. Audio stays on this computer. No cloud call, probe, update check, or model download runs.".into()
                 }
@@ -822,7 +832,10 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         &app,
                         "processing",
                         &route,
-                        crate::locale::text("Still working on the last dictation.", "上一条口授还在处理。"),
+                        crate::locale::text(
+                            "Still working on the last dictation.",
+                            "上一条口授还在处理。",
+                        ),
                         0,
                         0.0,
                         "",
@@ -857,7 +870,10 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         &app,
                         "cancelled",
                         &route,
-                        crate::locale::text("Cancelled. Nothing was inserted.", "已取消。没有插入。"),
+                        crate::locale::text(
+                            "Cancelled. Nothing was inserted.",
+                            "已取消。没有插入。",
+                        ),
                         0,
                         0.0,
                         "",
@@ -989,7 +1005,10 @@ fn begin_recording(
         decision.reason,
         decision.block
     ));
-    let hold = matches!(decision.block, Block::LocalNotReady | Block::CloudUnreachable);
+    let hold = matches!(
+        decision.block,
+        Block::LocalNotReady | Block::CloudUnreachable
+    );
     if (decision.block != Block::None || decision.asr == Slot::None) && !hold {
         talk.active = None;
         *state.locked.lock().expect("locked") = None;
@@ -1022,7 +1041,8 @@ fn begin_recording(
             *state.locked.lock().expect("locked") = None;
             let store = state.secure_store.lock().expect("store").clone();
             let message = if store == "ready" {
-                "Save an API key for the speech provider. Audio is not sent until you do.".to_string()
+                "Save an API key for the speech provider. Audio is not sent until you do."
+                    .to_string()
             } else {
                 store
             };
@@ -1036,7 +1056,11 @@ fn begin_recording(
         talk.active = None;
         *state.locked.lock().expect("locked") = None;
         let current = permissions::snapshot("");
-        let (prompt, _) = permissions::access_prompt(std::env::consts::OS, &mic_state, &current.accessibility_state);
+        let (prompt, _) = permissions::access_prompt(
+            std::env::consts::OS,
+            &mic_state,
+            &current.accessibility_state,
+        );
         let message = if prompt.is_empty() {
             "Microphone access is off.".to_string()
         } else {
@@ -1051,7 +1075,9 @@ fn begin_recording(
     if matches!(mode, HotkeyMode::Command) {
         let captured = selection::capture_focused();
         selection_note = captured.note;
-        job = Job::Command { selection: captured.text };
+        job = Job::Command {
+            selection: captured.text,
+        };
         *state.session_label.lock().expect("mode") = job.voice_label();
         if let Some(locked) = state.locked.lock().expect("locked").as_mut() {
             locked.job = job.clone();
@@ -1171,7 +1197,10 @@ fn finish_recording(
             app,
             "silence",
             route,
-            crate::locale::text("No speech detected. Nothing was inserted.", "没有检测到语音。没有插入。"),
+            crate::locale::text(
+                "No speech detected. Nothing was inserted.",
+                "没有检测到语音。没有插入。",
+            ),
             0,
             0.0,
             "",
@@ -1255,11 +1284,16 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         }
     };
     let ready = readiness_of(&state);
-    let locked = state.locked.lock().expect("locked").take().unwrap_or(LockedSession {
-        decision: route_for(&state, &effective, ready),
-        preference: effective.preference,
-        job: Job::Polish(effective.polish),
-    });
+    let locked = state
+        .locked
+        .lock()
+        .expect("locked")
+        .take()
+        .unwrap_or(LockedSession {
+            decision: route_for(&state, &effective, ready),
+            preference: effective.preference,
+            job: Job::Polish(effective.polish),
+        });
     let dev_secrets = state.dev_secrets.clone();
     let engines = Arc::clone(&state.engines);
     let hardware = catalog::host_hardware();
@@ -1306,35 +1340,33 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
     let hotwords = effective.hotwords.clone();
     let llm_ready = ready.llm;
     let job_audio = locked.job.clone();
-    let local_audio = move |_wav: &[u8]| {
-        match local_run::run(
-            &engines_audio,
-            hardware.os,
-            AudioClip {
-                samples: local_clip.samples.clone(),
-                sample_rate: local_clip.sample_rate,
-            },
-            &asr_for_audio,
-            &llm_for_audio,
-            llm_ready,
-            &job_audio,
-            &hotwords,
-            &front::front_app_name(),
-            &report,
-        ) {
-            Ok(outcome) => {
-                *engine_for_audio.lock().expect("engine") = outcome.engine;
-                let mut body = outcome.finished;
-                if !outcome.note.is_empty() {
-                    if !body.reason.is_empty() {
-                        body.reason.push(' ');
-                    }
-                    body.reason.push_str(&outcome.note);
+    let local_audio = move |_wav: &[u8]| match local_run::run(
+        &engines_audio,
+        hardware.os,
+        AudioClip {
+            samples: local_clip.samples.clone(),
+            sample_rate: local_clip.sample_rate,
+        },
+        &asr_for_audio,
+        &llm_for_audio,
+        llm_ready,
+        &job_audio,
+        &hotwords,
+        &front::front_app_name(),
+        &report,
+    ) {
+        Ok(outcome) => {
+            *engine_for_audio.lock().expect("engine") = outcome.engine;
+            let mut body = outcome.finished;
+            if !outcome.note.is_empty() {
+                if !body.reason.is_empty() {
+                    body.reason.push(' ');
                 }
-                Ok(body)
+                body.reason.push_str(&outcome.note);
             }
-            Err(err) => Err(err),
+            Ok(body)
         }
+        Err(err) => Err(err),
     };
     let engines_rewrite = engines;
     let llm_for_rewrite = llm_id;
@@ -1459,7 +1491,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     .map_err(ProviderError::plain)?
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| ProviderError::plain("Speech API key is missing."))?;
-                cloud::transcribe_detailed(&asr_base, &key, &asr_model, asr_wire, &speech_hint, audio)
+                cloud::transcribe_detailed(
+                    &asr_base,
+                    &key,
+                    &asr_model,
+                    asr_wire,
+                    &speech_hint,
+                    audio,
+                )
             };
             let openai = || {
                 let key = secrets::get_key("openai", &dev_secrets)
@@ -1540,14 +1579,16 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                             "No rewrite model is configured for this mode.",
                         ));
                     }
-                    let ruled = crate::pipeline::polish::fallback_ruled(transcript, &hotwords_cloud);
+                    let ruled =
+                        crate::pipeline::polish::fallback_ruled(transcript, &hotwords_cloud);
                     return Ok(FinishedText {
                         raw: transcript.to_string(),
                         ruled: ruled.clone(),
                         text: ruled,
                         used_fallback: true,
-                        reason: "No rewrite model is configured, so the ruled transcript was inserted."
-                            .into(),
+                        reason:
+                            "No rewrite model is configured, so the ruled transcript was inserted."
+                                .into(),
                     });
                 }
                 run(&llm_base, &key.unwrap_or_default(), &llm_model, thinking)
@@ -1620,7 +1661,9 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
             let insert = task::should_insert(&locked.job, &done.body.text, done.body.used_fallback);
             let phase = if !insert {
                 "withheld"
-            } else if done.body.used_fallback || matches!(done.via, Via::FallbackAudio | Via::FallbackRewrite) {
+            } else if done.body.used_fallback
+                || matches!(done.via, Via::FallbackAudio | Via::FallbackRewrite)
+            {
                 "fallback"
             } else {
                 "inserted"
@@ -1858,23 +1901,170 @@ fn emit_phase(
     }
 }
 
+const LAYOUT_HIDDEN: u8 = 0;
+const LAYOUT_FLOATING: u8 = 1;
+#[cfg(windows)]
+const LAYOUT_TASKBAR: u8 = 2;
+
 fn show_indicator(app: &AppHandle) {
+    sync_indicator(app);
+}
+
+#[cfg(windows)]
+fn watch_taskbar(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("newtype-taskbar".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let hop = app.clone();
+            let shown = app.clone();
+            if hop
+                .run_on_main_thread(move || sync_indicator(&shown))
+                .is_err()
+            {
+                break;
+            }
+        })
+        .ok();
+}
+
+fn sync_indicator(app: &AppHandle) {
+    use std::sync::atomic::AtomicU8;
+    static LAST: AtomicU8 = AtomicU8::new(255);
     if app.get_webview_window("indicator").is_none() {
         open_indicator(app);
-        crate::diag::record("indicator window was missing and was created again");
     }
-    if let Some(window) = app.get_webview_window("indicator") {
-        if window.is_visible().unwrap_or(false) {
-            let dir = app.path().app_config_dir().ok();
-            crate::overlay::clamp_indicator(&window, dir.as_deref());
-            return;
-        }
-        place(&window);
-        crate::overlay::configure_indicator(&window);
-        crate::overlay::show_without_activating(&window);
-    } else {
+    let Some(window) = app.get_webview_window("indicator") else {
         crate::diag::record("indicator window could not be created");
+        return;
+    };
+    let raw = app
+        .state::<Dictation>()
+        .settings
+        .lock()
+        .map(|settings| settings.indicator_place.clone())
+        .unwrap_or_default();
+    let place = dictate_config::indicator_place(&raw);
+    match place {
+        "hidden" => {
+            let _ = window.hide();
+            mark_indicator(&window, "hidden");
+            LAST.store(LAYOUT_HIDDEN, Ordering::Relaxed);
+        }
+        "taskbar" => {
+            if !dock_indicator(app, &window, &LAST) {
+                let previous = LAST.swap(LAYOUT_FLOATING, Ordering::Relaxed);
+                show_floating(&window, previous != LAYOUT_FLOATING);
+            }
+        }
+        _ => {
+            let previous = LAST.swap(LAYOUT_FLOATING, Ordering::Relaxed);
+            show_floating(&window, previous != LAYOUT_FLOATING);
+        }
     }
+}
+
+fn show_floating(window: &tauri::WebviewWindow, reposition: bool) {
+    if reposition || !window.is_visible().unwrap_or(false) {
+        place(window);
+        crate::overlay::configure_indicator(window);
+        crate::overlay::show_without_activating(window);
+    } else {
+        crate::overlay::clamp_indicator(window, None);
+    }
+    mark_indicator(window, "floating");
+}
+
+fn dock_indicator(
+    _app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    last: &std::sync::atomic::AtomicU8,
+) -> bool {
+    #[cfg(windows)]
+    {
+        let Some(reading) = crate::taskbar_dock::read_taskbar() else {
+            return false;
+        };
+        if reading.fullscreen {
+            let _ = window.hide();
+            return true;
+        }
+        let thickness = match reading.edge {
+            crate::taskbar_dock::BarEdge::Left | crate::taskbar_dock::BarEdge::Right => {
+                reading.taskbar.width
+            }
+            _ => reading.taskbar.height,
+        };
+        let (desired, minimum) = crate::taskbar_dock::dock_sizes(thickness);
+        let icons_end = reading.icons_end.or_else(|| match reading.edge {
+            crate::taskbar_dock::BarEdge::Top | crate::taskbar_dock::BarEdge::Bottom => {
+                Some(reading.taskbar.x + reading.taskbar.width / 2)
+            }
+            crate::taskbar_dock::BarEdge::Left | crate::taskbar_dock::BarEdge::Right => {
+                Some(reading.taskbar.y + reading.taskbar.height / 2)
+            }
+        });
+        match crate::taskbar_dock::fit_dock(&crate::taskbar_dock::DockQuery {
+            taskbar: reading.taskbar,
+            edge: reading.edge,
+            tray_start: reading.tray_start,
+            icons_end,
+            desired,
+            minimum,
+            gap: 4,
+        }) {
+            crate::taskbar_dock::DockFit::Collapsed => {
+                let _ = window.hide();
+                true
+            }
+            crate::taskbar_dock::DockFit::NoRoom => false,
+            crate::taskbar_dock::DockFit::Slot(slot) => {
+                place_physical(window, slot);
+                crate::overlay::configure_indicator(window);
+                if !window.is_visible().unwrap_or(false) {
+                    crate::overlay::show_without_activating(window);
+                }
+                mark_indicator(window, "taskbar");
+                last.store(LAYOUT_TASKBAR, Ordering::Relaxed);
+                true
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (_app, window, last);
+        false
+    }
+}
+
+#[cfg(windows)]
+fn place_physical(window: &tauri::WebviewWindow, slot: crate::taskbar_dock::PxRect) {
+    use tauri::{PhysicalPosition, PhysicalSize, Position, Size};
+    let width = slot.width.max(1) as u32;
+    let height = slot.height.max(1) as u32;
+    let same_size = window
+        .outer_size()
+        .ok()
+        .map(|size| size.width == width && size.height == height)
+        .unwrap_or(false);
+    let same_pos = window
+        .outer_position()
+        .ok()
+        .map(|pos| pos.x == slot.x && pos.y == slot.y)
+        .unwrap_or(false);
+    if !same_size {
+        let _ = window.set_size(Size::Physical(PhysicalSize { width, height }));
+    }
+    if !same_pos {
+        let _ = window.set_position(Position::Physical(PhysicalPosition {
+            x: slot.x,
+            y: slot.y,
+        }));
+    }
+}
+
+fn mark_indicator(window: &tauri::WebviewWindow, place: &str) {
+    let _ = window.eval(format!("document.body.dataset.place='{place}'"));
 }
 
 fn schedule_hide(app: &AppHandle, delay_ms: u64) {
@@ -1941,6 +2131,7 @@ pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result
     drop(state);
     publish_route(app);
     crate::material::apply(app, settings.window_translucent);
+    sync_indicator(app);
     Ok(app.state::<Dictation>().snapshot(app))
 }
 
@@ -1956,7 +2147,11 @@ pub fn fallback_line(app: &AppHandle) -> String {
     library::fallback_menu(ready.asr, ready.llm).into()
 }
 
-pub fn local_download(app: &AppHandle, ids: Vec<String>, confirm_network: bool) -> Result<(), String> {
+pub fn local_download(
+    app: &AppHandle,
+    ids: Vec<String>,
+    confirm_network: bool,
+) -> Result<(), String> {
     let _ = confirm_network;
     egress::authorize(egress::Purpose::ModelDownload)?;
     let state = app.state::<Dictation>();
@@ -2118,7 +2313,11 @@ pub fn clear_key(app: &AppHandle, provider: &str) -> Result<(), String> {
     secrets::clear_key(provider, &path)
 }
 
-fn speech_credentials_ready(provider: &str, settings: &DictationSettings, secrets_path: &std::path::Path) -> bool {
+fn speech_credentials_ready(
+    provider: &str,
+    settings: &DictationSettings,
+    secrets_path: &std::path::Path,
+) -> bool {
     if provider == "volcengine" {
         let app_id = settings
             .providers
@@ -2379,7 +2578,12 @@ pub fn reinsert_history(app: &AppHandle, id: &str) -> Result<(), String> {
 }
 
 pub fn export_dictionary(app: &AppHandle) -> Result<String, String> {
-    let settings = app.state::<Dictation>().settings.lock().expect("settings").clone();
+    let settings = app
+        .state::<Dictation>()
+        .settings
+        .lock()
+        .expect("settings")
+        .clone();
     crate::pipeline::hotwords::export_json(&settings.hotwords)
 }
 
@@ -2491,7 +2695,8 @@ fn audio_file(history_path: &std::path::Path, id: &str) -> std::path::PathBuf {
 
 fn apply_route_mode(state: &Dictation, cancel_downloads: bool) {
     let settings = state.settings.lock().expect("settings").clone();
-    let preference = RoutePreference::parse(&settings.preference).unwrap_or(RoutePreference::CloudDefault);
+    let preference =
+        RoutePreference::parse(&settings.preference).unwrap_or(RoutePreference::CloudDefault);
     let mode = match preference {
         RoutePreference::CloudDefault | RoutePreference::CloudOnly => NetMode::Open,
         RoutePreference::LocalOnly => NetMode::LocalOnly,
@@ -2543,7 +2748,11 @@ fn connectivity_line(state: &Dictation) -> String {
     }
 }
 
-fn notice_for(transition: probe::Transition, preference: RoutePreference, local_ready: bool) -> String {
+fn notice_for(
+    transition: probe::Transition,
+    preference: RoutePreference,
+    local_ready: bool,
+) -> String {
     match (transition, preference) {
         (probe::Transition::Offline, RoutePreference::CloudDefault) if local_ready => {
             crate::locale::text(
@@ -2652,7 +2861,8 @@ fn spawn_probe(app: AppHandle) {
                         let preference = RoutePreference::parse(&settings.preference)
                             .unwrap_or(RoutePreference::CloudDefault);
                         let ready = readiness_of(&state).asr;
-                        *state.notice.lock().expect("notice") = notice_for(transition, preference, ready);
+                        *state.notice.lock().expect("notice") =
+                            notice_for(transition, preference, ready);
                     }
                 }
                 crate::diag::record(&format!(

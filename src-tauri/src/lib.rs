@@ -11,6 +11,7 @@ mod permissions;
 mod pipeline;
 mod secrets;
 mod settings;
+mod taskbar_dock;
 mod tray;
 mod updater;
 #[cfg(windows)]
