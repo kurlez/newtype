@@ -203,6 +203,26 @@ pub fn fit_dock(query: &DockQuery) -> DockFit {
     }
 }
 
+/// Desktop and shell windows cover a monitor without being a fullscreen app.
+pub fn shell_or_desktop_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "NotifyIconOverflowWindow"
+            | "DV2ControlHost"
+            | "TopLevelWindowForOverflowXamlIsland"
+    )
+}
+
+/// Fullscreen means the foreground window covers the monitor, including the
+/// taskbar. A maximized window and this process's own windows do not count.
+pub fn counts_as_fullscreen(class: &str, ours: bool, zoomed: bool, covers: bool) -> bool {
+    covers && !ours && !zoomed && !shell_or_desktop_class(class)
+}
+
 /// A foreground window covers its monitor when each edge is within `slop`.
 pub fn covers_monitor(window: PxRect, monitor: PxRect, slop: i32) -> bool {
     window.width > 0
@@ -488,15 +508,20 @@ mod win {
         };
         use windows_sys::Win32::System::Threading::GetCurrentProcessId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+            GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsZoomed,
         };
         let foreground = GetForegroundWindow();
         if foreground.is_null() || foreground == taskbar {
             return false;
         }
+        let class = class_of(foreground);
+        if super::shell_or_desktop_class(&class) {
+            return false;
+        }
         let mut owner = 0u32;
         GetWindowThreadProcessId(foreground, &mut owner);
-        if owner == GetCurrentProcessId() {
+        let ours = owner != 0 && owner == GetCurrentProcessId();
+        if ours || IsZoomed(foreground) != 0 {
             return false;
         }
         let mut window = RECT::default();
@@ -516,7 +541,7 @@ mod win {
         }
         let window = from_rect(window);
         let screen = from_rect(info.rcMonitor);
-        super::covers_monitor(window, screen, 2)
+        super::counts_as_fullscreen(&class, false, false, super::covers_monitor(window, screen, 2))
     }
 
     unsafe fn find_class(
@@ -761,6 +786,42 @@ mod tests {
             Some(tray)
         );
         assert_eq!(tray_from_children(taskbar, BarEdge::Bottom, &[island]), None);
+    }
+
+    #[test]
+    fn a_maximized_or_shell_window_is_not_fullscreen() {
+        let screen = PxRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1200,
+        };
+        let inflated = PxRect {
+            x: -8,
+            y: -8,
+            width: 1936,
+            height: 1216,
+        };
+        assert!(covers_monitor(inflated, screen, 2));
+        assert!(!counts_as_fullscreen("Chrome_WidgetWin_1", false, true, true));
+        assert!(!counts_as_fullscreen("Progman", false, false, true));
+        assert!(!counts_as_fullscreen("WorkerW", false, false, true));
+        assert!(!counts_as_fullscreen("Shell_TrayWnd", false, false, true));
+        assert!(!counts_as_fullscreen("Chrome_WidgetWin_1", true, false, true));
+        assert!(counts_as_fullscreen("ApplicationFrameWindow", false, false, true));
+        let work = PxRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1152,
+        };
+        assert!(!covers_monitor(work, screen, 2));
+        assert!(!counts_as_fullscreen(
+            "Chrome_WidgetWin_1",
+            false,
+            false,
+            covers_monitor(work, screen, 2)
+        ));
     }
 
     #[test]

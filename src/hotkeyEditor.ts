@@ -21,6 +21,12 @@ export function idleEditor(activeChord: string, activeLabel: string): HotkeyEdit
   };
 }
 
+export const CAPTURE_SILENCE_MS = 3000;
+
+export function captureHeardNothing(phase: HotkeyPhase, pendingLabel: string, elapsedMs: number): boolean {
+  return phase === "capturing" && pendingLabel.trim() === "" && elapsedMs >= CAPTURE_SILENCE_MS;
+}
+
 export function beginCapture(editor: HotkeyEditor): HotkeyEditor {
   return {
     ...editor,

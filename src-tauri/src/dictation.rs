@@ -619,6 +619,8 @@ fn spawn_listener(
                 engine.set_capture(want);
                 (share.generation, want)
             };
+            #[cfg(windows)]
+            publish_swallow(&hotkeys.lock().expect("hotkeys").bindings);
             let hook_app = app.clone();
             let on_edge = move |edge: KeyEdge| -> bool {
                 let want = hotkey::os_capture();
@@ -638,6 +640,8 @@ fn spawn_listener(
                         seen = share.generation;
                         engine.set_bindings(share.bindings.clone());
                         hotkey::set_altgr_bound(engine.uses_alt_right());
+                        #[cfg(windows)]
+                        publish_swallow(&share.bindings);
                     }
                     if share.capture != capturing {
                         capturing = share.capture || hotkey::os_capture();
@@ -736,6 +740,17 @@ fn spawn_listener(
             }
         })
         .expect("hotkey thread");
+}
+
+#[cfg(windows)]
+fn publish_swallow(bindings: &[(HotkeyMode, hotkey::Chord)]) {
+    let vks: Vec<u32> = bindings
+        .iter()
+        .flat_map(|(_, chord)| chord.iter())
+        .filter(|key| !hotkey::is_modifier(**key))
+        .filter_map(|key| hotkey::virtual_key(**key))
+        .collect();
+    crate::win_hotkey::set_swallowed_vks(&vks);
 }
 
 fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   beginCapture,
+  captureHeardNothing,
   bindingError,
   bindingWarnings,
   cancelEditor,
@@ -11,6 +12,13 @@ import {
   markApplied,
   showCaptured,
 } from "../src/hotkeyEditor.ts";
+
+test("capture with no keys after a few seconds is a miss", () => {
+  assert.equal(captureHeardNothing("capturing", "", 2999), false);
+  assert.equal(captureHeardNothing("capturing", "", 3000), true);
+  assert.equal(captureHeardNothing("capturing", "Right Alt", 3000), false);
+  assert.equal(captureHeardNothing("pending", "", 3000), false);
+});
 
 test("capture shows the chord and set applies it", () => {
   const idle = idleEditor("ControlRight", "Right Ctrl");
