@@ -27,17 +27,21 @@ jobs:
       group: newtype-runner-windows
       cancel-in-progress: false
     timeout-minutes: 90
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
 
       - name: Persistent cargo target
         shell: powershell
         run: |
+          $utf8 = New-Object System.Text.UTF8Encoding $false
           $dir = Join-Path $env:USERPROFILE '.cache\newtype\cargo-target'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_TARGET_DIR=$dir`n")
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_CACHE_DAYS=14`n")
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_TARGET_CAP_BYTES=8589934592`n")
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_TARGET_DIR=$dir`n", $utf8)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_CACHE_DAYS=14`n", $utf8)
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_TARGET_CAP_BYTES=8589934592`n", $utf8)
 
       - name: Prune persistent caches
         shell: powershell
@@ -46,16 +50,29 @@ jobs:
       - name: Require Rust
         shell: powershell
         run: |
-          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
-            throw "rustup is not on PATH. On this machine run scripts/runner/setup-windows.ps1."
+          Write-Output "CARGO_HOME=$env:CARGO_HOME"
+          Write-Output "RUSTUP_HOME=$env:RUSTUP_HOME"
+          if (-not $env:CARGO_HOME -or -not $env:RUSTUP_HOME) {
+            throw "CARGO_HOME and RUSTUP_HOME must be set by the runner .env. The SYSTEM service does not use a user-profile rustup."
           }
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add x86_64-pc-windows-msvc
-          $info = & rustc -vV | Out-String
+          $cargoBin = Join-Path $env:CARGO_HOME 'bin'
+          $rustup = Join-Path $cargoBin 'rustup.exe'
+          $rustc = Join-Path $cargoBin 'rustc.exe'
+          if (-not (Test-Path $rustup) -or -not (Test-Path $rustc)) {
+            throw "rustup.exe was not found at $rustup. The runner .env must point at the install setup verified."
+          }
+          $env:Path = "$cargoBin;" + (($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $cargoBin.TrimEnd('\')) }) -join ';')
+          & $rustup toolchain install stable --profile minimal
+          & $rustup default stable
+          & $rustup target add x86_64-pc-windows-msvc
+          $info = & $rustc -vV | Out-String
           Write-Output $info
           $release = ([regex]::Match($info, '(?m)^release: (\S+)')).Groups[1].Value
-          $msrv = (Select-String -Path src-tauri/Cargo.toml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $msrvLine = Select-String -Path src-tauri/Cargo.toml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1
+          if (-not $msrvLine) {
+            throw "src-tauri/Cargo.toml has no rust-version."
+          }
+          $msrv = $msrvLine.Matches[0].Groups[1].Value
           if ([version]$release -lt [version]$msrv) {
             throw "rustc $release is older than rust-version $msrv."
           }
@@ -71,11 +88,20 @@ jobs:
           if (-not $install) {
             throw "MSVC C++ tools are missing. On this machine run scripts/runner/setup-windows.ps1."
           }
+          $utf8 = New-Object System.Text.UTF8Encoding $false
           $bat = Join-Path $install "VC\Auxiliary\Build\vcvars64.bat"
+          $cargoBin = $null
+          if ($env:CARGO_HOME) {
+            $cargoBin = Join-Path $env:CARGO_HOME 'bin'
+          }
           cmd /c "`"$bat`" >nul && set" | ForEach-Object {
             $pair = $_ -split '=', 2
             if ($pair.Length -eq 2 -and $pair[0] -match '^[A-Za-z_][A-Za-z0-9_]*$' -and $pair[0] -notlike 'GITHUB_*') {
-              [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$($pair[0])=$($pair[1])`n")
+              $value = $pair[1]
+              if ($cargoBin -and ($pair[0] -eq 'Path' -or $pair[0] -eq 'PATH') -and ($value -notlike "*$($cargoBin)*")) {
+                $value = "$cargoBin;$value"
+              }
+              [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$($pair[0])=$value`n", $utf8)
             }
           }
 
@@ -357,6 +383,9 @@ jobs:
       group: newtype-runner-windows
       cancel-in-progress: false
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
     steps:
       - uses: actions/checkout@v4
 
