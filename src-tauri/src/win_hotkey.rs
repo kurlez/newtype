@@ -53,27 +53,22 @@ struct HookEvent {
     up: bool,
 }
 
-/// Keys in the saved chords are swallowed without taking a lock in the hook.
-pub fn set_swallowed_vks(vks: &[u32]) {
-    let mut words = [0u32; 8];
-    for vk in vks {
-        let vk = *vk;
-        if vk >= 256 {
-            continue;
-        }
-        words[(vk / 32) as usize] |= 1u32 << (vk % 32);
+fn mark_swallowed(vk: u32) {
+    if vk >= 256 {
+        return;
     }
-    for (slot, word) in SWALLOW.iter().zip(words) {
-        slot.store(word, Ordering::Relaxed);
-    }
+    let slot = &SWALLOW[(vk / 32) as usize];
+    slot.fetch_or(1u32 << (vk % 32), Ordering::Relaxed);
 }
 
-fn vk_is_swallowed(vk: u32) -> bool {
+fn take_swallowed(vk: u32) -> bool {
     if vk >= 256 {
         return false;
     }
-    let word = SWALLOW[(vk / 32) as usize].load(Ordering::Relaxed);
-    word & (1u32 << (vk % 32)) != 0
+    let slot = &SWALLOW[(vk / 32) as usize];
+    let bit = 1u32 << (vk % 32);
+    let previous = slot.fetch_and(!bit, Ordering::Relaxed);
+    previous & bit != 0
 }
 
 pub fn run() -> Result<(), String> {
@@ -192,12 +187,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         if let Some(event) = raw_event(wparam, lparam) {
             LAST_CALLBACK_MS.store(now_ms(), Ordering::Relaxed);
-            if let Some(tx) = TX.get() {
-                if let Err(TrySendError::Full(_)) = tx.try_send(event) {
-                    DROPPED.fetch_add(1, Ordering::Relaxed);
+            let queued = match TX.get() {
+                Some(tx) => match tx.try_send(event) {
+                    Ok(()) => true,
+                    Err(TrySendError::Full(_)) => {
+                        DROPPED.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                    Err(TrySendError::Disconnected(_)) => false,
+                },
+                None => false,
+            };
+            if event.up {
+                if take_swallowed(event.vk) {
+                    return 1;
                 }
-            }
-            if fast_swallow(event) {
+            } else if queued && swallow_down(event) {
+                mark_swallowed(event.vk);
                 return 1;
             }
         }
@@ -220,11 +226,29 @@ fn raw_event(wparam: WPARAM, lparam: LPARAM) -> Option<HookEvent> {
     })
 }
 
-fn fast_swallow(event: HookEvent) -> bool {
+fn swallow_down(event: HookEvent) -> bool {
     if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
         return hotkey::os_capture() || hotkey::altgr_bound();
     }
-    hotkey::os_capture() || vk_is_swallowed(event.vk)
+    if hotkey::os_capture() {
+        return true;
+    }
+    let key = hotkey::key_from_windows_vk(event.vk);
+    hotkey::suppress_published(&held_modifiers(), key, hotkey::session_keys())
+}
+
+fn held_modifiers() -> hotkey::Chord {
+    let mut held = hotkey::Chord::new();
+    for vk in [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C] {
+        let down = unsafe { GetAsyncKeyState(vk) } < 0;
+        if down {
+            let key = hotkey::key_from_windows_vk(vk as u32);
+            if hotkey::is_modifier(key) {
+                held.insert(key);
+            }
+        }
+    }
+    held
 }
 
 fn now_ms() -> u64 {

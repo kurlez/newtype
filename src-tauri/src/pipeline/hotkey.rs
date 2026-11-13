@@ -11,6 +11,8 @@ use super::ModuleStatus;
 
 static OS_CAPTURE: AtomicBool = AtomicBool::new(false);
 static ALTGR_BOUND: AtomicBool = AtomicBool::new(false);
+static SESSION_KEYS: AtomicBool = AtomicBool::new(false);
+static MATCH_CHORDS: std::sync::Mutex<Vec<Chord>> = std::sync::Mutex::new(Vec::new());
 
 /// The hook reads this on every key. It is set before any window focus call.
 pub fn set_os_capture(on: bool) {
@@ -29,6 +31,58 @@ pub fn set_altgr_bound(on: bool) {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn altgr_bound() -> bool {
     ALTGR_BOUND.load(Ordering::SeqCst)
+}
+
+/// True while a recording is in progress. Enter and Escape may be swallowed then.
+pub fn set_session_keys(on: bool) {
+    SESSION_KEYS.store(on, Ordering::SeqCst);
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn session_keys() -> bool {
+    SESSION_KEYS.load(Ordering::SeqCst)
+}
+
+/// Chords the Windows hook may swallow. Empty chords are dropped.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn set_match_chords(chords: Vec<Chord>) {
+    let chords = chords.into_iter().filter(|chord| !chord.is_empty()).collect();
+    if let Ok(mut guard) = MATCH_CHORDS.lock() {
+        *guard = chords;
+    }
+}
+
+/// Swallow only the non-modifier key of a chord that is fully held.
+///
+/// An empty chord matches nothing. Enter and Escape pass through unless a
+/// recording or capture session is active, or Enter itself completes a chord.
+/// If the chord table cannot be read immediately, nothing is swallowed.
+pub fn suppress_trigger(chords: &[Chord], held: &Chord, key: KeyId, session: bool) -> bool {
+    if is_modifier(key) || matches!(key, KeyId::Other | KeyId::Fn) {
+        return false;
+    }
+    if session && matches!(key, KeyId::Enter | KeyId::Escape) {
+        return true;
+    }
+    if key == KeyId::Escape {
+        return false;
+    }
+    let mut full = held.clone();
+    full.insert(key);
+    chords.iter().any(|chord| {
+        !chord.is_empty()
+            && chord == &full
+            && chord.contains(&key)
+            && chord.iter().filter(|item| !is_modifier(**item)).count() == 1
+    })
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn suppress_published(held: &Chord, key: KeyId, session: bool) -> bool {
+    let Ok(guard) = MATCH_CHORDS.try_lock() else {
+        return false;
+    };
+    suppress_trigger(&guard, held, key, session)
 }
 
 /// Windows virtual-key code for a named key, when it has one stable code.
@@ -1502,5 +1556,57 @@ mod tests {
         let caps = parse_chord("CapsLock").unwrap();
         assert_eq!(canonical(&caps), "Vk20");
         assert_eq!(chord_label(&caps, OsKind::Windows), "Caps Lock");
+    }
+
+    #[test]
+    fn enter_passes_unless_it_completes_a_configured_chord() {
+        let dictate = parse_chord("AltRight+Slash").unwrap();
+        let command = parse_chord("ControlRight+Enter").unwrap();
+        let with_default = [dictate.clone(), command];
+        assert!(!suppress_trigger(
+            &with_default,
+            &Chord::new(),
+            KeyId::Enter,
+            false
+        ));
+
+        let no_command = [dictate.clone(), Chord::new()];
+        assert!(!suppress_trigger(
+            &no_command,
+            &Chord::new(),
+            KeyId::Enter,
+            false
+        ));
+
+        let mut alt_held = Chord::new();
+        alt_held.insert(KeyId::AltRight);
+        assert!(!suppress_trigger(&no_command, &alt_held, KeyId::Enter, false));
+        assert!(!suppress_trigger(&no_command, &alt_held, KeyId::AltRight, false));
+
+        let command_enter = [parse_chord("AltRight+Enter").unwrap()];
+        assert!(suppress_trigger(&command_enter, &alt_held, KeyId::Enter, false));
+        assert!(!suppress_trigger(
+            &command_enter,
+            &Chord::new(),
+            KeyId::Enter,
+            false
+        ));
+        assert!(!suppress_trigger(
+            &command_enter,
+            &alt_held,
+            KeyId::AltRight,
+            false
+        ));
+
+        assert!(!suppress_trigger(&[], &Chord::new(), KeyId::Escape, false));
+        assert!(suppress_trigger(&[], &Chord::new(), KeyId::Enter, true));
+        assert!(suppress_trigger(&[], &Chord::new(), KeyId::Escape, true));
+
+        let mut ctrl_held = Chord::new();
+        ctrl_held.insert(KeyId::ControlRight);
+        assert!(suppress_trigger(&with_default, &ctrl_held, KeyId::Enter, false));
+        let mut extra = ctrl_held.clone();
+        extra.insert(KeyId::ShiftRight);
+        assert!(!suppress_trigger(&with_default, &extra, KeyId::Enter, false));
     }
 }

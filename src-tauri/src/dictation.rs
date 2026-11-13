@@ -750,13 +750,7 @@ fn spawn_listener(
 
 #[cfg(windows)]
 fn publish_swallow(bindings: &[(HotkeyMode, hotkey::Chord)]) {
-    let vks: Vec<u32> = bindings
-        .iter()
-        .flat_map(|(_, chord)| chord.iter())
-        .filter(|key| !hotkey::is_modifier(**key))
-        .filter_map(|key| hotkey::virtual_key(*key))
-        .collect();
-    crate::win_hotkey::set_swallowed_vks(&vks);
+    hotkey::set_match_chords(bindings.iter().map(|(_, chord)| chord.clone()).collect());
 }
 
 fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {
@@ -2056,6 +2050,7 @@ fn emit_phase(
     if let Ok(mut slot) = app.state::<Dictation>().phase.lock() {
         *slot = phase.to_string();
     }
+    hotkey::set_session_keys(phase == "recording");
     if phase != "recording" {
         crate::diag::record(&format!("phase {phase}: {message}"));
     }
