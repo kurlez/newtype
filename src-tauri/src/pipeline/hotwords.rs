@@ -169,6 +169,59 @@ pub fn asr_prompt(words: &[Hotword], max_chars: usize) -> String {
     asr_prompt_budget(words, max_chars).0
 }
 
+/// Native hotwords for one provider, newest terms first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeHotwords {
+    pub terms: Vec<String>,
+    pub offered: usize,
+    pub kept: usize,
+    pub limit: usize,
+}
+
+/// Volcengine `bigmodel_nostream` accepts 5000 direct hotwords. A term is
+/// never cut. DashScope Qwen-Audio accepts 2000; Paraformer accepts 500.
+/// A term that breaks that provider's own length rule is skipped.
+pub fn native_hotwords(words: &[Hotword], limit: usize, fits: impl Fn(&str) -> bool) -> NativeHotwords {
+    let mut terms = Vec::new();
+    let mut offered = 0usize;
+    for word in words.iter().rev() {
+        let term = word.canonical.trim();
+        if term.is_empty() {
+            continue;
+        }
+        offered += 1;
+        if terms.len() >= limit || !fits(term) {
+            continue;
+        }
+        terms.push(term.to_string());
+    }
+    let kept = terms.len();
+    NativeHotwords {
+        terms,
+        offered,
+        kept,
+        limit,
+    }
+}
+
+/// DashScope hotword text rule: 15 characters when any character is not
+/// ASCII, otherwise at most 7 words.
+pub fn dashscope_term_ok(term: &str) -> bool {
+    if term.chars().any(|ch| !ch.is_ascii()) {
+        term.chars().count() <= 15
+    } else {
+        term.split_whitespace().filter(|part| !part.is_empty()).count() <= 7
+    }
+}
+
+pub fn dashscope_hotword_limit(model: &str) -> usize {
+    if model.trim().starts_with("paraformer") {
+        500
+    } else {
+        2000
+    }
+}
+
 /// Spellings passed to a cloud speech model as a hint. Alias replacement
 /// still runs after recognition, before the rewrite.
 pub fn asr_hint(words: &[Hotword]) -> String {
@@ -795,5 +848,43 @@ mod tests {
         assert!(block.contains("VERYLONGMADEUPTERMTHATSHOULDNOTBESPLIT"));
         assert!(block.contains("青岚计划"));
         assert!(block.contains("Zorblax"));
+    }
+
+    #[test]
+    fn native_hotwords_keep_whole_terms_and_respect_provider_caps() {
+        let long_zh = "甲".repeat(16);
+        let long_en = "alpha bravo charlie delta echo foxtrot golf hotel";
+        let words = vec![
+            word("Zorblax", &[], ""),
+            word("青岚计划", &[], ""),
+            word(&long_zh, &[], ""),
+            word("Fnordix", &[], ""),
+            word(long_en, &[], ""),
+        ];
+        let volc = native_hotwords(&words, 5000, |_| true);
+        assert_eq!(volc.limit, 5000);
+        assert_eq!(volc.offered, 5);
+        assert_eq!(volc.kept, 5);
+        assert_eq!(volc.terms[0], long_en);
+        assert_eq!(volc.terms[1], "Fnordix");
+        assert!(volc.terms.iter().any(|term| term == "青岚计划"));
+        assert!(volc.terms.iter().any(|term| term == &long_zh));
+
+        let dash = native_hotwords(&words, dashscope_hotword_limit("qwen-audio-3.1-asr-flash"), dashscope_term_ok);
+        assert_eq!(dash.limit, 2000);
+        assert_eq!(dash.offered, 5);
+        assert_eq!(dash.terms, vec!["Fnordix".to_string(), "青岚计划".to_string(), "Zorblax".to_string()]);
+        assert!(!dash.terms.iter().any(|term| term.contains('甲')));
+        assert!(!dash.terms.iter().any(|term| term.contains("alpha")));
+        assert_eq!(dashscope_hotword_limit("paraformer-v2"), 500);
+
+        let mut many = Vec::new();
+        for n in 0..6 {
+            many.push(word(&format!("Term{n}"), &[], ""));
+        }
+        let capped = native_hotwords(&many, 2, |_| true);
+        assert_eq!(capped.terms, vec!["Term5".to_string(), "Term4".to_string()]);
+        assert_eq!(capped.offered, 6);
+        assert_eq!(capped.kept, 2);
     }
 }

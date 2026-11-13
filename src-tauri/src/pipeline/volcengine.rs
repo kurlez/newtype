@@ -62,7 +62,7 @@ pub fn header_pairs(auth: &VolcAuth) -> Result<Vec<(&'static str, String)>, Stri
     Ok(pairs)
 }
 
-pub fn request_json(hint: &str) -> Value {
+pub fn request_json(terms: &[String]) -> Value {
     let mut request = json!({
         "model_name": MODEL_NAME,
         "enable_itn": true,
@@ -70,9 +70,9 @@ pub fn request_json(hint: &str) -> Value {
         "enable_nonstream": true,
         "result_type": "full",
     });
-    let hotwords: Vec<Value> = hint
-        .split(',')
-        .map(str::trim)
+    let hotwords: Vec<Value> = terms
+        .iter()
+        .map(|word| word.trim())
         .filter(|word| !word.is_empty())
         .map(|word| json!({ "word": word }))
         .collect();
@@ -93,8 +93,8 @@ pub fn request_json(hint: &str) -> Value {
     })
 }
 
-pub fn client_frames(hint: &str, pcm: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    let body = serde_json::to_vec(&request_json(hint)).map_err(|err| err.to_string())?;
+pub fn client_frames(terms: &[String], pcm: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let body = serde_json::to_vec(&request_json(terms)).map_err(|err| err.to_string())?;
     let mut frames = vec![frame(FULL_CLIENT, 0, JSON_SERIAL, GZIP, &gzip(&body)?)];
     let chunk = 6_400usize;
     if pcm.is_empty() {
@@ -172,10 +172,10 @@ pub fn parse_server_frame(bytes: &[u8]) -> Result<ServerEvent, String> {
     })
 }
 
-pub fn transcribe_wav(auth: &VolcAuth, hint: &str, wav: &[u8]) -> Result<String, String> {
+pub fn transcribe_wav(auth: &VolcAuth, terms: &[String], wav: &[u8]) -> Result<String, String> {
     egress::authorize(Purpose::Cloud)?;
     let pcm = pcm_from_wav(wav)?;
-    let frames = client_frames(hint, &pcm)?;
+    let frames = client_frames(terms, &pcm)?;
     let pairs = header_pairs(auth)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -186,7 +186,7 @@ pub fn transcribe_wav(auth: &VolcAuth, hint: &str, wav: &[u8]) -> Result<String,
 
 pub fn test_connection(auth: &VolcAuth) -> Result<String, String> {
     let _ = header_pairs(auth)?;
-    let err = match transcribe_wav(auth, "", &silent_wav()) {
+    let err = match transcribe_wav(auth, &[], &silent_wav()) {
         Ok(text) => {
             return Ok(format!(
                 "Connected. Volcengine accepted the speech credentials{}.",
@@ -398,13 +398,16 @@ mod tests {
 
     #[test]
     fn the_request_uses_bigmodel_and_dictionary_terms() {
-        let value = request_json("Claude Code, Token");
+        let value = request_json(&["Zorblax Prime".into(), "青岚计划".into()]);
         assert_eq!(value["request"]["model_name"], "bigmodel");
         let context = value["request"]["corpus"]["context"].as_str().unwrap();
-        assert!(context.contains("Claude Code"));
-        assert!(context.contains("Token"));
+        let parsed: Value = serde_json::from_str(context).unwrap();
+        let words = parsed["hotwords"].as_array().unwrap();
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0]["word"], "Zorblax Prime");
+        assert_eq!(words[1]["word"], "青岚计划");
         assert!(!context.contains("doubao-seed-asr"));
-        let frames = client_frames("Claude Code", &[0u8; 100]).unwrap();
+        let frames = client_frames(&["Fnordix".into()], &[0u8; 100]).unwrap();
         assert!(frames.len() >= 2);
         assert_eq!(frames[0][0], 0x11);
         assert_eq!(frames[0][1] >> 4, FULL_CLIENT);
@@ -429,7 +432,7 @@ mod tests {
     fn strict_offline_refuses_before_any_socket() {
         let _guard = ModeGuard::strict();
         let started = std::time::Instant::now();
-        let err = transcribe_wav(&auth(), "", &silent_wav()).unwrap_err();
+        let err = transcribe_wav(&auth(), &[], &silent_wav()).unwrap_err();
         assert!(err.contains("Strict offline"), "{err}");
         assert!(!err.contains("speech-key"));
         assert!(!err.contains("access-token"));

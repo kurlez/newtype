@@ -187,6 +187,47 @@ pub fn dictation_probe_microphone(app: AppHandle, device: String) -> Result<Stri
 }
 
 #[tauri::command]
+pub fn dictation_compare_arm(app: AppHandle) -> Result<String, String> {
+    crate::dictation::compare_arm(&app)
+}
+
+#[tauri::command]
+pub fn dictation_compare_finish(app: AppHandle) -> Result<crate::pipeline::compare::CompareReport, String> {
+    crate::dictation::compare_finish(&app)
+}
+
+#[tauri::command]
+pub fn dictation_compare_last(app: AppHandle) -> Result<crate::pipeline::compare::CompareReport, String> {
+    crate::dictation::compare_last(&app)
+}
+
+#[tauri::command]
+pub async fn dictation_compare_save(app: AppHandle) -> Result<String, String> {
+    let body = crate::dictation::last_compare_json(&app)?;
+    tauri::async_runtime::spawn_blocking(move || save_compare_file(app, body))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn save_compare_file(app: AppHandle, body: String) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("JSON", &["json"])
+        .set_file_name("asr-compare.json")
+        .blocking_save_file();
+    let Some(picked) = picked else {
+        return Err("Save was cancelled.".into());
+    };
+    let path = picked
+        .into_path()
+        .map_err(|err| format!("Could not use that file: {err}"))?;
+    std::fs::write(&path, body).map_err(|err| format!("Could not write the comparison: {err}"))?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
 pub fn dictation_reset_models(app: AppHandle) -> Result<crate::dictation::Snapshot, String> {
     let mut settings = app
         .state::<crate::dictation::Dictation>()

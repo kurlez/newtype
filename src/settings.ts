@@ -23,6 +23,7 @@ import {
   type Hotword,
   type PresetInfo,
   type ProviderConfig,
+  type CompareReport,
   type Snapshot,
   type UpdateState,
 } from "./types";
@@ -50,6 +51,9 @@ const editors: Record<HotkeyModeName, HotkeyEditor> = {
 
 let hotkeyMessage = "";
 let hotkeyMessageError = false;
+let compareReport: CompareReport | null = null;
+let compareRecording = false;
+let compareBusy = false;
 let captureTicket = 0;
 
 const DICTATE_KEYS: Array<[string, string, string]> = [
@@ -436,6 +440,16 @@ function paint(): void {
       <div class="row">
         ${snap.presets.map((item) => `<button type="button" data-test-provider="${escapeHtml(item.id)}">${ui("Test connection", "测试连接")} · ${escapeHtml(item.label)}</button>`).join("")}
       </div>
+      <h3>${ui("Compare providers", "对比供应商")}</h3>
+      <p class="status">${ui("Record one clip, or reuse the last dictation. Every provider with a saved key receives that audio. Volcengine sends native hotwords to openspeech. DashScope sends instant hotwords to Qwen-Audio. The result file stays on this computer and does not include the dictionary or any key.", "录一段，或用上一次口授的录音。已保存密钥的供应商都会识别这段音频。火山把原生热词发给语音识别，通义把即时热词发给 Qwen-Audio。结果文件只留在这台电脑上，不含词典，也不含密钥。")}</p>
+      <p class="status">${ui("Volcengine: Doubao Speech console. New console, save the speech API key. Old console, save the App ID and access token. The rewrite key is the Ark key in the Volcengine API key field. DashScope: Model Studio API key, plus the workspace base URL ending in /compatible-mode/v1. The speech model is qwen-audio-3.1-asr-flash.", "火山：豆包语音控制台。新版保存语音 API Key；旧版保存 App ID 和 Access Token。改写密钥是方舟 Key，填在火山的 API key 里。通义：百炼 API Key，再加上以 /compatible-mode/v1 结尾的业务空间地址。语音模型是 qwen-audio-3.1-asr-flash。")}</p>
+      <div class="row">
+        <button type="button" id="compare-arm" ${compareRecording || compareBusy ? "disabled" : ""}>${ui("Record clip", "录一段")}</button>
+        <button type="button" id="compare-finish" ${compareRecording && !compareBusy ? "" : "disabled"}>${ui("Stop and compare", "停止并对比")}</button>
+        <button type="button" id="compare-last" ${compareBusy ? "disabled" : ""}>${ui("Compare last recording", "对比上一次录音")}</button>
+        <button type="button" id="compare-save" ${compareReport && !compareBusy ? "" : "disabled"}>${ui("Save results", "保存结果")}</button>
+      </div>
+      <div id="compare-results">${compareResults()}</div>
     </section>
     <section>
       <h2 id="sec-hotkey">${ui("Hotkeys", "快捷键")}</h2>
@@ -464,7 +478,7 @@ function paint(): void {
     </section>
     <section id="sec-dictionary">
       <h2>${ui("Dictionary", "词典")}</h2>
-      <p class="status">${ui("Terms are sent as a speech hint and listed in the rewrite prompt. Replacements run before the model. A term with no replacement is prompt-only.", "词条会作为语音提示，并写进改写提示。替换在模型之前执行。没有替换的词条只出现在提示里。")}</p>
+      <p class="status">${ui("Groq and OpenAI receive a short speech hint. Volcengine and DashScope receive native hotwords. Every provider still lists the full dictionary in the rewrite prompt. Replacements run before the model.", "Groq 和 OpenAI 收到一段短提示。火山和通义收到原生热词。改写提示仍包含完整词典。替换在模型之前执行。")}</p>
       <label class="field">${ui("Search", "搜索")}<input id="dictionary-search" value="${escapeHtml(dictionaryQuery)}" placeholder="${ui("Term or replacement", "词条或替换")}" /></label>
       <div id="hotwords">${settings.hotwords.map((word, index) => hotwordRow(word, index)).join("")}</div>
       <div class="row">
@@ -589,6 +603,10 @@ function bind(): void {
   }
   document.querySelector("#test-llm")?.addEventListener("click", () => void testKey(snap.settings.llmProvider, "rewrite"));
   document.querySelector("#load-models")?.addEventListener("click", () => void loadModels(snap.settings.asrProvider));
+  document.querySelector("#compare-arm")?.addEventListener("click", () => void compareArm());
+  document.querySelector("#compare-finish")?.addEventListener("click", () => void compareFinish());
+  document.querySelector("#compare-last")?.addEventListener("click", () => void compareLast());
+  document.querySelector("#compare-save")?.addEventListener("click", () => void compareSave());
   document.querySelector("#reset-models")?.addEventListener("click", () => void resetModels());
   document.querySelector("#add-hotword")?.addEventListener("click", () => {
     readHotwords();
@@ -1724,6 +1742,89 @@ function ensure(settings: DictationSettings, id: string): ProviderConfig {
 
 function unique(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function compareResults(): string {
+  if (!compareReport) {
+    return "";
+  }
+  const cards = compareReport.rows
+    .map((row) => {
+      const hotwords =
+        row.hotwordLimit > 0
+          ? ui(
+              `Native hotwords ${row.hotwordsKept} of ${row.hotwordsOffered}, limit ${row.hotwordLimit}.`,
+              `原生热词 ${row.hotwordsKept} / ${row.hotwordsOffered}，上限 ${row.hotwordLimit}。`,
+            )
+          : ui("Text prompt, not native hotwords.", "使用文本提示，不是原生热词。");
+      const error = row.error ? `<p class="status error">${escapeHtml(row.error)}</p>` : "";
+      return `<article class="compare-card"><h3>${escapeHtml(row.label)}</h3><p class="status">${escapeHtml(row.asrModel)} · ${ui("ASR", "识别")} ${row.asrMs} ms · ${ui("total", "合计")} ${row.totalMs} ms</p><p class="status">${hotwords}</p>${error}<p><strong>${ui("Raw", "原文")}</strong></p><pre>${escapeHtml(row.raw || "—")}</pre><p><strong>${ui("Polished", "润色")}</strong></p><pre>${escapeHtml(row.polished || "—")}</pre></article>`;
+    })
+    .join("");
+  return `<p class="status">${escapeHtml(compareReport.createdAt)}</p>${cards}`;
+}
+
+async function compareArm(): Promise<void> {
+  if (preview) {
+    notice = ui("Preview cannot record.", "预览不能录音。");
+    paint();
+    return;
+  }
+  try {
+    notice = await call<string>("dictation_compare_arm");
+    compareRecording = true;
+  } catch (error) {
+    notice = String(error);
+    compareRecording = false;
+  }
+  paint();
+}
+
+async function compareFinish(): Promise<void> {
+  compareBusy = true;
+  notice = ui("Comparing the providers…", "正在对比供应商…");
+  paint();
+  try {
+    compareReport = await call<CompareReport>("dictation_compare_finish");
+    notice = ui("Comparison finished.", "对比完成。");
+  } catch (error) {
+    notice = String(error);
+  }
+  compareRecording = false;
+  compareBusy = false;
+  paint();
+}
+
+async function compareLast(): Promise<void> {
+  if (preview) {
+    notice = ui("Preview cannot compare a recording.", "预览不能对比录音。");
+    paint();
+    return;
+  }
+  compareBusy = true;
+  notice = ui("Comparing the providers…", "正在对比供应商…");
+  paint();
+  try {
+    compareReport = await call<CompareReport>("dictation_compare_last");
+    notice = ui("Comparison finished.", "对比完成。");
+  } catch (error) {
+    notice = String(error);
+  }
+  compareBusy = false;
+  paint();
+}
+
+async function compareSave(): Promise<void> {
+  if (preview || !compareReport) {
+    return;
+  }
+  try {
+    const path = await call<string>("dictation_compare_save");
+    notice = ui(`Saved ${path}`, `已保存 ${path}`);
+  } catch (error) {
+    notice = String(error);
+  }
+  paint();
 }
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
