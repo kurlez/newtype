@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use tauri::WebviewWindow;
 
-const INDICATOR_LOGICAL_W: f64 = 480.0;
-const INDICATOR_LOGICAL_H: f64 = 132.0;
+const INDICATOR_LOGICAL_W: f64 = 256.0;
+const INDICATOR_LOGICAL_H: f64 = 44.0;
 
 /// Show `window` without activating it. Does not change window style, so the
 /// main window can use this while recording and stay on the taskbar.
@@ -35,6 +35,7 @@ pub fn show_without_activating(window: &WebviewWindow) {
 
 pub fn configure_indicator(window: &WebviewWindow) {
     let _ = window.set_focusable(false);
+    let _ = window.set_shadow(false);
     #[cfg(target_os = "windows")]
     apply_windows_noactivate(window);
     #[cfg(target_os = "macos")]
@@ -68,6 +69,24 @@ fn apply_windows_noactivate(window: &WebviewWindow) {
             0,
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        clear_dwm_border(hwnd);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clear_dwm_border(hwnd: *mut std::ffi::c_void) {
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+    // DWMWA_BORDER_COLOR. DWMWA_COLOR_NONE keeps Windows 11 from drawing the 1px frame.
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+    let color = DWMWA_COLOR_NONE;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &color as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
         );
     }
 }
@@ -352,6 +371,24 @@ fn work_area_of(monitor: &tauri::Monitor) -> WorkArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_indicator_covers_about_a_quarter_of_the_old_panel() {
+        let previous = 480.0 * 132.0;
+        let now = INDICATOR_LOGICAL_W * INDICATOR_LOGICAL_H;
+        assert!(INDICATOR_LOGICAL_W <= 260.0);
+        assert!(INDICATOR_LOGICAL_H <= 64.0);
+        assert!(now <= previous / 4.0);
+    }
+
+    #[test]
+    fn a_smaller_window_stays_inside_a_saved_corner() {
+        let area = WorkArea { x: 0, y: 0, width: 1920, height: 1080 };
+        let (x, y) = clamp_origin(1600, 1000, INDICATOR_LOGICAL_W as i32, INDICATOR_LOGICAL_H as i32, area);
+        assert!(x >= area.x && y >= area.y);
+        assert!(x + INDICATOR_LOGICAL_W as i32 <= area.x + area.width);
+        assert!(y + INDICATOR_LOGICAL_H as i32 <= area.y + area.height);
+    }
 
     #[test]
     fn clamp_keeps_a_saved_point_inside_the_work_area() {
