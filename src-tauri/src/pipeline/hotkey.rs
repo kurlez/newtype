@@ -31,6 +31,58 @@ pub fn altgr_bound() -> bool {
     ALTGR_BOUND.load(Ordering::SeqCst)
 }
 
+/// Windows virtual-key code for a named key, when it has one stable code.
+pub fn virtual_key(key: KeyId) -> Option<u32> {
+    Some(match key {
+        KeyId::AltLeft => 0xA4,
+        KeyId::AltRight => 0xA5,
+        KeyId::ControlLeft => 0xA2,
+        KeyId::ControlRight => 0xA3,
+        KeyId::ShiftLeft => 0xA0,
+        KeyId::ShiftRight => 0xA1,
+        KeyId::MetaLeft => 0x5B,
+        KeyId::MetaRight => 0x5C,
+        KeyId::Enter => 0x0D,
+        KeyId::Space => 0x20,
+        KeyId::Escape => 0x1B,
+        KeyId::Tab => 0x09,
+        KeyId::Backspace => 0x08,
+        KeyId::Delete => 0x2E,
+        KeyId::Letter(ch) if ch.is_ascii_uppercase() => ch as u32,
+        KeyId::Digit(n) if n <= 9 => 0x30 + u32::from(n),
+        KeyId::Function(n) if (1..=12).contains(&n) => 0x6F + u32::from(n),
+        KeyId::Vk(code) if code > 0 => u32::from(code),
+        _ => return None,
+    })
+}
+
+/// Decides that Windows has dropped the low-level hook.
+///
+/// A watched key is physically down, or was pressed, and the hook has not
+/// reported anything recently. The first sample only starts a suspicion so a
+/// timer that runs a moment before the hook message does not reinstall.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HookWatch {
+    suspect_since_ms: Option<u64>,
+}
+
+impl HookWatch {
+    pub fn observe(&mut self, last_callback_ms: u64, now_ms: u64, key_activity: bool) -> bool {
+        let recent = last_callback_ms > 0 && now_ms.saturating_sub(last_callback_ms) <= 300;
+        if !key_activity || recent {
+            self.suspect_since_ms = None;
+            return false;
+        }
+        match self.suspect_since_ms {
+            None => {
+                self.suspect_since_ms = Some(now_ms);
+                false
+            }
+            Some(since) => now_ms.saturating_sub(since) >= 400,
+        }
+    }
+}
+
 pub fn status() -> ModuleStatus {
     ModuleStatus {
         name: "hotkey",
@@ -310,7 +362,7 @@ impl HotkeyEngine {
     }
 }
 
-fn is_modifier(key: KeyId) -> bool {
+pub fn is_modifier(key: KeyId) -> bool {
     matches!(
         key,
         KeyId::AltLeft
@@ -595,6 +647,7 @@ fn parse_key(token: &str) -> Result<KeyId, String> {
         "tab" => KeyId::Tab,
         "backspace" => KeyId::Backspace,
         "delete" | "del" => KeyId::Delete,
+        "capslock" | "caps" => KeyId::Vk(0x14),
         "alt" | "option" | "opt" => {
             return Err("Say which side: Right Option or Left Option.".into());
         }
@@ -753,6 +806,7 @@ pub fn key_label(key: KeyId, os: OsKind) -> String {
         KeyId::Backspace => "Backspace".into(),
         KeyId::Delete => "Delete".into(),
         KeyId::Digit(n) => format!("{n}"),
+        KeyId::Vk(0x14) => "Caps Lock".into(),
         KeyId::Vk(code) => format!("Vk{code}"),
         KeyId::Other => "Other".into(),
     }
@@ -1432,5 +1486,21 @@ mod tests {
             released.events,
             vec![EngineEvent::Released(HotkeyMode::Dictate)]
         );
+    }
+
+    #[test]
+    fn a_quiet_hook_is_dead_only_after_the_key_stays_unreported() {
+        let mut watch = HookWatch::default();
+        assert!(!watch.observe(0, 1_000, false));
+        assert!(!watch.observe(0, 1_000, true));
+        assert!(watch.observe(0, 1_500, true));
+        let mut fresh = HookWatch::default();
+        assert!(!fresh.observe(1_400, 1_500, true));
+        assert!(!fresh.observe(1_400, 2_000, true));
+        assert_eq!(virtual_key(KeyId::AltRight), Some(0xA5));
+        assert_eq!(virtual_key(KeyId::Function(8)), Some(0x77));
+        let caps = parse_chord("CapsLock").unwrap();
+        assert_eq!(canonical(&caps), "Vk20");
+        assert_eq!(chord_label(&caps, OsKind::Windows), "Caps Lock");
     }
 }
