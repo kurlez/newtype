@@ -75,6 +75,9 @@ pub struct DictationSettings {
     /// `auto` follows the system UI language. `en` and `zh` override it.
     #[serde(default = "default_ui_language")]
     pub ui_language: String,
+    /// `taskbar` (Windows default), `floating`, or `hidden`.
+    #[serde(default = "default_indicator_place")]
+    pub indicator_place: String,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -85,6 +88,44 @@ fn default_window_translucent() -> bool {
 
 fn default_ui_language() -> String {
     "auto".into()
+}
+
+fn default_indicator_place() -> String {
+    #[cfg(windows)]
+    {
+        "taskbar".into()
+    }
+    #[cfg(not(windows))]
+    {
+        "floating".into()
+    }
+}
+
+pub fn indicator_place(value: &str) -> &'static str {
+    match value {
+        "hidden" => "hidden",
+        "floating" => "floating",
+        "taskbar" => {
+            #[cfg(windows)]
+            {
+                "taskbar"
+            }
+            #[cfg(not(windows))]
+            {
+                "floating"
+            }
+        }
+        _ => {
+            #[cfg(windows)]
+            {
+                "taskbar"
+            }
+            #[cfg(not(windows))]
+            {
+                "floating"
+            }
+        }
+    }
 }
 
 impl Default for DictationSettings {
@@ -114,6 +155,7 @@ impl Default for DictationSettings {
             window_translucent: true,
             groq_rate_limit_fallback: true,
             ui_language: "auto".into(),
+            indicator_place: default_indicator_place(),
             providers,
             hotwords: Vec::new(),
         }
@@ -202,6 +244,12 @@ pub fn normalize(settings: &mut DictationSettings) {
         .into();
     if !matches!(settings.ui_language.as_str(), "en" | "zh" | "auto") {
         settings.ui_language = "auto".into();
+    }
+    if !matches!(
+        settings.indicator_place.as_str(),
+        "taskbar" | "floating" | "hidden"
+    ) {
+        settings.indicator_place = default_indicator_place();
     }
     fill_missing_providers(settings);
     for preset in cloud::presets() {
@@ -453,10 +501,7 @@ mod tests {
         assert_eq!(parsed.llm_provider, "groq");
         assert_eq!(parsed.thinking, "low");
         assert!(parsed.groq_rate_limit_fallback);
-        assert_eq!(
-            parsed.providers["groq"].asr_model,
-            "whisper-large-v3-turbo"
-        );
+        assert_eq!(parsed.providers["groq"].asr_model, "whisper-large-v3-turbo");
         assert_eq!(parsed.providers["groq"].llm_model, "openai/gpt-oss-20b");
     }
 
@@ -587,6 +632,10 @@ mod tests {
         assert_eq!(parsed.history_retention, "month");
         assert!(parsed.window_translucent);
         assert_eq!(parsed.ui_language, "auto");
+        #[cfg(windows)]
+        assert_eq!(parsed.indicator_place, "taskbar");
+        #[cfg(not(windows))]
+        assert_eq!(parsed.indicator_place, "floating");
         assert_eq!(
             effective(&parsed, OsKind::Windows).unwrap().target_language,
             "English"

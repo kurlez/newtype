@@ -243,9 +243,20 @@ function windowSection(settings: DictationSettings): string {
     return "";
   }
   const checked = settings.windowTranslucent !== false ? "checked" : "";
+  const place = settings.indicatorPlace || "taskbar";
+  const option = (value: string, label: string) =>
+    `<option value="${value}" ${place === value ? "selected" : ""}>${label}</option>`;
   return `<section id="sec-window">
       <h2>${ui("Window", "窗口")}</h2>
       <label class="choice"><input type="checkbox" id="window-translucent" ${checked} /><span>${ui("Translucent window", "半透明窗口")}<small>${ui("Windows 11 uses Mica or Acrylic. Windows 10 uses a light transparency. Text stays on a readable panel.", "Windows 11 使用 Mica 或 Acrylic。Windows 10 使用轻微透明。文字仍在可读的面板上。")}</small></span></label>
+      <label>${ui("Indicator", "状态条")}
+        <select id="indicator-place">
+          ${option("taskbar", ui("Taskbar", "任务栏"))}
+          ${option("floating", ui("Floating", "浮窗"))}
+          ${option("hidden", ui("Hidden", "隐藏"))}
+        </select>
+        <small>${ui("Shown in the empty space just left of the clock. If that space is too small, the panel floats.", "显示在时钟左边的空位。空位不够时改用浮窗。")}</small>
+      </label>
     </section>`;
 }
 
@@ -517,6 +528,10 @@ function bind(): void {
     syncTranslucency();
     void save();
   });
+  document.querySelector("#indicator-place")?.addEventListener("change", (event) => {
+    snap.settings.indicatorPlace = (event.target as HTMLSelectElement).value || "taskbar";
+    void save();
+  });
   document.querySelector("#ui-language")?.addEventListener("change", (event) => {
     snap.settings.uiLanguage = (event.target as HTMLSelectElement).value || "auto";
     applyLanguage(snap.settings.uiLanguage, snap.language || "");
@@ -605,6 +620,10 @@ function readForm(): void {
   const translucent = document.querySelector<HTMLInputElement>("#window-translucent");
   if (translucent) {
     settings.windowTranslucent = translucent.checked;
+  }
+  const place = document.querySelector<HTMLSelectElement>("#indicator-place");
+  if (place) {
+    settings.indicatorPlace = place.value || settings.indicatorPlace || "taskbar";
   }
   const groqFallback = document.querySelector<HTMLInputElement>("#groq-openai-fallback");
   if (groqFallback) {

@@ -35,7 +35,7 @@ export async function mount(): Promise<void> {
     if (target?.closest("button")) {
       return;
     }
-    if (isPreview()) {
+    if (isPreview() || document.body.dataset.place === "taskbar") {
       return;
     }
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
@@ -80,6 +80,7 @@ export async function mount(): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   const snap = await invoke<Snapshot>("dictation_snapshot");
   applyLanguage(snap.settings.uiLanguage || "auto", snap.language || "");
+  document.body.dataset.place = snap.settings.indicatorPlace || "floating";
   relabel();
   await refreshLatest();
   await listen<PhaseEvent>("dictation://phase", (event) => {

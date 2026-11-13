@@ -20,6 +20,7 @@ export const previewSnapshot: Snapshot = {
     targetLanguage: "English",
     historyRetention: "month",
     windowTranslucent: true,
+    indicatorPlace: "floating",
     groqRateLimitFallback: true,
     uiLanguage: "auto",
     providers: {

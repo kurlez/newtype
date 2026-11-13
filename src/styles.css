@@ -517,9 +517,19 @@ body.indicator #app {
   background: #8ddec0;
 }
 
+.bar[data-phase="recording"] .dot {
+  background: #e24b4b;
+  box-shadow: 0 0 0 3px rgba(226, 75, 75, 0.45);
+}
+
 .bar[data-phase="error"] .dot,
 .bar[data-phase="fallback"] .dot {
   background: #e2b07a;
+}
+
+body.indicator[data-place="taskbar"] .bar {
+  border-radius: 6px;
+  background: rgba(32, 32, 32, 0.94);
 }
 
 .meter {
