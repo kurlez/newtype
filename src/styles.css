@@ -405,12 +405,27 @@ textarea {
 html.indicator,
 html.indicator body,
 body.indicator,
+body.indicator #app,
+body.indicator .bar {
+  box-sizing: border-box;
+}
+
+html.indicator,
+html.indicator body,
+body.indicator,
 body.indicator #app {
   background: transparent;
   color: #f3efe6;
   border: 0;
   outline: none;
   box-shadow: none;
+}
+
+html.indicator,
+html.indicator body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
 body.indicator #app {
@@ -528,8 +543,33 @@ body.indicator #app {
 }
 
 body.indicator[data-place="taskbar"] .bar {
-  border-radius: 6px;
+  height: 100%;
+  border-radius: 0;
+  padding: 0 6px;
   background: rgba(32, 32, 32, 0.94);
+}
+
+body.indicator[data-place="taskbar"] .bar strong {
+  font-size: var(--strip-font, 12px);
+}
+
+body.indicator[data-place="taskbar"] .grip {
+  height: var(--strip-grip, 16px);
+}
+
+body.indicator[data-place="taskbar"] .dot {
+  width: var(--strip-dot, 8px);
+  height: var(--strip-dot, 8px);
+}
+
+body.indicator[data-place="taskbar"] .bar button {
+  width: var(--strip-control, 20px);
+  height: var(--strip-control, 20px);
+}
+
+body.indicator[data-place="taskbar"] .bar button svg {
+  width: var(--strip-icon, 14px);
+  height: var(--strip-icon, 14px);
 }
 
 .meter {

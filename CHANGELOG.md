@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-11-13: The Windows taskbar strip is exactly as tall as the taskbar, flush with its top and bottom, and stays above the Windows 11 taskbar. It is shown at startup. If it cannot be placed, the panel floats.
+- 2026-11-13: Saving one setting no longer clears hotkeys or other settings. An empty hotkey is stored only when Restore default hotkeys is used.
 - 2026-11-13: On Windows the status strip sits in the taskbar, just left of the clock, instead of floating. Floating and hidden remain available. If that gap is too small, the panel floats.
 - 2026-11-13: The floating overlay is one short row, about a quarter of the previous area. The window has no border and no shadow, so only the rounded panel shows.
 - 2026-11-13: CI uses GitHub-hosted runners again. Pull requests test and build macOS and Windows without secrets. Publish stays on main, version tags, and a manual run of those refs.

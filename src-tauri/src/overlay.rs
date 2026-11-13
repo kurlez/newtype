@@ -43,6 +43,11 @@ pub fn configure_indicator(window: &WebviewWindow) {
 }
 
 #[cfg(target_os = "windows")]
+pub fn indicator_hwnd(window: &WebviewWindow) -> Option<*mut std::ffi::c_void> {
+    raw_hwnd(window)
+}
+
+#[cfg(target_os = "windows")]
 fn raw_hwnd(window: &WebviewWindow) -> Option<*mut std::ffi::c_void> {
     let hwnd = window.hwnd().ok()?;
     Some(hwnd.0 as *mut std::ffi::c_void)
@@ -52,14 +57,19 @@ fn raw_hwnd(window: &WebviewWindow) -> Option<*mut std::ffi::c_void> {
 fn apply_windows_noactivate(window: &WebviewWindow) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     };
     let Some(hwnd) = raw_hwnd(window) else {
         return;
     };
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let next = style | (WS_EX_NOACTIVATE as isize) | (WS_EX_TOOLWINDOW as isize);
+        // Tool window: no taskbar button. Topmost so the Win11 XAML taskbar cannot cover it.
+        let next = (style & !(WS_EX_APPWINDOW as isize))
+            | (WS_EX_NOACTIVATE as isize)
+            | (WS_EX_TOOLWINDOW as isize)
+            | (WS_EX_TOPMOST as isize);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
         SetWindowPos(
             hwnd,

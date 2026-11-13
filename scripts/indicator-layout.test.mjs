@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { applyLanguage, mixesLanguages } from "../src/i18n.ts";
-import { routeBadge, statusLine } from "../src/indicator-layout.ts";
+import { routeBadge, statusLine, taskbarStripVars } from "../src/indicator-layout.ts";
 
 const zhWords = { auto: "自动", offline: "离线", local: "本地", cloud: "云端" };
 const enWords = { auto: "Auto", offline: "Offline", local: "Local", cloud: "Cloud" };
@@ -19,6 +19,19 @@ test("the overlay is about a quarter of the previous 480 by 132 panel", () => {
   assert.match(window, /\.decorations\(false\)/);
   assert.match(window, /\.transparent\(true\)/);
   assert.match(window, /\.shadow\(false\)/);
+});
+
+test("a 48px taskbar keeps the strip content inside that height", () => {
+  const fitted = taskbarStripVars(48);
+  assert.deepEqual(fitted, { fontPx: 12, iconPx: 14, controlPx: 20, dotPx: 8, gripPx: 16 });
+  for (const size of [fitted.fontPx, fitted.iconPx, fitted.controlPx, fitted.dotPx, fitted.gripPx]) {
+    assert.ok(size < 48);
+  }
+  const shorter = taskbarStripVars(32);
+  assert.ok(shorter.controlPx < fitted.controlPx);
+  assert.ok(shorter.fontPx <= fitted.fontPx);
+  assert.ok(shorter.controlPx <= 32);
+  assert.ok(shorter.iconPx <= shorter.controlPx);
 });
 
 test("status stays one language and the route chip stays short", () => {
