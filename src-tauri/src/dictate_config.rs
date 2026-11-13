@@ -281,6 +281,135 @@ pub fn save(path: &Path, settings: &DictationSettings) -> Result<(), String> {
     std::fs::write(path, body).map_err(|err| err.to_string())
 }
 
+/// Apply a settings-screen patch onto the settings already stored.
+///
+/// Only keys present in `patch` are written. An empty hotkey string does not
+/// replace a saved chord unless `clearHotkeys` is true (Restore default hotkeys).
+/// Blank strings for other identity fields, such as the route preference, are
+/// ignored so a partial form cannot reset them to the built-in default.
+pub fn merge_ui_settings(
+    stored: &DictationSettings,
+    patch: &serde_json::Value,
+) -> Result<DictationSettings, String> {
+    let obj = patch
+        .as_object()
+        .ok_or_else(|| "Settings save must be an object.".to_string())?;
+    let mut next = stored.clone();
+    let clear_hotkeys = obj
+        .get("clearHotkeys")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if let Some(value) = json_str(obj, "dictateHotkey") {
+        assign_hotkey_field(&mut next.dictate_hotkey, value, clear_hotkeys);
+    }
+    if let Some(value) = json_str(obj, "translateHotkey") {
+        assign_hotkey_field(&mut next.translate_hotkey, value, clear_hotkeys);
+    }
+    if let Some(value) = json_str(obj, "commandHotkey") {
+        assign_hotkey_field(&mut next.command_hotkey, value, clear_hotkeys);
+    }
+    assign_text(obj, "asrProvider", &mut next.asr_provider, true);
+    assign_text(obj, "llmProvider", &mut next.llm_provider, true);
+    assign_text(obj, "talkMode", &mut next.talk_mode, true);
+    assign_text(obj, "polishLevel", &mut next.polish_level, true);
+    assign_text(obj, "preference", &mut next.preference, true);
+    assign_text(obj, "thinking", &mut next.thinking, true);
+    assign_text(obj, "microphone", &mut next.microphone, false);
+    assign_text(obj, "localMirror", &mut next.local_mirror, true);
+    assign_text(obj, "localAsrId", &mut next.local_asr_id, false);
+    assign_text(obj, "localLlmId", &mut next.local_llm_id, false);
+    assign_text(obj, "targetLanguage", &mut next.target_language, true);
+    assign_text(obj, "historyRetention", &mut next.history_retention, true);
+    assign_text(obj, "uiLanguage", &mut next.ui_language, true);
+    assign_text(obj, "indicatorPlace", &mut next.indicator_place, true);
+    if let Some(value) = obj.get("windowTranslucent").and_then(|value| value.as_bool()) {
+        next.window_translucent = value;
+    }
+    if let Some(value) = obj
+        .get("groqRateLimitFallback")
+        .and_then(|value| value.as_bool())
+    {
+        next.groq_rate_limit_fallback = value;
+    }
+    if let Some(value) = obj
+        .get("localDownloadSkipped")
+        .and_then(|value| value.as_bool())
+    {
+        next.local_download_skipped = value;
+    }
+    if let Some(value) = obj.get("localIdleMinutes").and_then(|value| value.as_u64()) {
+        next.local_idle_minutes = u32::try_from(value).unwrap_or(u32::MAX);
+    }
+    if let Some(words) = obj.get("hotwords") {
+        next.hotwords = serde_json::from_value(words.clone())
+            .map_err(|err| format!("Could not read the dictionary in this save: {err}"))?;
+    }
+    if let Some(providers) = obj.get("providers").and_then(|value| value.as_object()) {
+        merge_provider_patch(&mut next, providers)?;
+    }
+    normalize(&mut next);
+    Ok(next)
+}
+
+fn json_str<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a str> {
+    obj.get(key).and_then(|value| value.as_str())
+}
+
+fn assign_text(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    slot: &mut String,
+    keep_when_blank: bool,
+) {
+    let Some(value) = json_str(obj, key) else {
+        return;
+    };
+    if keep_when_blank && value.trim().is_empty() && !slot.trim().is_empty() {
+        return;
+    }
+    *slot = value.to_string();
+}
+
+fn assign_hotkey_field(slot: &mut String, value: &str, clear: bool) {
+    if value.trim().is_empty() && !slot.trim().is_empty() && !clear {
+        return;
+    }
+    *slot = value.to_string();
+}
+
+fn merge_provider_patch(
+    settings: &mut DictationSettings,
+    providers: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    for (id, value) in providers {
+        let fields = value
+            .as_object()
+            .ok_or_else(|| format!("Provider {id} must be an object."))?;
+        let entry = settings.providers.entry(id.clone()).or_default();
+        assign_provider_text(fields, "asrModel", &mut entry.asr_model, true);
+        assign_provider_text(fields, "llmModel", &mut entry.llm_model, true);
+        assign_provider_text(fields, "base", &mut entry.base, false);
+        assign_provider_text(fields, "asrBase", &mut entry.asr_base, false);
+        assign_provider_text(fields, "llmBase", &mut entry.llm_base, false);
+        assign_provider_text(fields, "asrWire", &mut entry.asr_wire, true);
+        assign_provider_text(fields, "thinking", &mut entry.thinking, true);
+        assign_provider_text(fields, "volcAppId", &mut entry.volc_app_id, false);
+    }
+    Ok(())
+}
+
+fn assign_provider_text(
+    fields: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    slot: &mut String,
+    keep_when_blank: bool,
+) {
+    assign_text(fields, key, slot, keep_when_blank);
+}
+
 /// Store one chord and leave the other two alone.
 ///
 /// A Typeless clash is a warning. The chord is still stored. An empty chord,
@@ -640,6 +769,69 @@ mod tests {
             effective(&parsed, OsKind::Windows).unwrap().target_language,
             "English"
         );
+    }
+
+    #[test]
+    fn a_partial_save_does_not_clobber_hotkeys_or_the_route_preference() {
+        let mut stored = DictationSettings::default();
+        stored.dictate_hotkey = "AltRight".into();
+        stored.translate_hotkey = "AltRight+ShiftRight".into();
+        stored.command_hotkey = "AltRight+Enter".into();
+        stored.preference = "localOnly".into();
+        stored.indicator_place = "floating".into();
+        stored.window_translucent = false;
+        stored.hotwords.push(Hotword {
+            canonical: "Zorblax".into(),
+            aliases: vec!["zor".into()],
+            pattern: String::new(),
+        });
+        let patch = serde_json::json!({
+            "indicatorPlace": "taskbar",
+            "dictateHotkey": "",
+            "translateHotkey": "",
+            "commandHotkey": "",
+            "preference": "",
+            "windowTranslucent": true
+        });
+        let merged = merge_ui_settings(&stored, &patch).unwrap();
+        assert_eq!(merged.dictate_hotkey, "AltRight");
+        assert_eq!(merged.translate_hotkey, "AltRight+ShiftRight");
+        assert_eq!(merged.command_hotkey, "AltRight+Enter");
+        assert_eq!(merged.preference, "localOnly");
+        assert_eq!(merged.indicator_place, "taskbar");
+        assert!(merged.window_translucent);
+        assert_eq!(merged.hotwords.len(), 1);
+        assert_eq!(merged.hotwords[0].canonical, "Zorblax");
+        let windows = effective(&merged, OsKind::Windows).unwrap();
+        assert_eq!(windows.hotkey_labels[0], "Right Alt");
+        assert_eq!(windows.preference, RoutePreference::LocalOnly);
+
+        let changed = merge_ui_settings(
+            &merged,
+            &serde_json::json!({"preference": "cloudOnly"}),
+        )
+        .unwrap();
+        assert_eq!(changed.preference, "cloudOnly");
+        assert_eq!(changed.dictate_hotkey, "AltRight");
+
+        let cleared = merge_ui_settings(
+            &stored,
+            &serde_json::json!({
+                "clearHotkeys": true,
+                "dictateHotkey": "",
+                "translateHotkey": "",
+                "commandHotkey": ""
+            }),
+        )
+        .unwrap();
+        assert_eq!(cleared.dictate_hotkey, "");
+        assert_eq!(cleared.translate_hotkey, "");
+        assert_eq!(cleared.command_hotkey, "");
+        assert_eq!(cleared.preference, "localOnly");
+        let defaults = effective(&cleared, OsKind::Windows).unwrap();
+        assert_eq!(defaults.hotkey_labels[0], "Right Ctrl");
+        assert_eq!(defaults.hotkey_labels[1], "Right Ctrl + Right Shift");
+        assert_eq!(defaults.hotkey_labels[2], "Right Ctrl + Enter");
     }
 
     #[test]

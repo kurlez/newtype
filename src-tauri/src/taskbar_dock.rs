@@ -1,9 +1,10 @@
 //! Dock the indicator in the empty taskbar strip beside the system tray.
 //!
-//! Windows 11 has no DeskBand API. The window is a borderless topmost panel
-//! whose right edge sits against the tray and whose height matches the taskbar.
-//! If that strip is missing or too narrow, the caller keeps the floating panel.
-//! This module does not draw a tray icon.
+//! Windows 11 has no DeskBand API, and a child parented into `Shell_TrayWnd`
+//! sits behind the XAML island. The window is a topmost tool popup
+//! (`WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE`) laid over the taskbar,
+//! flush with its edge and exactly as thick as the bar. If that strip cannot be
+//! placed, the caller keeps the floating panel. This module does not draw a tray icon.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PxRect {
@@ -43,6 +44,17 @@ pub struct DockQuery {
     pub gap: i32,
 }
 
+impl BarEdge {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Top => "top",
+            Self::Right => "right",
+            Self::Bottom => "bottom",
+        }
+    }
+}
+
 pub fn edge_from_appbar(edge: u32) -> BarEdge {
     match edge {
         0 => BarEdge::Left,
@@ -50,6 +62,85 @@ pub fn edge_from_appbar(edge: u32) -> BarEdge {
         2 => BarEdge::Right,
         _ => BarEdge::Bottom,
     }
+}
+
+/// Move `outer` so its visible frame lands on `requested`.
+///
+/// `visible` is the on-screen frame (DWM extended bounds). It can be inset
+/// from the Win32 outer rect. The returned rect is the next outer rect.
+pub fn adjusted_outer(requested: PxRect, visible: PxRect, outer: PxRect) -> PxRect {
+    PxRect {
+        x: outer.x + (requested.x - visible.x),
+        y: outer.y + (requested.y - visible.y),
+        width: (outer.width + (requested.width - visible.width)).max(1),
+        height: (outer.height + (requested.height - visible.height)).max(1),
+    }
+}
+
+/// Pick a notification-area rect from descendant windows when `TrayNotifyWnd`
+/// itself is missing. The XAML island that covers the whole bar is ignored.
+pub fn tray_from_children(taskbar: PxRect, edge: BarEdge, children: &[PxRect]) -> Option<PxRect> {
+    let (origin, span) = match edge {
+        BarEdge::Left | BarEdge::Right => (taskbar.y, taskbar.height),
+        BarEdge::Top | BarEdge::Bottom => (taskbar.x, taskbar.width),
+    };
+    if span <= 0 {
+        return None;
+    }
+    let trailing = origin.saturating_add(span);
+    let bar_thickness = match edge {
+        BarEdge::Left | BarEdge::Right => taskbar.width,
+        BarEdge::Top | BarEdge::Bottom => taskbar.height,
+    };
+    let mut best: Option<PxRect> = None;
+    for child in children {
+        if !rects_overlap(taskbar, *child) {
+            continue;
+        }
+        let (end, length, thickness) = match edge {
+            BarEdge::Left | BarEdge::Right => {
+                (child.y.saturating_add(child.height), child.height, child.width)
+            }
+            BarEdge::Top | BarEdge::Bottom => {
+                (child.x.saturating_add(child.width), child.width, child.height)
+            }
+        };
+        if length <= 0 || thickness <= 0 || thickness > bar_thickness.saturating_add(8) {
+            continue;
+        }
+        if (end - trailing).abs() > 8 {
+            continue;
+        }
+        if length.saturating_mul(10) >= span.saturating_mul(7) {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some(current) => length > long_side(edge, current),
+        };
+        if replace {
+            best = Some(*child);
+        }
+    }
+    best
+}
+
+fn long_side(edge: BarEdge, rect: PxRect) -> i32 {
+    match edge {
+        BarEdge::Left | BarEdge::Right => rect.height,
+        BarEdge::Top | BarEdge::Bottom => rect.width,
+    }
+}
+
+fn rects_overlap(a: PxRect, b: PxRect) -> bool {
+    a.width > 0
+        && a.height > 0
+        && b.width > 0
+        && b.height > 0
+        && a.x < b.x.saturating_add(b.width)
+        && b.x < a.x.saturating_add(a.width)
+        && a.y < b.y.saturating_add(b.height)
+        && b.y < a.y.saturating_add(a.height)
 }
 
 /// Width and minimum width for a taskbar of `thickness` physical pixels.
@@ -134,31 +225,25 @@ mod win {
     pub struct Reading {
         pub taskbar: PxRect,
         pub edge: BarEdge,
+        pub tray: PxRect,
         pub tray_start: i32,
         pub icons_end: Option<i32>,
         pub fullscreen: bool,
     }
 
-    pub fn read() -> Option<Reading> {
-        use windows_sys::Win32::Foundation::{HWND, RECT};
-        use windows_sys::Win32::Graphics::Gdi::{
-            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-        };
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+    pub fn read() -> Result<Reading, &'static str> {
+        use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::Shell::{SHAppBarMessage, ABM_GETTASKBARPOS, APPBARDATA};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowW, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowRect,
-            GetWindowThreadProcessId, GW_CHILD, GW_HWNDNEXT,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
 
         unsafe {
-            let tray = FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null());
-            if tray.is_null() {
-                return None;
+            let shell = FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null());
+            if shell.is_null() {
+                return Err("taskbar window not found");
             }
             let mut data = APPBARDATA {
                 cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-                hWnd: tray,
+                hWnd: shell,
                 ..APPBARDATA::default()
             };
             let ok = SHAppBarMessage(ABM_GETTASKBARPOS, &mut data);
@@ -166,8 +251,8 @@ mod win {
                 from_rect(data.rc)
             } else {
                 let mut rect = RECT::default();
-                if GetWindowRect(tray, &mut rect) == 0 {
-                    return None;
+                if GetWindowRect(shell, &mut rect) == 0 {
+                    return Err("taskbar rect not found");
                 }
                 from_rect(rect)
             };
@@ -184,16 +269,12 @@ mod win {
             } else {
                 BarEdge::Right
             };
-            let notify = find_class(tray, "TrayNotifyWnd")?;
-            let mut notify_rect = RECT::default();
-            if GetWindowRect(notify, &mut notify_rect) == 0 {
-                return None;
-            }
+            let tray = tray_rect(shell, taskbar, edge).ok_or("tray rect not found")?;
             let tray_start = match edge {
-                BarEdge::Top | BarEdge::Bottom => notify_rect.left,
-                BarEdge::Left | BarEdge::Right => notify_rect.top,
+                BarEdge::Top | BarEdge::Bottom => tray.x,
+                BarEdge::Left | BarEdge::Right => tray.y,
             };
-            let icons_end = find_class(tray, "MSTaskListWClass").and_then(|hwnd| {
+            let icons_end = find_class(shell, "MSTaskListWClass").and_then(|hwnd| {
                 let mut rect = RECT::default();
                 if GetWindowRect(hwnd, &mut rect) == 0 {
                     return None;
@@ -203,13 +284,200 @@ mod win {
                     BarEdge::Left | BarEdge::Right => rect.bottom,
                 })
             });
-            Some(Reading {
+            Ok(Reading {
                 taskbar,
                 edge,
+                tray,
                 tray_start,
                 icons_end,
-                fullscreen: foreground_is_fullscreen(tray),
+                fullscreen: foreground_is_fullscreen(shell),
             })
+        }
+    }
+
+    /// Place a topmost tool window so its visible frame equals `slot`.
+    /// Re-asserting `HWND_TOPMOST` keeps the strip above the Win11 XAML taskbar
+    /// after the bar is clicked.
+    pub fn place_strip(hwnd: *mut std::ffi::c_void, slot: PxRect) -> Result<PxRect, String> {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        };
+        if slot.width <= 0 || slot.height <= 0 {
+            return Err("strip rect is empty".into());
+        }
+        let hwnd = hwnd as HWND;
+        if hwnd.is_null() {
+            return Err("indicator window has no handle".into());
+        }
+        unsafe {
+            apply_tool_styles(hwnd);
+            let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
+            if SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                slot.x,
+                slot.y,
+                slot.width,
+                slot.height,
+                flags,
+            ) == 0
+            {
+                return Err("SetWindowPos failed".into());
+            }
+            // The visible frame can be inset from the outer rect. Nudge twice;
+            // the inset is stable, so the second pass lands on the taskbar.
+            for _ in 0..2 {
+                let visible = visible_rect(hwnd).ok_or("could not read the strip rect")?;
+                let outer = window_rect(hwnd).ok_or("could not read the window rect")?;
+                let adjusted = super::adjusted_outer(slot, visible, outer);
+                if adjusted == outer {
+                    break;
+                }
+                if SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    adjusted.x,
+                    adjusted.y,
+                    adjusted.width,
+                    adjusted.height,
+                    flags,
+                ) == 0
+                {
+                    return Err("SetWindowPos failed while aligning the strip".into());
+                }
+            }
+            // Clicking the taskbar raises that topmost window. Put the strip back.
+            if SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            ) == 0
+            {
+                return Err("could not keep the strip above the taskbar".into());
+            }
+            let visible =
+                visible_rect(hwnd).ok_or_else(|| "could not read the strip rect".to_string())?;
+            if (visible.x - slot.x).abs() > 2
+                || (visible.y - slot.y).abs() > 2
+                || (visible.width - slot.width).abs() > 2
+                || (visible.height - slot.height).abs() > 2
+            {
+                return Err(format!(
+                    "strip rect {},{} {}x{} does not match taskbar slot {},{} {}x{}",
+                    visible.x,
+                    visible.y,
+                    visible.width,
+                    visible.height,
+                    slot.x,
+                    slot.y,
+                    slot.width,
+                    slot.height
+                ));
+            }
+            Ok(visible)
+        }
+    }
+
+    unsafe fn tray_rect(
+        shell: windows_sys::Win32::Foundation::HWND,
+        taskbar: PxRect,
+        edge: BarEdge,
+    ) -> Option<PxRect> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        if let Some(notify) = find_class(shell, "TrayNotifyWnd") {
+            let mut rect = RECT::default();
+            if GetWindowRect(notify, &mut rect) != 0 {
+                let parsed = from_rect(rect);
+                if parsed.width > 0 && parsed.height > 0 && super::rects_overlap(taskbar, parsed) {
+                    return Some(parsed);
+                }
+            }
+        }
+        let mut children = Vec::new();
+        collect_rects(shell, &mut children);
+        super::tray_from_children(taskbar, edge, &children)
+    }
+
+    unsafe fn apply_tool_styles(hwnd: windows_sys::Win32::Foundation::HWND) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        };
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let next = (style & !(WS_EX_APPWINDOW as isize))
+            | (WS_EX_TOOLWINDOW as isize)
+            | (WS_EX_NOACTIVATE as isize)
+            | (WS_EX_TOPMOST as isize);
+        if next == style {
+            return;
+        }
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+
+    unsafe fn visible_rect(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<PxRect> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+        let mut rect = RECT::default();
+        let hr = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            &mut rect as *mut RECT as *mut _,
+            std::mem::size_of::<RECT>() as u32,
+        );
+        if hr == 0 {
+            let parsed = from_rect(rect);
+            if parsed.width > 0 && parsed.height > 0 {
+                return Some(parsed);
+            }
+        }
+        window_rect(hwnd)
+    }
+
+    unsafe fn window_rect(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<PxRect> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return None;
+        }
+        let parsed = from_rect(rect);
+        if parsed.width > 0 && parsed.height > 0 {
+            Some(parsed)
+        } else {
+            None
+        }
+    }
+
+    unsafe fn collect_rects(root: windows_sys::Win32::Foundation::HWND, out: &mut Vec<PxRect>) {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindow, GetWindowRect, GW_CHILD, GW_HWNDNEXT};
+        let mut child = GetWindow(root, GW_CHILD);
+        while !child.is_null() {
+            let mut rect = RECT::default();
+            if GetWindowRect(child, &mut rect) != 0 {
+                let parsed = from_rect(rect);
+                if parsed.width > 0 && parsed.height > 0 {
+                    out.push(parsed);
+                }
+            }
+            collect_rects(child, out);
+            child = GetWindow(child, GW_HWNDNEXT);
         }
     }
 
@@ -301,6 +569,8 @@ mod win {
 }
 
 #[cfg(windows)]
+pub use win::place_strip;
+#[cfg(windows)]
 pub use win::read as read_taskbar;
 
 #[cfg(test)]
@@ -322,6 +592,7 @@ mod tests {
         assert_eq!(edge_from_appbar(1), BarEdge::Top);
         assert_eq!(edge_from_appbar(2), BarEdge::Right);
         assert_eq!(edge_from_appbar(3), BarEdge::Bottom);
+        assert_eq!(BarEdge::Bottom.as_str(), "bottom");
     }
 
     #[test]
@@ -407,6 +678,89 @@ mod tests {
                 height: 256
             })
         );
+    }
+
+    #[test]
+    fn a_48px_taskbar_on_a_1920x1200_screen_is_flush_with_the_bar() {
+        let taskbar = PxRect {
+            x: 0,
+            y: 1152,
+            width: 1920,
+            height: 48,
+        };
+        let (desired, minimum) = dock_sizes(taskbar.height);
+        let fit = fit_dock(&DockQuery {
+            taskbar,
+            edge: BarEdge::Bottom,
+            tray_start: 1680,
+            icons_end: Some(1100),
+            desired,
+            minimum,
+            gap: 4,
+        });
+        assert_eq!(
+            fit,
+            DockFit::Slot(PxRect {
+                x: 1420,
+                y: 1152,
+                width: 256,
+                height: 48
+            })
+        );
+    }
+
+    #[test]
+    fn the_outer_window_shifts_so_the_visible_frame_matches_the_taskbar() {
+        let requested = PxRect {
+            x: 1420,
+            y: 1152,
+            width: 256,
+            height: 48,
+        };
+        let visible = PxRect {
+            x: 1420,
+            y: 1153,
+            width: 256,
+            height: 46,
+        };
+        assert_eq!(
+            adjusted_outer(requested, visible, requested),
+            PxRect {
+                x: 1420,
+                y: 1151,
+                width: 256,
+                height: 50
+            }
+        );
+        assert_eq!(adjusted_outer(requested, requested, requested), requested);
+    }
+
+    #[test]
+    fn a_missing_tray_window_is_derived_from_the_notify_area() {
+        let taskbar = PxRect {
+            x: 0,
+            y: 1152,
+            width: 1920,
+            height: 48,
+        };
+        let island = taskbar;
+        let clock = PxRect {
+            x: 1840,
+            y: 1152,
+            width: 80,
+            height: 48,
+        };
+        let tray = PxRect {
+            x: 1680,
+            y: 1152,
+            width: 240,
+            height: 48,
+        };
+        assert_eq!(
+            tray_from_children(taskbar, BarEdge::Bottom, &[island, clock, tray]),
+            Some(tray)
+        );
+        assert_eq!(tray_from_children(taskbar, BarEdge::Bottom, &[island]), None);
     }
 
     #[test]

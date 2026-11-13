@@ -1,4 +1,4 @@
-import { routeBadge, routeKind, statusLine, type RouteWords } from "./indicator-layout";
+import { routeBadge, routeKind, statusLine, taskbarStripVars, type RouteWords } from "./indicator-layout";
 import { applyLanguage, t, ui } from "./i18n";
 import { previewPhases } from "./preview";
 import { escapeHtml, isPreview, type HistoryEntry, type PhaseEvent, type Snapshot } from "./types";
@@ -81,6 +81,7 @@ export async function mount(): Promise<void> {
   const snap = await invoke<Snapshot>("dictation_snapshot");
   applyLanguage(snap.settings.uiLanguage || "auto", snap.language || "");
   document.body.dataset.place = snap.settings.indicatorPlace || "floating";
+  watchStripSize();
   relabel();
   await refreshLatest();
   await listen<PhaseEvent>("dictation://phase", (event) => {
@@ -89,6 +90,36 @@ export async function mount(): Promise<void> {
       void refreshLatest();
     }
   });
+}
+
+function watchStripSize(): void {
+  const apply = () => applyStripScale();
+  apply();
+  new MutationObserver(apply).observe(document.body, {
+    attributes: true,
+    attributeFilter: ["data-place"],
+  });
+  new ResizeObserver(apply).observe(document.documentElement);
+  window.addEventListener("resize", apply);
+}
+
+function applyStripScale(): void {
+  const root = document.documentElement;
+  if (document.body.dataset.place !== "taskbar") {
+    root.style.removeProperty("--strip-font");
+    root.style.removeProperty("--strip-icon");
+    root.style.removeProperty("--strip-control");
+    root.style.removeProperty("--strip-dot");
+    root.style.removeProperty("--strip-grip");
+    return;
+  }
+  const height = root.clientHeight || window.innerHeight;
+  const vars = taskbarStripVars(height);
+  root.style.setProperty("--strip-font", `${vars.fontPx}px`);
+  root.style.setProperty("--strip-icon", `${vars.iconPx}px`);
+  root.style.setProperty("--strip-control", `${vars.controlPx}px`);
+  root.style.setProperty("--strip-dot", `${vars.dotPx}px`);
+  root.style.setProperty("--strip-grip", `${vars.gripPx}px`);
 }
 
 function relabel(): void {

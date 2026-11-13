@@ -28,6 +28,30 @@ export function routeKind(route: string): "fallback" | "strict" | "local" | "clo
   return "cloud";
 }
 
+export interface StripVars {
+  fontPx: number;
+  iconPx: number;
+  controlPx: number;
+  dotPx: number;
+  gripPx: number;
+}
+
+/** Sizes for a taskbar strip whose CSS height is `heightPx`. 48px is the 100% Windows 11 bar. */
+export function taskbarStripVars(heightPx: number): StripVars {
+  const height = Number.isFinite(heightPx) && heightPx > 0 ? heightPx : 48;
+  const scale = height / 48;
+  const controlPx = clamp(Math.round(20 * scale), 14, Math.max(14, height - 4));
+  const iconPx = clamp(Math.round(14 * scale), 10, Math.max(10, controlPx - 2));
+  const fontPx = clamp(Math.round(12 * scale), 10, Math.max(10, height - 8));
+  const dotPx = clamp(Math.round(8 * scale), 5, Math.max(5, controlPx - 4));
+  const gripPx = clamp(Math.round(16 * scale), 8, Math.max(8, height - 8));
+  return { fontPx, iconPx, controlPx, dotPx, gripPx };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 /** Short chip. The full route string stays on the tooltip. */
 export function routeBadge(route: string, words: RouteWords): string {
   switch (routeKind(route)) {

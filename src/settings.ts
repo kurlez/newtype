@@ -480,8 +480,12 @@ function paint(): void {
 
 function bind(): void {
   document.querySelector("#groq-openai-fallback")?.addEventListener("change", (event) => {
-    snap.settings.groqRateLimitFallback = (event.target as HTMLInputElement).checked;
-    void save();
+    const groqRateLimitFallback = (event.target as HTMLInputElement).checked;
+    if (groqRateLimitFallback === snap.settings.groqRateLimitFallback) {
+      return;
+    }
+    snap.settings.groqRateLimitFallback = groqRateLimitFallback;
+    void persist({ groqRateLimitFallback });
   });
   document.querySelector("#cloud-preset")?.addEventListener("change", (event) => {
     const id = (event.target as HTMLSelectElement).value;
@@ -502,10 +506,11 @@ function bind(): void {
   });
   for (const input of document.querySelectorAll<HTMLInputElement>('input[name="preference"]')) {
     input.addEventListener("change", () => {
-      if (input.checked) {
-        snap.settings.preference = input.value;
-        void save();
+      if (!input.checked || input.value === snap.settings.preference) {
+        return;
       }
+      snap.settings.preference = input.value;
+      void persist({ preference: input.value });
     });
   }
   for (const input of document.querySelectorAll<HTMLInputElement>('input[name="talk"]')) {
@@ -524,18 +529,30 @@ function bind(): void {
   }
   document.querySelector("#save")?.addEventListener("click", () => void save());
   document.querySelector("#window-translucent")?.addEventListener("change", (event) => {
-    snap.settings.windowTranslucent = (event.target as HTMLInputElement).checked;
+    const windowTranslucent = (event.target as HTMLInputElement).checked;
+    if (windowTranslucent === snap.settings.windowTranslucent) {
+      return;
+    }
+    snap.settings.windowTranslucent = windowTranslucent;
     syncTranslucency();
-    void save();
+    void persist({ windowTranslucent });
   });
   document.querySelector("#indicator-place")?.addEventListener("change", (event) => {
-    snap.settings.indicatorPlace = (event.target as HTMLSelectElement).value || "taskbar";
-    void save();
+    const indicatorPlace = (event.target as HTMLSelectElement).value || "taskbar";
+    if (indicatorPlace === (snap.settings.indicatorPlace || "taskbar")) {
+      return;
+    }
+    snap.settings.indicatorPlace = indicatorPlace;
+    void persist({ indicatorPlace });
   });
   document.querySelector("#ui-language")?.addEventListener("change", (event) => {
-    snap.settings.uiLanguage = (event.target as HTMLSelectElement).value || "auto";
-    applyLanguage(snap.settings.uiLanguage, snap.language || "");
-    void save();
+    const uiLanguage = (event.target as HTMLSelectElement).value || "auto";
+    if (uiLanguage === (snap.settings.uiLanguage || "auto")) {
+      return;
+    }
+    snap.settings.uiLanguage = uiLanguage;
+    applyLanguage(uiLanguage, snap.language || "");
+    void persist({ uiLanguage });
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-tab]")) {
     button.addEventListener("click", () => {
@@ -702,15 +719,45 @@ function readHotwords(): void {
   snap.settings.hotwords = words;
 }
 
+function formPatch(): Record<string, unknown> {
+  const settings = snap.settings;
+  return {
+    asrProvider: settings.asrProvider,
+    llmProvider: settings.llmProvider,
+    talkMode: settings.talkMode,
+    polishLevel: settings.polishLevel,
+    preference: settings.preference,
+    thinking: settings.thinking,
+    microphone: settings.microphone,
+    localMirror: settings.localMirror,
+    localDownloadSkipped: settings.localDownloadSkipped,
+    localAsrId: settings.localAsrId,
+    localLlmId: settings.localLlmId,
+    localIdleMinutes: settings.localIdleMinutes,
+    targetLanguage: settings.targetLanguage,
+    historyRetention: settings.historyRetention,
+    windowTranslucent: settings.windowTranslucent,
+    indicatorPlace: settings.indicatorPlace,
+    groqRateLimitFallback: settings.groqRateLimitFallback,
+    uiLanguage: settings.uiLanguage,
+    providers: settings.providers,
+    hotwords: settings.hotwords,
+  };
+}
+
 async function save(): Promise<void> {
   readForm();
+  await persist(formPatch());
+}
+
+async function persist(patch: Record<string, unknown>): Promise<void> {
   if (preview) {
     notice = "Preview only. Settings are not saved.";
     paint();
     return;
   }
   try {
-    snap = await call<Snapshot>("dictation_save", { settings: snap.settings });
+    snap = await call<Snapshot>("dictation_save", { settings: patch });
     applyLanguage(snap.settings.uiLanguage || "auto", snap.language || "");
     notice = ui("Saved.", "已保存。");
     paint();
@@ -1061,7 +1108,12 @@ function bindHotkeyButtons(): void {
       snap.warnings = [...previewSnapshot.warnings];
     }
     setHotkeyMessage("Restored the default hotkeys. Dictate is Right Ctrl.");
-    void save();
+    void persist({
+      clearHotkeys: true,
+      dictateHotkey: "",
+      translateHotkey: "",
+      commandHotkey: "",
+    });
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-capture]")) {
     button.addEventListener("click", () => void capture((button.dataset.capture ?? "dictate") as HotkeyModeName));
@@ -1491,7 +1543,11 @@ function applyBundle(id: string): void {
   ensure(snap.settings, bundle.asrProvider).asrModel = bundle.asrModel;
   ensure(snap.settings, bundle.llmProvider).llmModel = bundle.llmModel;
   paint();
-  void save();
+  void persist({
+    asrProvider: snap.settings.asrProvider,
+    llmProvider: snap.settings.llmProvider,
+    providers: snap.settings.providers,
+  });
 }
 
 function groqFallbackControl(settings: DictationSettings): string {

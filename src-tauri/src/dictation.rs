@@ -1935,7 +1935,7 @@ fn sync_indicator(app: &AppHandle) {
         open_indicator(app);
     }
     let Some(window) = app.get_webview_window("indicator") else {
-        crate::diag::record("indicator window could not be created");
+        log_indicator("window", "indicator window could not be created");
         return;
     };
     let raw = app
@@ -1945,11 +1945,14 @@ fn sync_indicator(app: &AppHandle) {
         .map(|settings| settings.indicator_place.clone())
         .unwrap_or_default();
     let place = dictate_config::indicator_place(&raw);
+    log_indicator("mode", &format!("indicator mode {place}"));
     match place {
         "hidden" => {
             let _ = window.hide();
             mark_indicator(&window, "hidden");
             LAST.store(LAYOUT_HIDDEN, Ordering::Relaxed);
+            clear_indicator_log("fallback");
+            clear_indicator_log("strip");
         }
         "taskbar" => {
             if !dock_indicator(app, &window, &LAST) {
@@ -1960,8 +1963,63 @@ fn sync_indicator(app: &AppHandle) {
         _ => {
             let previous = LAST.swap(LAYOUT_FLOATING, Ordering::Relaxed);
             show_floating(&window, previous != LAYOUT_FLOATING);
+            clear_indicator_log("fallback");
+            clear_indicator_log("strip");
         }
     }
+}
+
+#[cfg(windows)]
+fn remembered_dock_failure(taskbar: crate::taskbar_dock::PxRect) -> Option<String> {
+    dock_failures().lock().expect("dock failure").as_ref().and_then(
+        |(rect, reason)| (*rect == taskbar).then(|| reason.clone()),
+    )
+}
+
+#[cfg(windows)]
+fn remember_dock_failure(taskbar: crate::taskbar_dock::PxRect, reason: &str) {
+    // These fail before the window moves, so the next tick can try again.
+    if reason == "indicator window has no handle" || reason == "could not size the strip" {
+        return;
+    }
+    *dock_failures().lock().expect("dock failure") = Some((taskbar, reason.to_string()));
+}
+
+#[cfg(windows)]
+fn clear_dock_failure() {
+    *dock_failures().lock().expect("dock failure") = None;
+}
+
+#[cfg(windows)]
+fn dock_failures() -> &'static std::sync::Mutex<Option<(crate::taskbar_dock::PxRect, String)>> {
+    static LAST: std::sync::OnceLock<
+        std::sync::Mutex<Option<(crate::taskbar_dock::PxRect, String)>>,
+    > = std::sync::OnceLock::new();
+    LAST.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn log_indicator(category: &str, line: &str) {
+    note_indicator(category, Some(line));
+}
+
+fn clear_indicator_log(category: &str) {
+    note_indicator(category, None);
+}
+
+fn note_indicator(category: &str, line: Option<&str>) {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    static LAST: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+    let mut last = LAST.lock().expect("indicator log");
+    let Some(line) = line else {
+        last.remove(category);
+        return;
+    };
+    if last.get(category).map(String::as_str) == Some(line) {
+        return;
+    }
+    last.insert(category.to_string(), line.to_string());
+    crate::diag::record(line);
 }
 
 fn show_floating(window: &tauri::WebviewWindow, reposition: bool) {
@@ -1982,11 +2040,40 @@ fn dock_indicator(
 ) -> bool {
     #[cfg(windows)]
     {
-        let Some(reading) = crate::taskbar_dock::read_taskbar() else {
-            return false;
+        let reading = match crate::taskbar_dock::read_taskbar() {
+            Ok(reading) => reading,
+            Err(reason) => {
+                log_indicator(
+                    "fallback",
+                    &format!("indicator fallback floating: {reason}"),
+                );
+                clear_indicator_log("strip");
+                return false;
+            }
         };
+        log_indicator(
+            "taskbar",
+            &format!(
+                "indicator taskbar rect {},{} {}x{} edge {}",
+                reading.taskbar.x,
+                reading.taskbar.y,
+                reading.taskbar.width,
+                reading.taskbar.height,
+                reading.edge.as_str()
+            ),
+        );
+        log_indicator(
+            "tray",
+            &format!(
+                "indicator tray rect {},{} {}x{}",
+                reading.tray.x, reading.tray.y, reading.tray.width, reading.tray.height
+            ),
+        );
         if reading.fullscreen {
             let _ = window.hide();
+            log_indicator("hidden", "indicator hidden: fullscreen app");
+            clear_indicator_log("fallback");
+            clear_indicator_log("strip");
             return true;
         }
         let thickness = match reading.edge {
@@ -2015,52 +2102,93 @@ fn dock_indicator(
         }) {
             crate::taskbar_dock::DockFit::Collapsed => {
                 let _ = window.hide();
+                log_indicator("hidden", "indicator hidden: taskbar collapsed");
+                clear_indicator_log("fallback");
+                clear_indicator_log("strip");
                 true
             }
-            crate::taskbar_dock::DockFit::NoRoom => false,
+            crate::taskbar_dock::DockFit::NoRoom => {
+                log_indicator(
+                    "fallback",
+                    "indicator fallback floating: gap beside the tray is too small",
+                );
+                clear_indicator_log("strip");
+                false
+            }
             crate::taskbar_dock::DockFit::Slot(slot) => {
-                place_physical(window, slot);
-                crate::overlay::configure_indicator(window);
-                if !window.is_visible().unwrap_or(false) {
-                    crate::overlay::show_without_activating(window);
+                if let Some(reason) = remembered_dock_failure(reading.taskbar) {
+                    log_indicator(
+                        "fallback",
+                        &format!("indicator fallback floating: {reason}"),
+                    );
+                    clear_indicator_log("strip");
+                    return false;
                 }
-                mark_indicator(window, "taskbar");
-                last.store(LAYOUT_TASKBAR, Ordering::Relaxed);
-                true
+                match place_taskbar_strip(window, slot) {
+                    Ok(visible) => {
+                        clear_dock_failure();
+                        log_indicator(
+                            "strip",
+                            &format!(
+                                "indicator strip rect {},{} {}x{}",
+                                visible.x, visible.y, visible.width, visible.height
+                            ),
+                        );
+                        clear_indicator_log("fallback");
+                        clear_indicator_log("hidden");
+                        mark_indicator(window, "taskbar");
+                        last.store(LAYOUT_TASKBAR, Ordering::Relaxed);
+                        true
+                    }
+                    Err(reason) => {
+                        remember_dock_failure(reading.taskbar, &reason);
+                        log_indicator(
+                            "fallback",
+                            &format!("indicator fallback floating: {reason}"),
+                        );
+                        clear_indicator_log("strip");
+                        false
+                    }
+                }
             }
         }
     }
     #[cfg(not(windows))]
     {
         let _ = (_app, window, last);
+        log_indicator(
+            "fallback",
+            "indicator fallback floating: taskbar docking is windows-only",
+        );
         false
     }
 }
 
 #[cfg(windows)]
-fn place_physical(window: &tauri::WebviewWindow, slot: crate::taskbar_dock::PxRect) {
+fn place_taskbar_strip(
+    window: &tauri::WebviewWindow,
+    slot: crate::taskbar_dock::PxRect,
+) -> Result<crate::taskbar_dock::PxRect, String> {
     use tauri::{PhysicalPosition, PhysicalSize, Position, Size};
     let width = slot.width.max(1) as u32;
     let height = slot.height.max(1) as u32;
-    let same_size = window
-        .outer_size()
-        .ok()
-        .map(|size| size.width == width && size.height == height)
-        .unwrap_or(false);
-    let same_pos = window
-        .outer_position()
-        .ok()
-        .map(|pos| pos.x == slot.x && pos.y == slot.y)
-        .unwrap_or(false);
-    if !same_size {
-        let _ = window.set_size(Size::Physical(PhysicalSize { width, height }));
-    }
-    if !same_pos {
-        let _ = window.set_position(Position::Physical(PhysicalPosition {
+    window
+        .set_size(Size::Physical(PhysicalSize { width, height }))
+        .map_err(|_| "could not size the strip".to_string())?;
+    window
+        .set_position(Position::Physical(PhysicalPosition {
             x: slot.x,
             y: slot.y,
-        }));
+        }))
+        .map_err(|_| "could not move the strip".to_string())?;
+    crate::overlay::configure_indicator(window);
+    let hwnd = crate::overlay::indicator_hwnd(window)
+        .ok_or_else(|| "indicator window has no handle".to_string())?;
+    let visible = crate::taskbar_dock::place_strip(hwnd, slot)?;
+    if !window.is_visible().unwrap_or(false) {
+        crate::overlay::show_without_activating(window);
     }
+    Ok(visible)
 }
 
 fn mark_indicator(window: &tauri::WebviewWindow, place: &str) {
@@ -2106,9 +2234,27 @@ fn open_indicator(app: &AppHandle) {
     .shadow(false)
     .initialization_script("window.__newtypeIndicator = true;")
     .build();
-    if let Ok(window) = built {
-        crate::overlay::configure_indicator(&window);
+    match built {
+        Ok(window) => {
+            crate::overlay::configure_indicator(&window);
+            crate::diag::record("indicator window created");
+        }
+        Err(_) => crate::diag::record("indicator window could not be created"),
     }
+}
+
+pub fn save_settings_patch(
+    app: &AppHandle,
+    patch: &serde_json::Value,
+) -> Result<Snapshot, String> {
+    let stored = app
+        .state::<Dictation>()
+        .settings
+        .lock()
+        .expect("settings")
+        .clone();
+    let merged = dictate_config::merge_ui_settings(&stored, patch)?;
+    save_settings(app, merged)
 }
 
 pub fn save_settings(app: &AppHandle, mut settings: DictationSettings) -> Result<Snapshot, String> {

@@ -38,9 +38,9 @@ pub fn dictation_snapshot(app: AppHandle) -> crate::dictation::Snapshot {
 #[tauri::command]
 pub fn dictation_save(
     app: AppHandle,
-    settings: crate::dictate_config::DictationSettings,
+    settings: serde_json::Value,
 ) -> Result<crate::dictation::Snapshot, String> {
-    crate::dictation::save_settings(&app, settings)
+    crate::dictation::save_settings_patch(&app, &settings)
 }
 
 #[tauri::command]
