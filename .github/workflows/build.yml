@@ -122,21 +122,21 @@ jobs:
             throw "rustup.exe was not found from the runner .env, .path, PATH, or the account that owns $runnerRoot."
           }
           $resolvedCargo = Split-Path $cargoBin -Parent
-          if (-not $cargoHome -or -not (Test-Path (Join-Path $cargoHome 'bin\rustup.exe'))) {
-            Write-Output "CARGO_HOME from the runner .env did not point at rustup.exe. Using $resolvedCargo."
-            $cargoHome = $resolvedCargo
-          }
+          Write-Output "rustup.exe: $(Join-Path $cargoBin 'rustup.exe')"
           if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
-            $sibling = Join-Path (Split-Path $cargoHome -Parent) '.rustup'
+            $sibling = Join-Path (Split-Path $resolvedCargo -Parent) '.rustup'
             if (Test-Path $sibling) { $rustupHome = $sibling }
           }
           if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
-            throw "RUSTUP_HOME was not in the runner .env and no .rustup directory sits beside $cargoHome."
+            throw "RUSTUP_HOME was not in the runner .env and no .rustup directory sits beside $resolvedCargo."
           }
+          $cargoHome = Join-Path $runnerRoot 'cargo-home'
+          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
           Write-Output "CARGO_HOME=$cargoHome"
           Write-Output "RUSTUP_HOME=$rustupHome"
           Write-Utf8Env 'CARGO_HOME' $cargoHome
           Write-Utf8Env 'RUSTUP_HOME' $rustupHome
+          Write-Utf8Env 'NEWTYPE_CARGO_BIN' $cargoBin
           $processPath = "$cargoBin;" + (($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $cargoBin) }) -join ';')
           Write-Utf8Env 'Path' $processPath
 
@@ -162,13 +162,14 @@ jobs:
           if (-not $env:CARGO_HOME -or -not $env:RUSTUP_HOME) {
             throw "CARGO_HOME and RUSTUP_HOME must be loaded from the runner .env before this step."
           }
-          $cargoBin = Join-Path $env:CARGO_HOME 'bin'
-          $rustup = Join-Path $cargoBin 'rustup.exe'
-          $rustc = Join-Path $cargoBin 'rustc.exe'
-          if (-not (Test-Path $rustup) -or -not (Test-Path $rustc)) {
-            throw "rustup.exe was not found at $rustup. The runner .env must point at the install setup verified."
+          $rustupCmd = Get-Command rustup.exe -ErrorAction SilentlyContinue
+          $rustcCmd = Get-Command rustc.exe -ErrorAction SilentlyContinue
+          if (-not $rustupCmd -or -not $rustcCmd) {
+            throw "rustup.exe is not on PATH. The runner .env Path must include the cargo bin that setup verified."
           }
-          $env:Path = "$cargoBin;" + (($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $cargoBin.TrimEnd('\')) }) -join ';')
+          $rustup = $rustupCmd.Source
+          $rustc = $rustcCmd.Source
+          Write-Output "rustup=$rustup"
           & $rustup toolchain install stable --profile minimal
           & $rustup default stable
           & $rustup target add x86_64-pc-windows-msvc
@@ -197,8 +198,8 @@ jobs:
           }
           $utf8 = New-Object System.Text.UTF8Encoding $false
           $bat = Join-Path $install "VC\Auxiliary\Build\vcvars64.bat"
-          $cargoBin = $null
-          if ($env:CARGO_HOME) {
+          $cargoBin = $env:NEWTYPE_CARGO_BIN
+          if (-not $cargoBin -and $env:CARGO_HOME) {
             $cargoBin = Join-Path $env:CARGO_HOME 'bin'
           }
           cmd /c "`"$bat`" >nul && set" | ForEach-Object {

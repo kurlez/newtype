@@ -1,6 +1,6 @@
 # Changelog
 
-- 2026-11-13: The Windows job reads `CARGO_HOME` and `RUSTUP_HOME` from the runner `.env` (and `.path` when that file names `rustup.exe`). It does not use the SYSTEM profile.
+- 2026-11-13: The Windows job takes rustup from the runner `.env` Path and keeps the crate registry in the runner directory, so a SYSTEM job does not reuse the interactive account's cargo config.
 - 2026-11-13: Windows workflow steps use Windows PowerShell (`powershell`), which is already on the machine. `pwsh` is not required.
 - 2026-11-13: The Windows runner service defaults to `NT AUTHORITY\SYSTEM` with no password. A registered runner that has no service is removed and configured again. `CARGO_HOME` and `RUSTUP_HOME` in the runner `.env` are the rustup install the script verified.
 - 2026-11-12: The runner setup scripts stand alone. They keep the minimum rustc version in the script instead of reading `Cargo.toml`.
