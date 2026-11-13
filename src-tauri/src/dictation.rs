@@ -1916,9 +1916,10 @@ fn watch_taskbar(app: AppHandle) {
         .name("newtype-taskbar".into())
         .spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_millis(400));
-            let app = app.clone();
-            if app
-                .run_on_main_thread(move || sync_indicator(&app))
+            let hop = app.clone();
+            let shown = app.clone();
+            if hop
+                .run_on_main_thread(move || sync_indicator(&shown))
                 .is_err()
             {
                 break;

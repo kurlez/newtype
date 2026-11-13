@@ -302,8 +302,6 @@ mod win {
 
 #[cfg(windows)]
 pub use win::read as read_taskbar;
-#[cfg(windows)]
-pub use win::Reading as TaskbarReading;
 
 #[cfg(test)]
 mod tests {
