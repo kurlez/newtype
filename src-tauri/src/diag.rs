@@ -80,6 +80,18 @@ pub fn scrub(message: &str) -> String {
     let bytes = message.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
+        if starts_with_ignore_ascii(bytes, index, b"authorization:") {
+            let mut token_end = index + "authorization:".len();
+            while token_end < bytes.len() && bytes[token_end].is_ascii_whitespace() {
+                token_end += 1;
+            }
+            while token_end < bytes.len() && !bytes[token_end].is_ascii_whitespace() {
+                token_end += 1;
+            }
+            out.push_str("[redacted]");
+            index = token_end;
+            continue;
+        }
         if starts_with_ignore_ascii(bytes, index, b"sk-")
             || starts_with_ignore_ascii(bytes, index, b"bearer ")
         {
@@ -118,6 +130,9 @@ mod tests {
             "failed [redacted] [redacted] and [redacted] done"
         );
         assert_eq!(scrub("Right Ctrl listener started"), "Right Ctrl listener started");
+        let header = scrub("Authorization: Bearer sk-live-secret");
+        assert!(!header.to_ascii_lowercase().contains("sk-live"));
+        assert!(!header.to_ascii_lowercase().contains("bearer sk-"));
     }
 
     #[test]

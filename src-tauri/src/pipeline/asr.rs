@@ -13,5 +13,6 @@ pub fn status() -> ModuleStatus {
 pub trait AsrProvider {
     #[allow(dead_code)]
     fn id(&self) -> &'static str;
+    #[allow(dead_code)]
     fn transcribe(&self, wav: &[u8]) -> Result<String, String>;
 }

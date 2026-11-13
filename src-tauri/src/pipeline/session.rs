@@ -129,16 +129,19 @@ fn recover_audio(
     mut log: Vec<String>,
 ) -> Outcome {
     if preference == RoutePreference::CloudDefault && local_asr_ready {
-        let line = "route cloud speech failed; retrying the same recording on the local model";
-        log.push(line.into());
-        on_event(line);
+        let reason = failure_clause(err);
+        let line = format!(
+            "route cloud speech failed ({reason}); retrying the same recording on the local model"
+        );
+        log.push(line.clone());
+        on_event(&line);
         return match local_audio(wav) {
             Ok(body) => done(
                 PathLabel::LocalAutoFallback,
                 RouteReason::CloudFailedFallback,
                 Via::FallbackAudio,
                 body,
-                "Inserted. The cloud provider failed, so this recording used the local model.",
+                &format!("{reason}. This recording used the local model."),
                 false,
                 log,
             ),
@@ -188,19 +191,19 @@ fn recover_rewrite(
     mut log: Vec<String>,
 ) -> Outcome {
     if preference == RoutePreference::CloudDefault && local_llm_ready {
-        let line = "route cloud rewrite failed; retrying the same transcript on the local model";
-        log.push(line.into());
-        on_event(line);
+        let reason = failure_clause(err);
+        let line = format!(
+            "route cloud rewrite failed ({reason}); retrying the same transcript on the local model"
+        );
+        log.push(line.clone());
+        on_event(&line);
         return match local_rewrite(transcript) {
             Ok(body) => done(
                 PathLabel::LocalAutoFallback,
                 RouteReason::CloudFailedFallback,
                 Via::FallbackRewrite,
                 body,
-                crate::locale::text(
-                    "Inserted. The cloud rewrite failed, so this transcript used the local model.",
-                    "已插入。云端改写失败，这段转写改用了本地模型。",
-                ),
+                &format!("{reason}. This transcript used the local model."),
                 false,
                 log,
             ),
@@ -326,6 +329,15 @@ fn failed(label: PathLabel, message: String, raw: &str, ruled: &str, keep_audio:
     })
 }
 
+fn failure_clause(err: &str) -> String {
+    let compact = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact
+        .chars()
+        .take(160)
+        .collect::<String>()
+        .replace(");", " ")
+}
+
 fn clip(text: &str) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     compact.chars().take(160).collect()
@@ -383,7 +395,9 @@ mod tests {
                 assert_eq!(done.via, Via::FallbackAudio);
                 assert_eq!(done.body.text, "local transcript");
                 assert!(done.message.contains("local model"));
+                assert!(done.message.contains("timed out"));
                 assert!(done.log.iter().any(|line| line.contains("same recording")));
+                assert!(done.log.iter().any(|line| line.contains("timed out")));
             }
             Outcome::Failed(failed) => panic!("{}", failed.message),
         }
