@@ -1,3 +1,4 @@
+import { routeBadge, routeKind, statusLine, type RouteWords } from "./indicator-layout";
 import { applyLanguage, t, ui } from "./i18n";
 import { previewPhases } from "./preview";
 import { escapeHtml, isPreview, type HistoryEntry, type PhaseEvent, type Snapshot } from "./types";
@@ -13,21 +14,19 @@ export async function mount(): Promise<void> {
   document.body.classList.add("indicator");
   app.innerHTML = `
     <div class="bar" id="bar">
-      <div class="bar-top">
-        <span class="grip" id="grip" title="${escapeHtml(t("drag"))}" aria-hidden="true"></span>
-        <span class="dot" id="dot"></span>
-        <strong id="phase">${escapeHtml(t("idle"))}</strong>
-        <span id="route"></span>
-        <button type="button" id="history" title="${escapeHtml(t("history"))}">${escapeHtml(t("history"))}</button>
-        <button type="button" id="cancel" title="${escapeHtml(t("cancel"))}">${escapeHtml(t("cancel"))}</button>
-      </div>
-      <div class="bar-actions" id="actions" hidden>
-        <button type="button" class="icon" id="copy" title="${escapeHtml(t("copy"))}" aria-label="${escapeHtml(t("copy"))}">${iconCopy()}</button>
-        <button type="button" class="icon" id="reinsert" title="${escapeHtml(t("insert"))}" aria-label="${escapeHtml(t("insert"))}">${iconInsert()}</button>
-        <button type="button" class="icon" id="open-history" title="${escapeHtml(t("openHistory"))}" aria-label="${escapeHtml(t("openHistory"))}">${iconHistory()}</button>
-      </div>
-      <div class="meter" id="meter" aria-hidden="true"></div>
-      <p id="message"></p>
+      <span class="grip" id="grip" title="${escapeHtml(t("drag"))}" aria-hidden="true"></span>
+      <span class="dot" id="dot"></span>
+      <strong id="phase">${escapeHtml(t("idle"))}</strong>
+      <span id="route" class="badge"></span>
+      <span class="tools">
+        <span class="bar-actions" id="actions" hidden>
+          <button type="button" class="icon" id="copy" title="${escapeHtml(t("copy"))}" aria-label="${escapeHtml(t("copy"))}">${iconCopy()}</button>
+          <button type="button" class="icon" id="reinsert" title="${escapeHtml(t("insert"))}" aria-label="${escapeHtml(t("insert"))}">${iconInsert()}</button>
+        </span>
+        <button type="button" class="icon" id="history" title="${escapeHtml(t("history"))}" aria-label="${escapeHtml(t("history"))}">${iconHistory()}</button>
+        <button type="button" class="icon" id="cancel" title="${escapeHtml(t("cancel"))}" aria-label="${escapeHtml(t("cancel"))}">${iconCancel()}</button>
+      </span>
+      <p id="message" class="sr"></p>
     </div>
   `;
   const bar = document.querySelector<HTMLDivElement>("#bar");
@@ -56,7 +55,6 @@ export async function mount(): Promise<void> {
   document.querySelector("#history")?.addEventListener("click", () => void openHistory(false));
   document.querySelector("#copy")?.addEventListener("click", () => void act("dictation_copy_history"));
   document.querySelector("#reinsert")?.addEventListener("click", () => void act("dictation_reinsert_history"));
-  document.querySelector("#open-history")?.addEventListener("click", () => void openHistory(true));
   if (isPreview()) {
     let index = 0;
     const next = document.createElement("button");
@@ -97,23 +95,18 @@ function relabel(): void {
   if (phase && !phase.textContent) {
     phase.textContent = t("idle");
   }
-  const history = document.querySelector("#history");
-  if (history) {
-    history.textContent = t("history");
-    history.setAttribute("title", t("history"));
-  }
-  const cancel = document.querySelector("#cancel");
-  if (cancel) {
-    cancel.textContent = t("cancel");
-    cancel.setAttribute("title", t("cancel"));
-  }
+  setTip("#history", "history");
+  setTip("#cancel", "cancel");
   setTip("#copy", "copy");
   setTip("#reinsert", "insert");
-  setTip("#open-history", "openHistory");
   document.querySelector("#grip")?.setAttribute("title", t("drag"));
 }
 
-function setTip(selector: string, key: "copy" | "insert" | "openHistory"): void {
+function routeWords(): RouteWords {
+  return { auto: ui("Auto", "自动"), offline: ui("Offline", "离线"), local: ui("Local", "本地"), cloud: ui("Cloud", "云端") };
+}
+
+function setTip(selector: string, key: "copy" | "insert" | "history" | "cancel"): void {
   const node = document.querySelector(selector);
   node?.setAttribute("title", t(key));
   node?.setAttribute("aria-label", t(key));
@@ -151,35 +144,18 @@ function render(event: PhaseEvent): void {
   const phase = document.querySelector("#phase");
   const route = document.querySelector("#route");
   const message = document.querySelector("#message");
-  const meter = document.querySelector("#meter");
-  if (!bar || !phase || !route || !message || !meter) {
+  if (!bar || !phase || !route || !message) {
     return;
   }
   bar.dataset.phase = event.phase;
-  bar.dataset.path = pathKind(event.route);
-  const title = label(event.phase, event.elapsedMs);
-  phase.textContent = event.mode ? `${event.mode} · ${title}` : title;
-  route.textContent = event.route;
+  bar.dataset.path = routeKind(event.route);
+  const title = statusLine(event.mode ?? "", label(event.phase, event.elapsedMs));
+  phase.textContent = title;
+  const detail = event.message ? `${title}. ${event.message}` : title;
+  phase.setAttribute("title", detail);
+  route.textContent = routeBadge(event.route, routeWords());
+  route.setAttribute("title", event.route);
   message.textContent = event.message;
-  const bars = 8;
-  const filled = Math.round(Math.min(1, Math.max(0, event.level)) * bars);
-  meter.innerHTML = Array.from({ length: bars }, (_, index) => `<i class="${index < filled ? "on" : ""}"></i>`).join("");
-  if (event.phase !== "recording" && event.phase !== "processing") {
-    meter.innerHTML = "";
-  }
-}
-
-function pathKind(route: string): string {
-  if (/fallback|automatic|自动|回落/.test(route)) {
-    return "fallback";
-  }
-  if (/offline|离线/.test(route)) {
-    return "strict";
-  }
-  if (/local|本地/i.test(route)) {
-    return "local";
-  }
-  return "cloud";
 }
 
 function label(phase: string, elapsedMs: number): string {
@@ -187,7 +163,7 @@ function label(phase: string, elapsedMs: number): string {
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   switch (phase) {
     case "recording":
-      return `${t("recording")} ${clock}`;
+      return clock;
     case "processing":
       return t("processing");
     case "inserted":
@@ -220,4 +196,8 @@ function iconInsert(): string {
 
 function iconHistory(): string {
   return `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 5.2V8l2 1.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`;
+}
+
+function iconCancel(): string {
+  return `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 }

@@ -1904,15 +1904,16 @@ fn open_indicator(app: &AppHandle) {
         WebviewUrl::App("index.html?view=indicator".into()),
     )
     .title("newtype")
-    .inner_size(480.0, 132.0)
+    .inner_size(256.0, 44.0)
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .focused(false)
     .visible(false)
     .transparent(true)
+    .background_color(tauri::webview::Color(0, 0, 0, 0))
     .resizable(false)
-    .shadow(true)
+    .shadow(false)
     .initialization_script("window.__newtypeIndicator = true;")
     .build();
     if let Ok(window) = built {

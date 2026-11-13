@@ -404,24 +404,36 @@ textarea {
 
 html.indicator,
 html.indicator body,
-body.indicator {
+body.indicator,
+body.indicator #app {
   background: transparent;
   color: #f3efe6;
+  border: 0;
+  outline: none;
+  box-shadow: none;
 }
 
 body.indicator #app {
   max-width: none;
   margin: 0;
-  padding: 8px;
+  padding: 0;
+  height: 100%;
 }
 
 .bar {
-  border: 1px solid rgba(58, 52, 44, 0.85);
-  border-radius: 14px;
-  background: rgba(33, 30, 26, 0.72);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  border-radius: 10px;
+  background: rgba(33, 30, 26, 0.78);
   backdrop-filter: blur(16px);
-  padding: 10px 12px;
+  padding: 4px 6px;
   cursor: grab;
+  overflow: hidden;
 }
 
 .bar button,
@@ -441,48 +453,61 @@ body.indicator #app {
   flex: none;
 }
 
+.tools,
 .bar-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 2px;
+  flex: none;
+}
+
+.tools {
+  margin-left: auto;
 }
 
 .bar-actions[hidden] {
   display: none;
 }
 
-.bar button.icon {
-  width: 28px;
-  height: 28px;
-  padding: 4px;
+.bar button {
+  border: 0;
+  background: transparent;
+  color: #f3efe6;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.bar button.icon svg {
-  width: 16px;
-  height: 16px;
+.bar button svg {
+  width: 14px;
+  height: 14px;
 }
 
-.bar-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.bar strong {
   font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.bar-top strong {
-  font-size: 14px;
-}
-
-.bar-top #route {
-  margin-left: auto;
-  color: #b7b0a4;
-  max-width: 54%;
-  text-align: right;
-  line-height: 1.3;
+.bar #route {
+  flex: none;
+  color: #d9d3c7;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  padding: 2px 6px;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .dot {
@@ -514,12 +539,15 @@ body.indicator #app {
   background: #8ddec0;
 }
 
-.bar p {
-  margin: 8px 0 0;
-  color: #f3efe6;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  font-size: 12px;
-  line-height: 1.4;
+.bar p.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  border: 0;
 }
 
 #preview-next {

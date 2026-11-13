@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-13: The floating overlay is one short row, about a quarter of the previous area. The window has no border and no shadow, so only the rounded panel shows.
 - 2026-11-13: CI uses GitHub-hosted runners again. Pull requests test and build macOS and Windows without secrets. Publish stays on main, version tags, and a manual run of those refs.
 - 2026-11-13: Windows bundles keep NSIS next to the build output. The SYSTEM account would otherwise cache it under `C:\windows\system32`, where the 32-bit NSIS launcher cannot start.
 - 2026-11-13: The Windows cargo target cache sits in the runner directory, outside `C:\windows\system32`.
