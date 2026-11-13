@@ -10,21 +10,21 @@ The comparable version is what the updater orders. The string in the tray and th
 
 | Build | Updater version | Shown in the app |
 | --- | --- | --- |
-| Local, or CI without `GITHUB_RUN_NUMBER` | `0.1.0-dev.0` | `0.1.0-dev.0+<7-char commit>` |
-| Push to `main`, and pull requests | `0.1.0-dev.<github.run_number>` | `0.1.0-dev.<run>+<7-char commit>` |
-| Git tag `v1.2.3` | `1.2.3` | `1.2.3+<7-char commit>` |
+| Local, or CI without `GITHUB_RUN_NUMBER` | `0.2.1-dev.0` | `0.2.1-dev.0+<7-char commit>` |
+| Push to `main`, and pull requests | `0.2.1-dev.<github.run_number>` | `0.2.1-dev.<run>+<7-char commit>` |
+| Git tag `v0.2.0` | `0.2.0` | `0.2.0+<7-char commit>` |
 
-`0.1.0` in `src-tauri/tauri.conf.json` is the **next stable** version, not a prerelease. Dev builds insert `-dev.<number>` in front of it. Ordering, which is what `tauri-plugin-updater` uses (`semver::Version`'s `Ord`), is:
+`0.2.0` in `src-tauri/tauri.conf.json` is the **latest stable** version. Dev builds use the next patch, so they sort above that release. Ordering, which is what `tauri-plugin-updater` uses (`semver::Version`'s `Ord`), is:
 
 ```text
-0.1.0-dev.1 < 0.1.0-dev.2 < 0.1.0-dev.10 < 0.1.0 < 0.2.0-dev.1 < 0.2.0
+0.1.0-dev.89 < 0.2.0 < 0.2.1-dev.1 < 0.2.1-dev.10 < 0.2.1
 ```
 
 The `+commit` suffix is display-only. It is not part of the package version. SemVer treats `+…` as build metadata, and this updater compares metadata alphabetically, so a commit hash is not a monotonic build number. A `+` in the version also breaks installer file names. The number after `-dev.` is `github.run_number` for `.github/workflows/build.yml`. Do not rename that file; the counter would restart and new builds would look older.
 
 Pull-request builds use the same counter but are not published. The next main build still has a higher number.
 
-A stable tag must be `v` plus plain `MAJOR.MINOR.PATCH`. After you publish `v0.1.0`, bump the plain version in `tauri.conf.json` and `src-tauri/Cargo.toml` to `0.2.0` before the next main push. Otherwise `0.1.0-dev.N` stays older than `0.1.0` and the updater will not offer it. See [SETUP.md](SETUP.md).
+A stable tag must be `v` plus plain `MAJOR.MINOR.PATCH`. The tag sets the published version. After you publish `v0.2.1`, bump the plain version in `tauri.conf.json`, `src-tauri/Cargo.toml`, and `package.json` to `0.2.1` before the next main push. Dev builds then become `0.2.2-dev.N`, which is newer than `0.2.1`. If you skip the bump, `0.2.1-dev.N` stays older than `0.2.1` and the updater will not offer it. See [SETUP.md](SETUP.md).
 
 ## Building locally
 
@@ -37,7 +37,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run app:dev
 ```
 
-`npm run app:dev` is the supported dev command. It stamps the running app as `0.1.0-dev.0+<commit>`. The window opens on launch and stays in the taskbar and Alt+Tab. Closing it minimizes the window. Quit is on the tray menu.
+`npm run app:dev` is the supported dev command. It stamps the running app as `0.2.1-dev.0+<commit>`. The window opens on launch and stays in the taskbar and Alt+Tab. Closing it minimizes the window. Quit is on the tray menu.
 
 A local installer needs the updater signing key in the environment, because update artifacts are signed at bundle time. `.env` files are not read.
 
@@ -58,7 +58,8 @@ push to main ──► build macOS arm64 (.dmg + .app.tar.gz) and Windows x64 (N
                  sign the updater artifacts with TAURI_SIGNING_PRIVATE_KEY
                  upload them and latest.json to the public dev prerelease
 
-tag v1.2.3  ──► same artifacts, uploaded as a non-prerelease v1.2.3
+tag v0.2.0  ──► same artifacts, uploaded as a non-prerelease v0.2.0
+                 also copied onto the dev feed when that feed is older than 0.2.0
 ```
 
 The source repository is private, so clients cannot download from it. Artifacts go to the public repository `https://github.com/kurlez/newtype-releases`.

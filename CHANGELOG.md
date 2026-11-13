@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+First stable release. A `v0.2.0` tag publishes that version on the stable channel and, when the dev feed is older, on the dev channel too. Later builds from `main` are `0.2.1-dev.N`, which the updater treats as newer than `0.2.0`.
+
+- The Windows status strip sits in the taskbar, flush with its height, and stays above the Windows 11 taskbar. A maximized window no longer hides it. Floating and hidden remain available.
+- The keyboard hook runs on its own message pump and is reinstalled if Windows drops it. Dictate can be chosen from a list. Enter and Escape reach other apps unless they finish a saved chord or a recording is in progress. Saving one setting no longer clears hotkeys.
+- A new install uses Groq for speech (`whisper-large-v3-turbo`) and rewrite (`openai/gpt-oss-20b`). A Groq rate limit retries that step once on OpenAI before the local model. Each provider has a Test connection button. Saved API keys drop surrounding whitespace.
+- Cloud speech and rewrite failures name the provider, endpoint, model, HTTP status, and a short redacted reason. The fallback status shows that reason.
+- The speech prompt stays inside each provider's character budget. Groq is 896 characters and OpenAI is 800, newest terms first, and a term is never cut in half. A prompt-length rejection is retried once with an empty prompt. Rewrite still sees the full dictionary.
+- Settings can compare Groq, Volcengine, and DashScope on one recording: raw text, polished text, both latencies, and a redacted error. Volcengine and DashScope receive the dictionary as native hotwords. The result can be saved on this computer.
+- Translate and command record. History can be searched, copied, inserted again, and kept for a chosen period. Local Qwen speech and rewrite models download on demand. API keys stay in the macOS Keychain or Windows Credential Manager.
+
 - 2026-11-13: The Windows keyboard hook lets Enter and Escape through unless they finish a saved chord or a recording is in progress. An empty hotkey matches nothing, and a slow hook passes the key on.
 - 2026-11-13: Settings can compare Groq, Volcengine, and DashScope on one recording. Each row shows the raw transcript, the polished text, both latencies, and a redacted error. Volcengine and DashScope receive the dictionary as native hotwords.
 - 2026-11-13: Cloud speech sends only as many dictionary terms as the provider allows. Groq stays at 896 characters and OpenAI at 800, newest terms first, and a term is never cut in half. A prompt-length rejection is retried once with an empty prompt. The rewrite step still sees the full dictionary.

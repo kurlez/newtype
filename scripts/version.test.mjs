@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appleSigningIdentity, childBuildEnv, configOverlay, resolveVersion, updaterPlatform } from "./with-version.mjs";
+import { appleSigningIdentity, childBuildEnv, compareVersions, configOverlay, nextDevBase, resolveVersion, updaterPlatform } from "./with-version.mjs";
 
 test("local builds use dev.0 and a display commit", () => {
   const resolved = resolveVersion({
@@ -11,9 +11,9 @@ test("local builds use dev.0 and a display commit", () => {
     platform: "darwin",
     arch: "arm64",
   });
-  assert.equal(resolved.version, "0.1.0-dev.0");
+  assert.equal(resolved.version, "0.1.1-dev.0");
   assert.equal(resolved.commit, "abcdef0");
-  assert.equal(resolved.fullVersion, "0.1.0-dev.0+abcdef0");
+  assert.equal(resolved.fullVersion, "0.1.1-dev.0+abcdef0");
   assert.equal(resolved.channel, "dev");
   assert.equal(resolved.updaterPlatform, "darwin-aarch64");
 });
@@ -27,8 +27,8 @@ test("main builds use the workflow run number", () => {
     platform: "win32",
     arch: "x64",
   });
-  assert.equal(resolved.version, "0.1.0-dev.12");
-  assert.equal(resolved.fullVersion, "0.1.0-dev.12+1234567");
+  assert.equal(resolved.version, "0.1.1-dev.12");
+  assert.equal(resolved.fullVersion, "0.1.1-dev.12+1234567");
   assert.equal(resolved.channel, "dev");
   assert.equal(resolved.updaterPlatform, "windows-x86_64");
 });
@@ -36,11 +36,22 @@ test("main builds use the workflow run number", () => {
 test("dev build numbers stay in semver prerelease order", () => {
   const a = resolveVersion({ base: "0.1.0", runNumber: "2", sha: "aaaaaaa" });
   const b = resolveVersion({ base: "0.1.0", runNumber: "10", sha: "bbbbbbb" });
-  assert.equal(a.version, "0.1.0-dev.2");
-  assert.equal(b.version, "0.1.0-dev.10");
-  assert.ok(comparePrerelease(a.version, b.version) < 0);
-  assert.ok(comparePrerelease(b.version, "0.1.0") < 0);
-  assert.ok(comparePrerelease("0.1.0", "0.2.0-dev.1") < 0);
+  assert.equal(a.version, "0.1.1-dev.2");
+  assert.equal(b.version, "0.1.1-dev.10");
+  assert.ok(compareVersions(a.version, b.version) < 0);
+  assert.ok(compareVersions(b.version, "0.1.1") < 0);
+  assert.equal(nextDevBase("0.2.0"), "0.2.1");
+  const stable = resolveVersion({
+    base: "0.2.0",
+    ref: "refs/tags/v0.2.0",
+    runNumber: "90",
+    sha: "abc1234ffff",
+  });
+  const laterDev = resolveVersion({ base: "0.2.0", runNumber: "91", sha: "bbbbbbb" });
+  assert.equal(stable.version, "0.2.0");
+  assert.equal(laterDev.version, "0.2.1-dev.91");
+  assert.ok(compareVersions("0.1.0-dev.89", "0.2.0") < 0);
+  assert.ok(compareVersions("0.2.0", laterDev.version) < 0);
 });
 
 test("a v* tag is the stable version and ignores the run number", () => {
@@ -112,42 +123,3 @@ test("only the two shipping targets have updater platform ids", () => {
   assert.equal(updaterPlatform("linux", "x64"), null);
 });
 
-function comparePrerelease(left, right) {
-  const a = split(left);
-  const b = split(right);
-  if (a.core !== b.core) {
-    return a.core < b.core ? -1 : 1;
-  }
-  if (a.pre.length === 0 && b.pre.length === 0) {
-    return 0;
-  }
-  if (a.pre.length === 0) {
-    return 1;
-  }
-  if (b.pre.length === 0) {
-    return -1;
-  }
-  const count = Math.max(a.pre.length, b.pre.length);
-  for (let index = 0; index < count; index += 1) {
-    if (a.pre[index] === undefined) {
-      return -1;
-    }
-    if (b.pre[index] === undefined) {
-      return 1;
-    }
-    const an = /^\d+$/.test(a.pre[index]);
-    const bn = /^\d+$/.test(b.pre[index]);
-    if (an && bn && a.pre[index] !== b.pre[index]) {
-      return Number(a.pre[index]) < Number(b.pre[index]) ? -1 : 1;
-    }
-    if (a.pre[index] !== b.pre[index]) {
-      return a.pre[index] < b.pre[index] ? -1 : 1;
-    }
-  }
-  return 0;
-}
-
-function split(version) {
-  const [core, pre = ""] = version.split("-");
-  return { core, pre: pre ? pre.split(".") : [] };
-}

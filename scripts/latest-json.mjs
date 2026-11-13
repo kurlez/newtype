@@ -133,6 +133,26 @@ export function collectRelease(artifactRoot, { repo, tag }) {
   };
 }
 
+/** Same artifacts, published on the rolling dev tag so that channel is offered this version too. */
+export function mirrorDevPlan(plan, { repo, devTag }) {
+  const platforms = plan.platforms.map((entry) => ({
+    ...entry,
+    url: assetUrl(repo, devTag, path.basename(entry.file)),
+  }));
+  return {
+    ...plan,
+    tag: devTag,
+    prerelease: true,
+    platforms,
+    latest: buildLatestJson({
+      version: plan.version,
+      notes: plan.notes,
+      pubDate: plan.latest.pub_date,
+      platforms,
+    }),
+  };
+}
+
 export function assetUrl(repo, tag, filename) {
   return `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(filename)}`;
 }

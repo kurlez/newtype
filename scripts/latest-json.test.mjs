@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildLatestJson, collectRelease } from "./latest-json.mjs";
-import { decodeTauriKey } from "./publish-release.mjs";
+import { buildLatestJson, collectRelease, mirrorDevPlan } from "./latest-json.mjs";
+import { decodeTauriKey, shouldMirrorToDev } from "./publish-release.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -91,6 +91,14 @@ test("stable channel publishes on the version tag", () => {
     assert.equal(plan.tag, "v0.1.0");
     assert.equal(plan.prerelease, false);
     assert.match(plan.latest.platforms["darwin-aarch64"].url, /\/download\/v0\.1\.0\//);
+    const mirrored = mirrorDevPlan(plan, { repo: "kurlez/newtype-releases", devTag: "dev" });
+    assert.equal(mirrored.tag, "dev");
+    assert.equal(mirrored.prerelease, true);
+    assert.equal(mirrored.latest.version, "0.1.0");
+    assert.match(mirrored.latest.platforms["darwin-aarch64"].url, /\/download\/dev\//);
+    assert.equal(shouldMirrorToDev("0.2.0", "0.1.0-dev.89"), true);
+    assert.equal(shouldMirrorToDev("0.2.0", null), true);
+    assert.equal(shouldMirrorToDev("0.2.0", "0.2.1-dev.91"), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

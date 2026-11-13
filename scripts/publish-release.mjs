@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectRelease } from "./latest-json.mjs";
+import { collectRelease, mirrorDevPlan } from "./latest-json.mjs";
 import { verifyMinisign } from "./minisign.mjs";
+import { compareVersions } from "./with-version.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -82,34 +83,31 @@ function ensureRepo(repo) {
   }
 }
 
-function main() {
-  const artifacts = arg("--artifacts", "artifacts");
-  const endpoints = JSON.parse(
-    readFileSync(path.join(root, "src-tauri/update-endpoints.json"), "utf8"),
+export function shouldMirrorToDev(stableVersion, devVersion) {
+  if (!devVersion) {
+    return true;
+  }
+  return compareVersions(devVersion, stableVersion) < 0;
+}
+
+function readDevVersion(repo, tag) {
+  const dir = mkdtempSync(path.join(tmpdir(), "newtype-dev-feed-"));
+  const downloaded = gh(
+    ["release", "download", tag, "--repo", repo, "--pattern", "latest.json", "--dir", dir, "--clobber"],
+    { allowFailure: true },
   );
-  const repo = arg("--repo", endpoints.repo);
-  const conf = JSON.parse(readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
-  const pubkey = conf.plugins.updater.pubkey;
-  const placeholder = readFileSync(
-    path.join(root, "src-tauri/placeholder-updater-pubkey.txt"),
-    "utf8",
-  ).trim();
-  if (pubkey.trim() === placeholder) {
-    console.error("plugins.updater.pubkey is still the committed placeholder.");
-    console.error("Generate a keypair with `npm run tauri signer generate`, put the public key in tauri.conf.json, and store the private key as TAURI_SIGNING_PRIVATE_KEY.");
-    console.error("See SETUP.md. Publishing was not changed.");
-    process.exit(1);
+  if (downloaded.status !== 0) {
+    return null;
   }
-  const plan = collectRelease(artifacts, { repo, tag: endpoints.devTag });
-  for (const platform of plan.platforms) {
-    verifyUpdaterArtifact({
-      pubkey,
-      artifact: platform.file,
-      signature: platform.signature,
-    });
-    console.log(`verified ${platform.platform} ${path.basename(platform.file)}`);
+  try {
+    const body = JSON.parse(readFileSync(path.join(dir, "latest.json"), "utf8"));
+    return typeof body.version === "string" ? body.version : null;
+  } catch {
+    return null;
   }
-  ensureRepo(repo);
+}
+
+function publishPlan(repo, plan) {
   const existing = gh(["release", "view", plan.tag, "--repo", repo], { allowFailure: true });
   if (existing.status !== 0) {
     const args = [
@@ -119,7 +117,7 @@ function main() {
       "--repo",
       repo,
       "--title",
-      plan.tag === endpoints.devTag ? "dev" : plan.tag,
+      plan.prerelease ? "dev" : plan.tag,
       "--notes",
       plan.notes,
     ];
@@ -154,6 +152,40 @@ function main() {
     "--clobber",
   ]);
   console.log(`published ${plan.version}+${plan.commit} to ${repo} tag ${plan.tag}`);
+}
+
+function main() {
+  const artifacts = arg("--artifacts", "artifacts");
+  const endpoints = JSON.parse(
+    readFileSync(path.join(root, "src-tauri/update-endpoints.json"), "utf8"),
+  );
+  const repo = arg("--repo", endpoints.repo);
+  const conf = JSON.parse(readFileSync(path.join(root, "src-tauri/tauri.conf.json"), "utf8"));
+  const pubkey = conf.plugins.updater.pubkey;
+  const placeholder = readFileSync(
+    path.join(root, "src-tauri/placeholder-updater-pubkey.txt"),
+    "utf8",
+  ).trim();
+  if (pubkey.trim() === placeholder) {
+    console.error("plugins.updater.pubkey is still the committed placeholder.");
+    console.error("Generate a keypair with `npm run tauri signer generate`, put the public key in tauri.conf.json, and store the private key as TAURI_SIGNING_PRIVATE_KEY.");
+    console.error("See SETUP.md. Publishing was not changed.");
+    process.exit(1);
+  }
+  const plan = collectRelease(artifacts, { repo, tag: endpoints.devTag });
+  for (const platform of plan.platforms) {
+    verifyUpdaterArtifact({
+      pubkey,
+      artifact: platform.file,
+      signature: platform.signature,
+    });
+    console.log(`verified ${platform.platform} ${path.basename(platform.file)}`);
+  }
+  ensureRepo(repo);
+  publishPlan(repo, plan);
+  if (plan.channel === "stable" && shouldMirrorToDev(plan.version, readDevVersion(repo, endpoints.devTag))) {
+    publishPlan(repo, mirrorDevPlan(plan, { repo, devTag: endpoints.devTag }));
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
