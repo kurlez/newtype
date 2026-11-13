@@ -369,13 +369,26 @@ pub struct CloudAsr {
     pub prompt: String,
 }
 
+impl CloudAsr {
+    pub fn recognize(&self, wav: &[u8]) -> Result<String, failover::ProviderError> {
+        transcribe_detailed(
+            &self.base,
+            &self.key,
+            &self.model,
+            self.wire,
+            &self.prompt,
+            wav,
+        )
+    }
+}
+
 impl AsrProvider for CloudAsr {
     fn id(&self) -> &'static str {
         "cloud"
     }
 
     fn transcribe(&self, wav: &[u8]) -> Result<String, String> {
-        transcribe(&self.base, &self.key, &self.model, self.wire, &self.prompt, wav)
+        self.recognize(wav).map_err(|err| err.short())
     }
 }
 
@@ -534,25 +547,28 @@ struct HttpFailure {
     code: String,
     retry_after_secs: Option<u64>,
     message: String,
+    detail: String,
 }
 
 impl HttpFailure {
     fn new(status: u16, message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             status,
             code: String::new(),
             retry_after_secs: None,
-            message: message.into(),
+            detail: failover::clip_text(&message, 300),
+            message,
         }
     }
 
     fn into_error(self, key: &str) -> ProviderError {
-        ProviderError {
-            status: self.status,
-            code: self.code,
-            retry_after_secs: self.retry_after_secs,
-            message: redact(&self.message, key),
-        }
+        let mut err = ProviderError::plain(redact(&self.message, key));
+        err.status = self.status;
+        err.code = self.code;
+        err.retry_after_secs = self.retry_after_secs;
+        err.detail = redact(&self.detail, key);
+        err
     }
 }
 
@@ -629,6 +645,7 @@ fn post_chat(base: &str, key: &str, body: &Value, timeout: std::time::Duration) 
             status: status.as_u16(),
             code: failover::error_code(&text),
             retry_after_secs,
+            detail: failover::provider_detail(&text),
             message: format!("Rewrite request failed ({}). {}", status, clip(&text)),
         });
     }
@@ -653,15 +670,15 @@ fn read_provider_text(
         ))
     })?;
     if !status.is_success() {
-        return Err(ProviderError {
-            status: status.as_u16(),
-            code: failover::error_code(&body),
-            retry_after_secs,
-            message: redact(
-                &format!("{step} request failed ({status}). {}", clip(&body)),
-                key,
-            ),
-        });
+        let mut err = ProviderError::plain(redact(
+            &format!("{step} request failed ({status}). {}", clip(&body)),
+            key,
+        ));
+        err.status = status.as_u16();
+        err.code = failover::error_code(&body);
+        err.retry_after_secs = retry_after_secs;
+        err.detail = redact(&failover::provider_detail(&body), key);
+        return Err(err);
     }
     let parsed: Value = serde_json::from_str(&body).map_err(|_| {
         ProviderError::plain(format!("The {noun} response was not JSON."))

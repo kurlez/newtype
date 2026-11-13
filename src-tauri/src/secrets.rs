@@ -12,16 +12,17 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const SERVICE: &str = "app.newtype.desktop";
 
+pub fn normalize_secret(raw: &str) -> String {
+    raw.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
 pub fn set_key(provider: &str, key: &str, dev_path: &Path) -> Result<(), String> {
     let account = account(provider)?;
-    let key = key.trim();
+    let key = normalize_secret(key);
     if key.is_empty() {
         return Err("The API key is empty.".into());
     }
-    if key.chars().any(|ch| ch == '\n' || ch == '\r') {
-        return Err("The API key cannot contain a line break.".into());
-    }
-    store(&account, key, dev_path)?;
+    store(&account, &key, dev_path)?;
     match load(&account, dev_path)? {
         Some(found) if found == key => Ok(()),
         _ => {
@@ -185,6 +186,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         probe(&dir.join("dev-secrets.json")).expect("credential store round trip");
+        let path = dir.join("dev-secrets.json");
+        set_key("groq", "  sk-example\r\n", &path).expect("store trimmed key");
+        assert_eq!(get_key("groq", &path).unwrap().as_deref(), Some("sk-example"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

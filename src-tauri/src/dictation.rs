@@ -11,7 +11,6 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use crate::build_info::{commit, full_version};
 use crate::dictate_config::{self, DictationSettings};
 use crate::permissions::{self, PermissionSnapshot};
-use crate::pipeline::asr::AsrProvider;
 use crate::pipeline::audio::{self, AudioClip, MicSession};
 use crate::pipeline::catalog::{self, Mirror};
 use crate::pipeline::cloud::{self, AsrWire, CloudAsr, Preset, Thinking};
@@ -1331,15 +1330,12 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         if line.contains("retrying the same") {
             let label = PathLabel::LocalAutoFallback.text();
             *shown_event.lock().expect("route") = label.to_string();
-            emit_phase(
-                &app_event,
-                "processing",
-                label,
-                "Cloud was unavailable. Using the local model for this recording.",
-                0,
-                0.0,
-                "",
-            );
+            let reason = line
+                .split("failed (")
+                .nth(1)
+                .and_then(|rest| rest.split(");").next())
+                .unwrap_or("Cloud was unavailable. Using the local model for this recording.");
+            emit_phase(&app_event, "processing", label, reason, 0, 0.0, "");
         }
     };
     let report_app = app.clone();
@@ -1461,23 +1457,48 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         },
                         &speech_hint,
                         audio,
-                    );
+                    )
+                    .map_err(|message| {
+                        note_cloud(
+                            "asr",
+                            "volcengine",
+                            "openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
+                            "bigmodel",
+                            ProviderError::plain(message),
+                        )
+                    });
                 }
                 let key = match secrets::get_key(&asr_provider, &dev_secrets) {
                     Ok(key) => key,
                     Err(err) => return Err(err),
                 };
                 let Some(key) = key.filter(|value| !value.is_empty()) else {
-                    return Err("Speech API key is missing.".into());
+                    return Err(note_cloud(
+                        "asr",
+                        &asr_provider,
+                        &asr_endpoint(&asr_base, asr_wire),
+                        &asr_model,
+                        ProviderError::plain("Speech API key is missing."),
+                    ));
                 };
-                return CloudAsr {
+                return match (CloudAsr {
                     base: asr_base.clone(),
                     key,
                     model: asr_model.clone(),
                     wire: asr_wire,
                     prompt: speech_hint.clone(),
-                }
-                .transcribe(audio);
+                })
+                .recognize(audio)
+                {
+                    Ok(text) => Ok(text),
+                    Err(err) => Err(note_cloud(
+                        "asr",
+                        &asr_provider,
+                        &asr_endpoint(&asr_base, asr_wire),
+                        &asr_model,
+                        err,
+                    )),
+                };
             }
             let primary = || {
                 if asr_wire == AsrWire::Volcengine {
@@ -1514,6 +1535,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     &speech_hint,
                     audio,
                 )
+                .map_err(|err| {
+                    err.annotate(
+                        &asr_provider,
+                        &asr_provider,
+                        &asr_endpoint(&asr_base, asr_wire),
+                        &asr_model,
+                    )
+                })
             };
             let openai = || {
                 let key = secrets::get_key("openai", &dev_secrets)
@@ -1531,6 +1560,14 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     &speech_hint,
                     audio,
                 )
+                .map_err(|err| {
+                    err.annotate(
+                        "openai",
+                        "openai",
+                        &failover::endpoint_host_path(&openai_base, "/audio/transcriptions"),
+                        model,
+                    )
+                })
             };
             let openai_ready = secrets::has_key("openai", &dev_secrets);
             match step_with_fallback(
@@ -1558,7 +1595,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
         let cooldown = Arc::clone(&groq_cooldown);
         let openai_base = openai_base.clone();
         move |transcript: &str| -> Result<FinishedText, String> {
-            let run = |base: &str, key: &str, model: &str, thinking: Thinking| {
+            let run = |provider: &str, base: &str, key: &str, model: &str, thinking: Thinking| {
                 let slot = Arc::new(Mutex::new(None));
                 let llm = DetailedLlm {
                     base: base.to_string(),
@@ -1580,7 +1617,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                         .lock()
                         .expect("llm error")
                         .clone()
-                        .unwrap_or_else(|| ProviderError::plain(message))),
+                        .unwrap_or_else(|| ProviderError::plain(message))
+                        .annotate(
+                            provider,
+                            provider,
+                            &failover::endpoint_host_path(base, "/chat/completions"),
+                            model,
+                        )),
                 }
             };
             let primary = || {
@@ -1606,7 +1649,13 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                                 .into(),
                     });
                 }
-                run(&llm_base, &key.unwrap_or_default(), &llm_model, thinking)
+                run(
+                    &llm_provider,
+                    &llm_base,
+                    &key.unwrap_or_default(),
+                    &llm_model,
+                    thinking,
+                )
             };
             let openai = || {
                 let key = secrets::get_key("openai", &dev_secrets_llm)
@@ -1618,7 +1667,7 @@ fn transcribe_and_polish(app: &AppHandle, clip: AudioClip) -> Result<Done, Proce
                     .map(|preset| preset.default_llm)
                     .unwrap_or("gpt-4o-mini");
                 let thinking = cloud::thinking_for("openai", model, "auto", "");
-                run(&openai_base, &key, model, thinking)
+                run("openai", &openai_base, &key, model, thinking)
             };
             let openai_ready = secrets::has_key("openai", &dev_secrets_llm);
             match step_with_fallback(
@@ -1779,18 +1828,86 @@ fn step_with_fallback<T>(
         openai_ready,
         now_ms(),
         &mut until,
-        primary,
-        openai,
+        || match primary() {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                crate::diag::record(&err.diagnostic(step));
+                Err(err)
+            }
+        },
+        || match openai() {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                crate::diag::record(&err.diagnostic(step));
+                Err(err)
+            }
+        },
         &mut log,
     );
     cooldown.store(until, Ordering::Relaxed);
     for line in &log {
         crate::diag::record(line);
     }
+    let tried_openai = log.iter().any(|line| line.contains("to=openai"));
+    let no_openai_key = log.iter().any(|line| line.contains("no openai key"));
     match result {
-        Ok(outcome) => Ok((outcome.value, outcome.provider)),
-        Err(err) => Err(err.message),
+        Ok(outcome) => {
+            if outcome.provider != provider {
+                crate::diag::record(&format!(
+                    "route {step} used {} after {provider} rate limit",
+                    outcome.provider
+                ));
+            }
+            Ok((outcome.value, outcome.provider))
+        }
+        Err(err) => {
+            if tried_openai {
+                crate::diag::record(&format!(
+                    "route {step} tried openai after {provider} rate limit; that call failed"
+                ));
+            } else if no_openai_key {
+                crate::diag::record(&format!(
+                    "route {step} kept the {provider} rate limit; no openai key"
+                ));
+            }
+            let mut text = err.short();
+            if tried_openai {
+                text = format!("Groq 429, then {text}");
+            }
+            Err(text)
+        }
     }
+}
+
+fn noted_cloud(step: &str, err: ProviderError) -> String {
+    crate::diag::record(&err.diagnostic(step));
+    err.short()
+}
+
+fn asr_endpoint(base: &str, wire: AsrWire) -> String {
+    let path = match wire {
+        AsrWire::DashscopeAudio => "/chat/completions",
+        AsrWire::Volcengine => "",
+        _ => "/audio/transcriptions",
+    };
+    if wire == AsrWire::Volcengine {
+        "openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream".into()
+    } else {
+        failover::endpoint_host_path(base, path)
+    }
+}
+
+fn note_cloud(
+    step: &str,
+    provider: &str,
+    endpoint: &str,
+    model: &str,
+    err: ProviderError,
+) -> String {
+    noted_cloud(
+        step,
+        err.annotate(provider, provider, endpoint, model),
+    )
 }
 
 fn remember(
@@ -2524,6 +2641,15 @@ fn volc_auth(settings: &DictationSettings, secrets_path: &std::path::Path) -> Vo
 pub fn test_connection(app: &AppHandle, provider: &str, kind: &str) -> Result<String, String> {
     let state = app.state::<Dictation>();
     let settings = state.settings.lock().expect("settings").clone();
+    if kind == "models" {
+        let outcome = test_models(&settings, &state.dev_secrets, provider);
+        let line = match &outcome {
+            Ok(message) => format!("connection test provider={provider} {message}"),
+            Err(message) => format!("connection test provider={provider} {message}"),
+        };
+        crate::diag::record(&line);
+        return outcome;
+    }
     if provider == "volcengine" && kind != "rewrite" {
         return volcengine::test_connection(&volc_auth(&settings, &state.dev_secrets));
     }
@@ -2556,6 +2682,26 @@ pub fn list_models(app: &AppHandle, provider: &str) -> Result<Vec<String>, Strin
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Save an API key for this provider first.".to_string())?;
     cloud::list_model_ids(&base, &key)
+}
+
+fn test_models(
+    settings: &DictationSettings,
+    secrets_path: &std::path::Path,
+    provider: &str,
+) -> Result<String, String> {
+    let mut base = provider_base(settings, provider);
+    if base.trim().is_empty() {
+        base = cloud::preset(provider)
+            .map(|preset| preset.default_base.to_string())
+            .unwrap_or_default();
+    }
+    let key = secrets::get_key(provider, secrets_path)?
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Save an API key for this provider first.".to_string())?;
+    if base.is_empty() {
+        return Err("This provider needs a base URL before it can be tested.".into());
+    }
+    cloud::test_connection(&base, &key)
 }
 
 fn provider_base(settings: &DictationSettings, provider: &str) -> String {
