@@ -748,7 +748,7 @@ fn publish_swallow(bindings: &[(HotkeyMode, hotkey::Chord)]) {
         .iter()
         .flat_map(|(_, chord)| chord.iter())
         .filter(|key| !hotkey::is_modifier(**key))
-        .filter_map(|key| hotkey::virtual_key(**key))
+        .filter_map(|key| hotkey::virtual_key(*key))
         .collect();
     crate::win_hotkey::set_swallowed_vks(&vks);
 }
