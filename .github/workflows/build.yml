@@ -33,6 +33,113 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Runner toolchain
+        shell: powershell
+        run: |
+          $utf8 = New-Object System.Text.UTF8Encoding $false
+          function Write-Utf8Env([string]$Name, [string]$Value) {
+            Set-Item -Path "Env:$Name" -Value $Value
+            [System.IO.File]::AppendAllText($env:GITHUB_ENV, ($Name + '=' + $Value + "`n"), $utf8)
+          }
+          function Read-RunnerText([string]$Path) {
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) {
+              return [System.Text.Encoding]::Unicode.GetString($bytes)
+            }
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) {
+              return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
+            }
+            $limit = $bytes.Length
+            if ($limit -gt 400) { $limit = 400 }
+            $zeros = 0
+            for ($i = 0; $i -lt $limit; $i++) {
+              if ($bytes[$i] -eq 0) { $zeros++ }
+            }
+            if ($limit -gt 0 -and $zeros -gt ($limit / 4)) {
+              return [System.Text.Encoding]::Unicode.GetString($bytes)
+            }
+            return $utf8.GetString($bytes)
+          }
+          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
+          Write-Output "runner root: $runnerRoot"
+          $cargoHome = $null
+          $rustupHome = $null
+          $pathValue = $null
+          $envFile = Join-Path $runnerRoot '.env'
+          if (Test-Path $envFile) {
+            $item = Get-Item $envFile
+            Write-Output ".env exists, $($item.Length) bytes"
+            $keys = @()
+            foreach ($line in ((Read-RunnerText $envFile) -split '\r?\n')) {
+              $trimmed = $line.Trim()
+              if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+              $idx = $trimmed.IndexOf('=')
+              if ($idx -lt 1) { continue }
+              $key = $trimmed.Substring(0, $idx).Trim()
+              $value = $trimmed.Substring($idx + 1).Trim()
+              $keys += $key
+              if ($key -eq 'CARGO_HOME') { $cargoHome = $value }
+              elseif ($key -eq 'RUSTUP_HOME') { $rustupHome = $value }
+              elseif ($key -eq 'Path' -or $key -eq 'PATH') { $pathValue = $value }
+            }
+            Write-Output ('.env keys: ' + ($keys -join ', '))
+          } else {
+            Write-Output '.env missing'
+          }
+          $candidates = @()
+          if ($cargoHome) { $candidates += (Join-Path $cargoHome 'bin') }
+          if ($pathValue) {
+            foreach ($entry in ($pathValue -split ';')) {
+              if ($entry) { $candidates += $entry }
+            }
+          }
+          $pathFile = Join-Path $runnerRoot '.path'
+          if (Test-Path $pathFile) {
+            $pathItem = Get-Item $pathFile
+            Write-Output ".path exists, $($pathItem.Length) bytes"
+            foreach ($entry in ((Read-RunnerText $pathFile) -split ';')) {
+              if ($entry) { $candidates += $entry.Trim() }
+            }
+          } else {
+            Write-Output '.path missing'
+          }
+          foreach ($entry in ($env:Path -split ';')) {
+            if ($entry) { $candidates += $entry }
+          }
+          $actionsParent = Split-Path $runnerRoot -Parent
+          if ((Split-Path $actionsParent -Leaf) -eq 'actions-runners') {
+            $ownerProfile = Split-Path $actionsParent -Parent
+            $candidates += (Join-Path $ownerProfile '.cargo\bin')
+          }
+          $cargoBin = $null
+          foreach ($entry in $candidates) {
+            if (Test-Path (Join-Path $entry 'rustup.exe')) {
+              $cargoBin = $entry.TrimEnd('\')
+              break
+            }
+          }
+          if (-not $cargoBin) {
+            throw "rustup.exe was not found from the runner .env, .path, PATH, or the account that owns $runnerRoot."
+          }
+          $resolvedCargo = Split-Path $cargoBin -Parent
+          if (-not $cargoHome -or -not (Test-Path (Join-Path $cargoHome 'bin\rustup.exe'))) {
+            Write-Output "CARGO_HOME from the runner .env did not point at rustup.exe. Using $resolvedCargo."
+            $cargoHome = $resolvedCargo
+          }
+          if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
+            $sibling = Join-Path (Split-Path $cargoHome -Parent) '.rustup'
+            if (Test-Path $sibling) { $rustupHome = $sibling }
+          }
+          if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
+            throw "RUSTUP_HOME was not in the runner .env and no .rustup directory sits beside $cargoHome."
+          }
+          Write-Output "CARGO_HOME=$cargoHome"
+          Write-Output "RUSTUP_HOME=$rustupHome"
+          Write-Utf8Env 'CARGO_HOME' $cargoHome
+          Write-Utf8Env 'RUSTUP_HOME' $rustupHome
+          $processPath = "$cargoBin;" + (($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $cargoBin) }) -join ';')
+          Write-Utf8Env 'Path' $processPath
+
       - name: Persistent cargo target
         shell: powershell
         run: |
@@ -50,27 +157,10 @@ jobs:
       - name: Require Rust
         shell: powershell
         run: |
-          $utf8 = New-Object System.Text.UTF8Encoding $false
-          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
-          $envFile = Join-Path $runnerRoot '.env'
-          Write-Output "runner env file: $envFile"
-          if (Test-Path $envFile) {
-            foreach ($line in [System.IO.File]::ReadAllLines($envFile)) {
-              if (-not $line -or $line.StartsWith('#')) { continue }
-              $idx = $line.IndexOf('=')
-              if ($idx -lt 1) { continue }
-              $key = $line.Substring(0, $idx)
-              $value = $line.Substring($idx + 1)
-              if ($key -eq 'CARGO_HOME' -or $key -eq 'RUSTUP_HOME' -or $key -eq 'Path' -or $key -eq 'PATH') {
-                Set-Item -Path "Env:$key" -Value $value
-                [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$key=$value`n", $utf8)
-              }
-            }
-          }
           Write-Output "CARGO_HOME=$env:CARGO_HOME"
           Write-Output "RUSTUP_HOME=$env:RUSTUP_HOME"
           if (-not $env:CARGO_HOME -or -not $env:RUSTUP_HOME) {
-            throw "CARGO_HOME and RUSTUP_HOME must be set in the runner .env at $envFile. Re-run setup-windows.ps1 so the SYSTEM service uses the verified rustup."
+            throw "CARGO_HOME and RUSTUP_HOME must be loaded from the runner .env before this step."
           }
           $cargoBin = Join-Path $env:CARGO_HOME 'bin'
           $rustup = Join-Path $cargoBin 'rustup.exe'
