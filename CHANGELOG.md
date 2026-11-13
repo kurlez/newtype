@@ -1,5 +1,6 @@
 # Changelog
 
+- 2026-11-13: Cloud speech sends only as many dictionary terms as the provider allows. Groq stays at 896 characters and OpenAI at 800, newest terms first, and a term is never cut in half. A prompt-length rejection is retried once with an empty prompt. The rewrite step still sees the full dictionary.
 - 2026-11-13: The Windows keyboard hook stays on its own message pump and is reinstalled if Windows drops it. Capture says so when no key arrives, and Dictate can be chosen from a list. A maximized window no longer hides the taskbar strip.
 - 2026-11-13: Cloud speech and rewrite failures log the provider, endpoint, model, HTTP status, and a short redacted message. The fallback status shows that reason. A Groq 429 tries OpenAI before the local model. Saved API keys drop surrounding whitespace, and each provider has a Test connection button.
 - 2026-11-13: The Windows taskbar strip is exactly as tall as the taskbar, flush with its top and bottom, and stays above the Windows 11 taskbar. It is shown at startup. If it cannot be placed, the panel floats.

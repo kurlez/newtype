@@ -123,17 +123,56 @@ pub fn apply(text: &str, words: &[Hotword]) -> String {
     current
 }
 
+/// Character budget for the speech-model prompt. Groq rejects anything over
+/// 896 characters. OpenAI asks for well under 224 tokens, so 800 characters
+/// stays inside that. Other providers use the same conservative cap.
+pub fn asr_prompt_limit(provider: &str) -> usize {
+    match provider {
+        "groq" => 896,
+        _ => 800,
+    }
+}
+
+/// Terms that fit in `max_chars`, newest first, each term kept whole.
+///
+/// A term longer than the whole budget is skipped. Once the next term would
+/// cross the budget, the rest are left out. The separator is `, `.
+/// Returns `(prompt, kept, offered)`.
+pub fn asr_prompt_budget(words: &[Hotword], max_chars: usize) -> (String, usize, usize) {
+    let offered = words
+        .iter()
+        .filter(|word| !word.canonical.trim().is_empty())
+        .count();
+    let mut chosen: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for word in words.iter().rev() {
+        let term = word.canonical.trim();
+        if term.is_empty() {
+            continue;
+        }
+        let len = term.chars().count();
+        if len > max_chars {
+            continue;
+        }
+        let extra = if chosen.is_empty() { len } else { len + 2 };
+        if used + extra > max_chars {
+            break;
+        }
+        chosen.push(term);
+        used += extra;
+    }
+    let kept = chosen.len();
+    (chosen.join(", "), kept, offered)
+}
+
+pub fn asr_prompt(words: &[Hotword], max_chars: usize) -> String {
+    asr_prompt_budget(words, max_chars).0
+}
+
 /// Spellings passed to a cloud speech model as a hint. Alias replacement
 /// still runs after recognition, before the rewrite.
 pub fn asr_hint(words: &[Hotword]) -> String {
-    let mut parts = Vec::new();
-    for word in words {
-        let canonical = word.canonical.trim();
-        if !canonical.is_empty() {
-            parts.push(canonical.to_string());
-        }
-    }
-    parts.join(", ").chars().take(800).collect()
+    asr_prompt(words, asr_prompt_limit("openai"))
 }
 
 pub fn export_json(words: &[Hotword]) -> Result<String, String> {
@@ -635,7 +674,7 @@ mod tests {
         assert!(block.contains("- Token"));
         assert!(block.contains("cloud code → Claude Code"));
         assert!(validate(&words).is_ok());
-        assert_eq!(asr_hint(&words), "Token, Claude Code");
+        assert_eq!(asr_hint(&words), "Claude Code, Token");
     }
 
     #[test]
@@ -698,5 +737,63 @@ mod tests {
         let homophone = analyze("这是中闻测试", &words);
         assert!(homophone.possible.iter().any(|item| item == "中文"));
         assert!(homophone.applied.is_empty());
+    }
+
+    #[test]
+    fn asr_prompt_keeps_whole_terms_inside_each_provider_budget() {
+        assert_eq!(asr_prompt_limit("groq"), 896);
+        assert_eq!(asr_prompt_limit("openai"), 800);
+        assert_eq!(asr_prompt_limit("dashscope"), 800);
+
+        let words = vec![
+            word("Zorblax", &[], ""),
+            word("青岚计划", &["qinglan"], ""),
+            word("Fnordix", &[], ""),
+            word("VERYLONGMADEUPTERMTHATSHOULDNOTBESPLIT", &[], ""),
+        ];
+        assert_eq!(asr_prompt(&words, 12), "Fnordix");
+        let wider = asr_prompt(&words, 20);
+        assert_eq!(wider, "Fnordix, 青岚计划");
+        assert_eq!(wider.chars().count(), 13);
+        assert!(!wider.contains("Zorblax"));
+        assert!(!wider.contains("VERYLONG"));
+
+        let (groq, kept, offered) = asr_prompt_budget(&words, asr_prompt_limit("groq"));
+        assert!(groq.chars().count() <= 896);
+        assert_eq!(offered, 4);
+        assert_eq!(kept, 4);
+        assert_eq!(
+            groq,
+            "VERYLONGMADEUPTERMTHATSHOULDNOTBESPLIT, Fnordix, 青岚计划, Zorblax"
+        );
+        for part in groq.split(", ") {
+            assert!(words.iter().any(|word| word.canonical == part));
+        }
+
+        let huge = "甲".repeat(900);
+        let over = vec![word("Zorblax", &[], ""), word(&huge, &[], "")];
+        let (skipped, kept, offered) = asr_prompt_budget(&over, asr_prompt_limit("groq"));
+        assert_eq!(offered, 2);
+        assert_eq!(kept, 1);
+        assert_eq!(skipped, "Zorblax");
+        assert!(!skipped.contains('甲'));
+
+        let mut many = Vec::new();
+        for n in 0..80 {
+            many.push(word(&format!("词{n:02}Zorblax"), &[], ""));
+        }
+        let packed = asr_prompt(&many, asr_prompt_limit("groq"));
+        assert!(packed.chars().count() <= 896);
+        let parts: Vec<_> = packed.split(", ").collect();
+        assert!(parts.len() < 80);
+        assert_eq!(parts[0], "词79Zorblax");
+        assert!(parts.iter().all(|part| {
+            many.iter().any(|word| word.canonical == *part) && !part.is_empty()
+        }));
+
+        let block = prompt_block(&words);
+        assert!(block.contains("VERYLONGMADEUPTERMTHATSHOULDNOTBESPLIT"));
+        assert!(block.contains("青岚计划"));
+        assert!(block.contains("Zorblax"));
     }
 }
