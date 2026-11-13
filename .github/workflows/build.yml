@@ -8,347 +8,44 @@ on:
   workflow_dispatch:
 
 # github.run_number for this file is the dev build number. Renaming the file resets it.
-# One workflow per ref cancels a superseded pull request. Each machine also has its
-# own group so a second job waits instead of sharing a self-hosted runner.
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# contents: read is the default. Jobs that upload or download artifacts add the
+# actions scope they need. Pull requests never receive signing or publish secrets,
+# including pull requests from forks.
 permissions:
   contents: read
-  actions: write
 
 jobs:
-  windows:
-    name: windows-x64
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Windows, X64, newtype]
-    concurrency:
-      group: newtype-runner-windows
-      cancel-in-progress: false
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: powershell
+  build:
+    name: ${{ matrix.name }}
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            bundles: app,dmg
+          - name: windows-x64
+            os: windows-latest
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      - name: Runner toolchain
-        shell: powershell
-        run: |
-          $utf8 = New-Object System.Text.UTF8Encoding $false
-          function Write-Utf8Env([string]$Name, [string]$Value) {
-            Set-Item -Path "Env:$Name" -Value $Value
-            [System.IO.File]::AppendAllText($env:GITHUB_ENV, ($Name + '=' + $Value + "`n"), $utf8)
-          }
-          function Read-RunnerText([string]$Path) {
-            $bytes = [System.IO.File]::ReadAllBytes($Path)
-            if ($bytes.Length -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) {
-              return [System.Text.Encoding]::Unicode.GetString($bytes)
-            }
-            if ($bytes.Length -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) {
-              return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes)
-            }
-            $limit = $bytes.Length
-            if ($limit -gt 400) { $limit = 400 }
-            $zeros = 0
-            for ($i = 0; $i -lt $limit; $i++) {
-              if ($bytes[$i] -eq 0) { $zeros++ }
-            }
-            if ($limit -gt 0 -and $zeros -gt ($limit / 4)) {
-              return [System.Text.Encoding]::Unicode.GetString($bytes)
-            }
-            return $utf8.GetString($bytes)
-          }
-          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
-          Write-Output "runner root: $runnerRoot"
-          $cargoHome = $null
-          $rustupHome = $null
-          $pathValue = $null
-          $envFile = Join-Path $runnerRoot '.env'
-          if (Test-Path $envFile) {
-            $item = Get-Item $envFile
-            Write-Output ".env exists, $($item.Length) bytes"
-            $keys = @()
-            foreach ($line in ((Read-RunnerText $envFile) -split '\r?\n')) {
-              $trimmed = $line.Trim()
-              if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
-              $idx = $trimmed.IndexOf('=')
-              if ($idx -lt 1) { continue }
-              $key = $trimmed.Substring(0, $idx).Trim()
-              $value = $trimmed.Substring($idx + 1).Trim()
-              $keys += $key
-              if ($key -eq 'CARGO_HOME') { $cargoHome = $value }
-              elseif ($key -eq 'RUSTUP_HOME') { $rustupHome = $value }
-              elseif ($key -eq 'Path' -or $key -eq 'PATH') { $pathValue = $value }
-            }
-            Write-Output ('.env keys: ' + ($keys -join ', '))
-          } else {
-            Write-Output '.env missing'
-          }
-          $candidates = @()
-          if ($cargoHome) { $candidates += (Join-Path $cargoHome 'bin') }
-          if ($pathValue) {
-            foreach ($entry in ($pathValue -split ';')) {
-              if ($entry) { $candidates += $entry }
-            }
-          }
-          $pathFile = Join-Path $runnerRoot '.path'
-          if (Test-Path $pathFile) {
-            $pathItem = Get-Item $pathFile
-            Write-Output ".path exists, $($pathItem.Length) bytes"
-            foreach ($entry in ((Read-RunnerText $pathFile) -split ';')) {
-              if ($entry) { $candidates += $entry.Trim() }
-            }
-          } else {
-            Write-Output '.path missing'
-          }
-          foreach ($entry in ($env:Path -split ';')) {
-            if ($entry) { $candidates += $entry }
-          }
-          $actionsParent = Split-Path $runnerRoot -Parent
-          if ((Split-Path $actionsParent -Leaf) -eq 'actions-runners') {
-            $ownerProfile = Split-Path $actionsParent -Parent
-            $candidates += (Join-Path $ownerProfile '.cargo\bin')
-          }
-          $cargoBin = $null
-          foreach ($entry in $candidates) {
-            if (Test-Path (Join-Path $entry 'rustup.exe')) {
-              $cargoBin = $entry.TrimEnd('\')
-              break
-            }
-          }
-          if (-not $cargoBin) {
-            throw "rustup.exe was not found from the runner .env, .path, PATH, or the account that owns $runnerRoot."
-          }
-          $resolvedCargo = Split-Path $cargoBin -Parent
-          Write-Output "rustup.exe: $(Join-Path $cargoBin 'rustup.exe')"
-          if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
-            $sibling = Join-Path (Split-Path $resolvedCargo -Parent) '.rustup'
-            if (Test-Path $sibling) { $rustupHome = $sibling }
-          }
-          if (-not $rustupHome -or -not (Test-Path $rustupHome)) {
-            throw "RUSTUP_HOME was not in the runner .env and no .rustup directory sits beside $resolvedCargo."
-          }
-          $cargoHome = Join-Path $runnerRoot 'cargo-home'
-          New-Item -ItemType Directory -Force -Path $cargoHome | Out-Null
-          Write-Output "CARGO_HOME=$cargoHome"
-          Write-Output "RUSTUP_HOME=$rustupHome"
-          Write-Utf8Env 'CARGO_HOME' $cargoHome
-          Write-Utf8Env 'RUSTUP_HOME' $rustupHome
-          Write-Utf8Env 'NEWTYPE_CARGO_BIN' $cargoBin
-          $processPath = "$cargoBin;" + (($env:Path -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $cargoBin) }) -join ';')
-          Write-Utf8Env 'Path' $processPath
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Persistent cargo target
-        shell: powershell
-        run: |
-          $utf8 = New-Object System.Text.UTF8Encoding $false
-          $runnerRoot = (Resolve-Path (Join-Path $env:GITHUB_WORKSPACE '..\..\..')).Path
-          $dir = Join-Path $runnerRoot 'cargo-target'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_TARGET_DIR=$dir`n", $utf8)
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_CACHE_DAYS=14`n", $utf8)
-          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "NEWTYPE_TARGET_CAP_BYTES=8589934592`n", $utf8)
-
-      - name: Prune persistent caches
-        shell: powershell
-        run: node scripts/runner/prune-cache.mjs
-
-      - name: Require Rust
-        shell: powershell
-        run: |
-          Write-Output "CARGO_HOME=$env:CARGO_HOME"
-          Write-Output "RUSTUP_HOME=$env:RUSTUP_HOME"
-          if (-not $env:CARGO_HOME -or -not $env:RUSTUP_HOME) {
-            throw "CARGO_HOME and RUSTUP_HOME must be loaded from the runner .env before this step."
-          }
-          $rustupCmd = Get-Command rustup.exe -ErrorAction SilentlyContinue
-          $rustcCmd = Get-Command rustc.exe -ErrorAction SilentlyContinue
-          if (-not $rustupCmd -or -not $rustcCmd) {
-            throw "rustup.exe is not on PATH. The runner .env Path must include the cargo bin that setup verified."
-          }
-          $rustup = $rustupCmd.Source
-          $rustc = $rustcCmd.Source
-          Write-Output "rustup=$rustup"
-          & $rustup toolchain install stable --profile minimal
-          & $rustup default stable
-          & $rustup target add x86_64-pc-windows-msvc
-          $info = & $rustc -vV | Out-String
-          Write-Output $info
-          $release = ([regex]::Match($info, '(?m)^release: (\S+)')).Groups[1].Value
-          $msrvLine = Select-String -Path src-tauri/Cargo.toml -Pattern '^rust-version = "([^"]+)"' | Select-Object -First 1
-          if (-not $msrvLine) {
-            throw "src-tauri/Cargo.toml has no rust-version."
-          }
-          $msrv = $msrvLine.Matches[0].Groups[1].Value
-          if ([version]$release -lt [version]$msrv) {
-            throw "rustc $release is older than rust-version $msrv."
-          }
-
-      - name: MSVC environment
-        shell: powershell
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) {
-            throw "vswhere is missing. On this machine run scripts/runner/setup-windows.ps1."
-          }
-          $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $install) {
-            throw "MSVC C++ tools are missing. On this machine run scripts/runner/setup-windows.ps1."
-          }
-          $utf8 = New-Object System.Text.UTF8Encoding $false
-          $bat = Join-Path $install "VC\Auxiliary\Build\vcvars64.bat"
-          $cargoBin = $env:NEWTYPE_CARGO_BIN
-          if (-not $cargoBin -and $env:CARGO_HOME) {
-            $cargoBin = Join-Path $env:CARGO_HOME 'bin'
-          }
-          cmd /c "`"$bat`" >nul && set" | ForEach-Object {
-            $pair = $_ -split '=', 2
-            if ($pair.Length -eq 2 -and $pair[0] -match '^[A-Za-z_][A-Za-z0-9_]*$' -and $pair[0] -notlike 'GITHUB_*') {
-              $value = $pair[1]
-              if ($cargoBin -and ($pair[0] -eq 'Path' -or $pair[0] -eq 'PATH') -and ($value -notlike "*$($cargoBin)*")) {
-                $value = "$cargoBin;$value"
-              }
-              [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$($pair[0])=$value`n", $utf8)
-            }
-          }
-
-      - name: Require Node
-        shell: powershell
-        run: |
-          if (-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            throw "Node and npm must already be installed. Run scripts/runner/setup-windows.ps1."
-          }
-          node -v
-          npm -v
-
-      - name: Install npm dependencies
-        shell: powershell
-        run: npm ci
-
-      - name: Test version and release scripts
-        shell: powershell
-        run: npm test
-
-      - name: Repair cached sherpa-onnx libraries
+      - name: Require Apple Silicon
+        if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          root="${CARGO_TARGET_DIR:-src-tauri/target}"
-          if command -v cygpath >/dev/null 2>&1; then
-            root="$(cygpath -u "$root")"
-          fi
-          root="${root}/sherpa-onnx-prebuilt"
-          if [ ! -d "$root" ]; then
-            exit 0
-          fi
-          found="$(/usr/bin/find "$root" \( -name 'libsherpa-onnx-c-api.a' -o -name 'sherpa-onnx-c-api.lib' -o -name 'libsherpa-onnx-c-api.lib' \) -print | /usr/bin/head -n 1)"
-          if [ -z "$found" ]; then
-            echo "Cached sherpa-onnx directory has no static library. Removing it so the build downloads the archive."
-            rm -rf "$root"
-          fi
-
-      - name: Test the dictation pipeline
-        working-directory: src-tauri
-        shell: powershell
-        run: cargo test --lib
-
-      - name: Updater signing key
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
-            echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY}"
-            if [ -n "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]; then
-              echo "::add-mask::${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
-            fi
-            {
-              echo "TAURI_SIGNING_PRIVATE_KEY<<NEWTYPE_KEY"
-              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY}"
-              echo "NEWTYPE_KEY"
-              echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<NEWTYPE_PASS"
-              printf '%s\n' "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}"
-              echo "NEWTYPE_PASS"
-            } >> "$GITHUB_ENV"
-            echo "Using TAURI_SIGNING_PRIVATE_KEY from repository secrets."
-          else
-            echo "No TAURI_SIGNING_PRIVATE_KEY secret. Generating an ephemeral key so the bundle step can run."
-            echo "This build's updater signature will not match the committed public key and must not be published."
-            node node_modules/@tauri-apps/cli/tauri.js signer generate --ci -w "$RUNNER_TEMP/ephemeral-updater.key" -f
-            echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/ephemeral-updater.key" >> "$GITHUB_ENV"
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build
-        shell: powershell
-        run: node scripts/with-version.mjs -- build --bundles nsis
-
-      - name: Collect release files
-        shell: bash
-        run: |
-          set -euo pipefail
-          target_root="${CARGO_TARGET_DIR:-src-tauri/target}"
-          if command -v cygpath >/dev/null 2>&1; then
-            target_root="$(cygpath -u "$target_root")"
-          fi
-          mkdir -p dist-release
-          cp build-meta.json dist-release/
-          /usr/bin/find "$target_root/release/bundle" -type f \
-            \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
-            -exec cp {} dist-release/ \;
-          /usr/bin/find dist-release -maxdepth 1 -type f -print
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-x64
-          path: dist-release
-          if-no-files-found: error
-
-  macos:
-    name: macos-arm64
-    if: github.event_name != 'pull_request' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: [self-hosted, macOS, ARM64, newtype]
-    concurrency:
-      group: newtype-runner-mac
-      cancel-in-progress: false
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Persistent cargo target
-        shell: bash
-        run: |
-          set -euo pipefail
-          dir="${HOME}/.cache/newtype/cargo-target"
-          mkdir -p "$dir"
-          {
-            printf 'CARGO_TARGET_DIR=%s\n' "$dir"
-            printf 'NEWTYPE_CACHE_DAYS=14\n'
-            printf 'NEWTYPE_TARGET_CAP_BYTES=8589934592\n'
-          } >> "$GITHUB_ENV"
-
-      - name: Prune persistent caches
-        shell: bash
-        run: node scripts/runner/prune-cache.mjs
-
-      - name: Require Rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="${HOME}/.cargo/bin:${PATH}"
-          if ! command -v rustup >/dev/null 2>&1; then
-            echo "Installing rustup into the runner user home. This does not use sudo."
-            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable --profile minimal
-          fi
-          export PATH="${HOME}/.cargo/bin:${PATH}"
-          echo "${HOME}/.cargo/bin" >> "$GITHUB_PATH"
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add aarch64-apple-darwin
           rustc_version="$(rustc -vV)"
           printf '%s\n' "$rustc_version"
           case "$rustc_version" in
@@ -358,47 +55,27 @@ jobs:
               exit 1
               ;;
           esac
-          release="$(printf '%s\n' "$rustc_version" | sed -n 's/^release: //p')"
-          msrv="$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml)"
-          version_at_least() {
-            local actual="$1" required="$2" IFS=. i actual_n required_n
-            local -a actual_parts=() required_parts=()
-            read -r -a actual_parts <<< "$actual"
-            read -r -a required_parts <<< "$required"
-            for ((i = 0; i < 3; i++)); do
-              actual_n="${actual_parts[$i]:-0}"
-              required_n="${required_parts[$i]:-0}"
-              if ((10#$actual_n > 10#$required_n)); then return 0; fi
-              if ((10#$actual_n < 10#$required_n)); then return 1; fi
-            done
-          }
-          if [[ -z "$release" || -z "$msrv" ]] || ! version_at_least "$release" "$msrv"; then
-            echo "rustc ${release:-unknown} is older than rust-version ${msrv:-missing}." >&2
-            exit 1
-          fi
 
-      - name: Require Node
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v node >/dev/null
-          command -v npm >/dev/null
-          node -v
-          npm -v
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
       - name: Install npm dependencies
-        shell: bash
         run: npm ci
+
+      - name: Test version and release scripts
+        run: npm test
 
       - name: Repair cached sherpa-onnx libraries
         shell: bash
         run: |
           set -euo pipefail
-          root="${CARGO_TARGET_DIR:-src-tauri/target}"
-          if command -v cygpath >/dev/null 2>&1; then
-            root="$(cygpath -u "$root")"
-          fi
-          root="${root}/sherpa-onnx-prebuilt"
+          root="src-tauri/target/sherpa-onnx-prebuilt"
           if [ ! -d "$root" ]; then
             exit 0
           fi
@@ -410,10 +87,20 @@ jobs:
 
       - name: Test the dictation pipeline
         working-directory: src-tauri
-        shell: bash
         run: cargo test --lib
 
+      - name: Ephemeral updater key
+        if: github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v'))
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "This build signs with a throwaway key. Repository secrets are not used, and the signature is not published."
+          node node_modules/@tauri-apps/cli/tauri.js signer generate --ci -w "$RUNNER_TEMP/ephemeral-updater.key" -f
+          echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/ephemeral-updater.key" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+
       - name: Updater signing key
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -443,6 +130,7 @@ jobs:
           fi
 
       - name: macOS signing identity
+        if: runner.os == 'macOS' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -451,10 +139,10 @@ jobs:
         run: bash scripts/import-macos-identity.sh
 
       - name: Build
-        shell: bash
-        run: node scripts/with-version.mjs -- build --bundles app,dmg
+        run: node scripts/with-version.mjs -- build --bundles ${{ matrix.bundles }}
 
       - name: Check macOS signature
+        if: runner.os == 'macOS'
         shell: bash
         run: bash scripts/verify-macos-signature.sh
 
@@ -462,49 +150,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          target_root="${CARGO_TARGET_DIR:-src-tauri/target}"
           mkdir -p dist-release
           cp build-meta.json dist-release/
-          find "$target_root/release/bundle" -type f \
+          find src-tauri/target/release/bundle -type f \
             \( -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name '*-setup.exe' -o -name '*-setup.exe.sig' \) \
             -exec cp {} dist-release/ \;
           find dist-release -maxdepth 1 -type f -print
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-arm64
+          name: ${{ matrix.name }}
           path: dist-release
           if-no-files-found: error
 
   publish:
     name: publish
-    needs: [windows, macos]
+    needs: build
     if: |
-      always() &&
-      needs.windows.result == 'success' &&
-      needs.macos.result == 'success' &&
-      (
-        (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
-        (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
-      )
-    runs-on: [self-hosted, Windows, X64, newtype]
-    concurrency:
-      group: newtype-runner-windows
-      cancel-in-progress: false
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+      (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 20
-    defaults:
-      run:
-        shell: powershell
     steps:
       - uses: actions/checkout@v4
 
-      - name: Require Node
-        shell: powershell
-        run: |
-          if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-            throw "Node must already be installed. Run scripts/runner/setup-windows.ps1."
-          }
-          node -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - uses: actions/download-artifact@v4
         with:
@@ -512,13 +187,11 @@ jobs:
 
       - name: Secrets present
         id: gate
-        shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           NEWTYPE_RELEASES_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
         run: |
-          set -euo pipefail
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ] || [ -z "${NEWTYPE_RELEASES_TOKEN}" ]; then
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -z "$NEWTYPE_RELEASES_TOKEN" ]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Updater publish skipped::Publishing needs TAURI_SIGNING_PRIVATE_KEY and NEWTYPE_RELEASES_TOKEN. See SETUP.md."
           else
@@ -527,7 +200,6 @@ jobs:
 
       - name: Verify and publish
         if: steps.gate.outputs.ready == 'true'
-        shell: bash
         env:
           GH_TOKEN: ${{ secrets.NEWTYPE_RELEASES_TOKEN }}
         run: node scripts/publish-release.mjs --artifacts artifacts
