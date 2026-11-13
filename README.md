@@ -70,7 +70,7 @@ The source repository is private, so clients cannot download from it. Artifacts 
 
 `latest.json` lists the signed updater files only: macOS `.app.tar.gz` and Windows `-setup.exe`. The `.dmg` is attached for the first macOS install and is not an updater payload. The app checks the selected channel at startup and about once an hour, downloads in the background, and asks before restarting into the new build. Switching from a newer build to an older channel does not downgrade.
 
-Pull requests build both installers and do not publish. If `TAURI_SIGNING_PRIVATE_KEY` is missing, CI signs with a throwaway key so the bundle step still succeeds. The publish job uploads only when both `TAURI_SIGNING_PRIVATE_KEY` and `NEWTYPE_RELEASES_TOKEN` are set, and only after `minisign` verifies each updater artifact against `plugins.updater.pubkey`. A placeholder key or a mismatched pair stops the upload and leaves the previous release in place.
+Pull requests run the tests and the Windows installer on the self-hosted Windows runner. macOS and publish run on a push to `main`, a `v*` tag, or a manual run from one of those refs. If `TAURI_SIGNING_PRIVATE_KEY` is missing, CI signs with a throwaway key so the bundle step still succeeds. The publish job runs on the Windows runner and uploads only when both `TAURI_SIGNING_PRIVATE_KEY` and `NEWTYPE_RELEASES_TOKEN` are set, and only after each updater artifact verifies against `plugins.updater.pubkey`. A placeholder key or a mismatched pair stops the upload and leaves the previous release in place. Runner setup is in `scripts/runner/README.md`.
 
 The public key embedded in the app is not an Apple certificate. It only verifies updater payloads.
 

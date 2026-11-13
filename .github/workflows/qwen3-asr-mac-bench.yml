@@ -13,7 +13,7 @@ on:
       - .github/workflows/qwen3-asr-mac-bench.yml
 
 concurrency:
-  group: qwen3-asr-mac-bench-${{ github.ref }}
+  group: newtype-runner-mac
   cancel-in-progress: false
 
 permissions:
@@ -22,16 +22,16 @@ permissions:
 jobs:
   bench:
     name: macos-arm64
-    # macos-14 was retired on 2026-11-02. macos-15 is the Apple Silicon M1 image:
-    # 3 vCPU, 7 GB RAM, 14 GB SSD. That is not a 16 GB Mac.
-    runs-on: macos-15
+    # Self-hosted Mac. GitHub-hosted macOS images are not used.
+    runs-on: [self-hosted, macOS, ARM64, newtype]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: Require Apple Silicon
         run: |
-          uname -m | grep -qx arm64
+          machine="$(uname -m)"
+          test "$machine" = "arm64"
           sysctl -n hw.memsize
           sysctl -n machdep.cpu.brand_string || true
 
