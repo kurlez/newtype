@@ -419,6 +419,9 @@ function paint(): void {
         <button type="button" id="test-llm" data-kind="rewrite">${ui("Test rewrite connection", "测试改写连接")}</button>
         <button type="button" id="load-models">${ui("Load models", "加载模型")}</button>
       </div>
+      <div class="row">
+        ${snap.presets.map((item) => `<button type="button" data-test-provider="${escapeHtml(item.id)}">${ui("Test connection", "测试连接")} · ${escapeHtml(item.label)}</button>`).join("")}
+      </div>
     </section>
     <section>
       <h2 id="sec-hotkey">${ui("Hotkeys", "快捷键")}</h2>
@@ -567,6 +570,9 @@ function bind(): void {
   document.querySelector("#save-key")?.addEventListener("click", () => void saveKeys());
   document.querySelector("#clear-key")?.addEventListener("click", () => void clearKey(snap.settings.asrProvider));
   document.querySelector("#test-key")?.addEventListener("click", () => void testKey(snap.settings.asrProvider, "speech"));
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-test-provider]")) {
+    button.addEventListener("click", () => void testKey(button.dataset.testProvider ?? "", "models"));
+  }
   document.querySelector("#test-llm")?.addEventListener("click", () => void testKey(snap.settings.llmProvider, "rewrite"));
   document.querySelector("#load-models")?.addEventListener("click", () => void loadModels(snap.settings.asrProvider));
   document.querySelector("#reset-models")?.addEventListener("click", () => void resetModels());

@@ -9,17 +9,149 @@ pub struct ProviderError {
     pub code: String,
     pub retry_after_secs: Option<u64>,
     pub message: String,
+    /// Provider id, such as `groq`.
+    pub provider: String,
+    /// Preset id. Same as `provider` for a direct call.
+    pub preset: String,
+    /// Host and path only. No scheme, query, or key.
+    pub endpoint: String,
+    pub model: String,
+    /// Provider error text, already redacted and clipped.
+    pub detail: String,
 }
 
 impl ProviderError {
     pub fn plain(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             status: 0,
             code: String::new(),
             retry_after_secs: None,
-            message: message.into(),
+            message,
+            provider: String::new(),
+            preset: String::new(),
+            endpoint: String::new(),
+            model: String::new(),
+            detail: String::new(),
         }
     }
+
+    pub fn annotate(
+        mut self,
+        provider: &str,
+        preset: &str,
+        endpoint: &str,
+        model: &str,
+    ) -> Self {
+        self.provider = provider.to_string();
+        self.preset = preset.to_string();
+        self.endpoint = endpoint.to_string();
+        self.model = model.to_string();
+        self.message = crate::diag::scrub(&self.message);
+        self.detail = crate::diag::scrub(&self.detail);
+        self
+    }
+
+    /// One log line. Keys and Authorization values are already scrubbed.
+    pub fn diagnostic(&self, step: &str) -> String {
+        let message = clip_text(if self.detail.is_empty() {
+            &self.message
+        } else {
+            &self.detail
+        }, 300);
+        crate::diag::scrub(&format!(
+            "cloud {step} failed provider={} preset={} endpoint={} model={} status={} message={}",
+            field(&self.provider),
+            field(&self.preset),
+            field(&self.endpoint),
+            field(&self.model),
+            self.status,
+            message
+        ))
+    }
+
+    /// Status text such as `Groq 401: invalid API key`.
+    pub fn short(&self) -> String {
+        let label = provider_label(&self.provider);
+        let why = short_why(&self.code, &self.detail, &self.message);
+        if self.status == 0 {
+            format!("{label}: {why}")
+        } else {
+            format!("{label} {}: {why}", self.status)
+        }
+    }
+}
+
+pub fn endpoint_host_path(base: &str, path: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    let path = path.trim().trim_start_matches('/');
+    let joined = if base.is_empty() {
+        path.to_string()
+    } else if path.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}/{path}")
+    };
+    let without_scheme = joined
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&joined);
+    without_scheme
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
+}
+
+pub fn provider_detail(body: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(message) = value
+            .pointer("/error/message")
+            .and_then(|item| item.as_str())
+            .filter(|message| !message.is_empty())
+        {
+            return clip_text(message, 300);
+        }
+    }
+    clip_text(body, 300)
+}
+
+fn provider_label(provider: &str) -> &str {
+    match provider {
+        "groq" => "Groq",
+        "openai" => "OpenAI",
+        "dashscope" => "DashScope",
+        "volcengine" => "Volcengine",
+        "custom" => "OpenAI-compatible",
+        "" => "Cloud",
+        other => other,
+    }
+}
+
+fn short_why(code: &str, detail: &str, message: &str) -> String {
+    let source = if detail.is_empty() { message } else { detail };
+    if code == "invalid_api_key" || source.to_ascii_lowercase().contains("invalid api key") {
+        return "invalid API key".into();
+    }
+    let clipped = clip_text(source, 80);
+    if clipped.is_empty() {
+        "request failed".into()
+    } else {
+        clipped
+    }
+}
+
+fn field(value: &str) -> &str {
+    if value.is_empty() {
+        "-"
+    } else {
+        value
+    }
+}
+
+pub fn clip_text(body: &str, limit: usize) -> String {
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.chars().take(limit).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,12 +260,39 @@ mod tests {
     use super::*;
 
     fn limited(status: u16, code: &str, retry: Option<u64>) -> ProviderError {
-        ProviderError {
-            status,
-            code: code.into(),
-            retry_after_secs: retry,
-            message: format!("provider failed ({status})"),
-        }
+        let mut err = ProviderError::plain(format!("provider failed ({status})"));
+        err.status = status;
+        err.code = code.into();
+        err.retry_after_secs = retry;
+        err
+    }
+
+    #[test]
+    fn a_cloud_failure_log_names_the_call_and_hides_the_key() {
+        let err = ProviderError::plain("Speech request failed. sk-live-secret Authorization: Bearer sk-live-secret")
+            .annotate(
+                "groq",
+                "groq",
+                "api.groq.com/openai/v1/audio/transcriptions",
+                "whisper-large-v3-turbo",
+            );
+        let mut err = err;
+        err.status = 401;
+        err.code = "invalid_api_key".into();
+        err.detail = "Invalid API Key".into();
+        let line = err.diagnostic("asr");
+        assert!(line.contains("provider=groq"));
+        assert!(line.contains("preset=groq"));
+        assert!(line.contains("endpoint=api.groq.com/openai/v1/audio/transcriptions"));
+        assert!(line.contains("model=whisper-large-v3-turbo"));
+        assert!(line.contains("status=401"));
+        assert!(!line.contains("sk-live-secret"));
+        assert!(!line.to_ascii_lowercase().contains("bearer sk-"));
+        assert_eq!(err.short(), "Groq 401: invalid API key");
+        assert_eq!(
+            endpoint_host_path("https://api.groq.com/openai/v1/", "/audio/transcriptions"),
+            "api.groq.com/openai/v1/audio/transcriptions"
+        );
     }
 
     #[test]
