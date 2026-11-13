@@ -1,12 +1,12 @@
-# Self-hosted runners
+# Self-hosted runners (optional)
 
-GitHub-hosted Actions minutes are not used. Builds run on two machines you register yourself.
+CI does not use these scripts. Builds run on GitHub-hosted `windows-latest`, `macos-latest`, and `ubuntu-latest`. Keep this directory only if you want to register your own machines. Do not register them on this public repository, and do not enable self-hosted runners for public repositories or for pull requests from forks.
 
 英文说明在下面。中文在前。
 
 ## 中文
 
-这两台机器只给私有仓库 `kurlez/newtype` 用。不要把它们注册成公共仓库的 runner，也不要打开 “Allow GitHub Actions to run on self-hosted runners for public repositories” 或 fork PR 的工作流。fork 来的 pull request 即使打开了，本仓库的 workflow 也会跳过。
+这些脚本是可选的。仓库的 CI 用 GitHub 托管的 runner，不依赖这里的机器。不要把自备 runner 注册到这个公开仓库，也不要打开 “Allow GitHub Actions to run on self-hosted runners for public repositories” 或 fork PR 的工作流。
 
 拿一次性注册令牌（一小时内有效）。令牌只在脚本提示时粘贴，不要写进文件、不要发到聊天里：
 
@@ -56,7 +56,7 @@ powercfg /change hibernate-timeout-ac 0
 
 ## English
 
-These machines are only for the private repository `kurlez/newtype`. Do not register them on a public repository, and do not enable self-hosted runners for public repositories or for pull requests from forks. A fork pull request is skipped by the workflow even if that setting is on.
+These scripts are optional. CI uses GitHub-hosted runners and does not depend on these machines. Do not register a self-hosted runner on this public repository, and do not enable self-hosted runners for public repositories or for pull requests from forks.
 
 Get a one-hour registration token. Paste it only at the script prompt. Do not store it in a file or send it in chat:
 
@@ -105,5 +105,3 @@ powercfg /change hibernate-timeout-ac 0
 ```
 
 The scripts do not write the token or a Windows password to disk, and they do not print tokens. The Windows service is set to start automatically.
-
-Pull requests run tests and the Windows build. macOS and publish run on a push to `main`, a `v*` tag, or a manual run of those refs. Publish stays on the Windows runner and verifies updater signatures in Node, so it does not install minisign and does not use sudo.
