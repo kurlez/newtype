@@ -94,6 +94,10 @@ pub fn scrub(message: &str) -> String {
         }
         if starts_with_ignore_ascii(bytes, index, b"sk-")
             || starts_with_ignore_ascii(bytes, index, b"bearer ")
+            || starts_with_ignore_ascii(bytes, index, b"gsk_")
+            || (at_token_boundary(bytes, index)
+                && (starts_with_ignore_ascii(bytes, index, b"aklt")
+                    || starts_with_ignore_ascii(bytes, index, b"ltai")))
         {
             let token_end = bytes[index..]
                 .iter()
@@ -104,11 +108,30 @@ pub fn scrub(message: &str) -> String {
             index = token_end;
             continue;
         }
+        if at_token_boundary(bytes, index) && is_token_byte(bytes[index]) {
+            let mut token_end = index + 1;
+            while token_end < bytes.len() && is_token_byte(bytes[token_end]) {
+                token_end += 1;
+            }
+            if token_end - index >= 32 {
+                out.push_str("[redacted]");
+                index = token_end;
+                continue;
+            }
+        }
         let ch = message[index..].chars().next().unwrap_or('\u{FFFD}');
         out.push(ch);
         index += ch.len_utf8();
     }
     out
+}
+
+fn is_token_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+fn at_token_boundary(bytes: &[u8], index: usize) -> bool {
+    index == 0 || !is_token_byte(bytes[index - 1])
 }
 
 fn starts_with_ignore_ascii(bytes: &[u8], index: usize, prefix: &[u8]) -> bool {
@@ -133,6 +156,46 @@ mod tests {
         let header = scrub("Authorization: Bearer sk-live-secret");
         assert!(!header.to_ascii_lowercase().contains("sk-live"));
         assert!(!header.to_ascii_lowercase().contains("bearer sk-"));
+    }
+
+    #[test]
+    fn scrub_removes_groq_volcengine_dashscope_and_long_tokens() {
+        let groq = scrub("groq rejected gsk_testkey and gsk_abcdefghijklmnopqrstuvwxyz012345");
+        assert!(!groq.to_ascii_lowercase().contains("gsk_"));
+        assert!(groq.starts_with("groq rejected [redacted]"));
+
+        let volc = scrub("speech key AKLTxxxxxxxxxxxxxxxxxxxxxxxx failed");
+        assert!(!volc.contains("AKLT"));
+        assert!(volc.contains("[redacted]"));
+
+        let dash = scrub("dashscope LTAI5tExampleKeyValue123456 unauthorized");
+        assert!(!dash.contains("LTAI"));
+        assert!(dash.contains("dashscope [redacted]"));
+
+        let long = "a".repeat(32);
+        let short = "a".repeat(31);
+        assert_eq!(scrub(&format!("id {long} ok")), "id [redacted] ok");
+        assert_eq!(scrub(&format!("id {short} ok")), format!("id {short} ok"));
+        let mixed = format!("k={}.", "ab".repeat(16));
+        assert_eq!(scrub(&mixed), "k=[redacted].");
+        let hyphenated = format!("{}-key", "a".repeat(28));
+        assert_eq!(hyphenated.len(), 32);
+        assert_eq!(
+            scrub(&format!("token {hyphenated} end")),
+            "token [redacted] end"
+        );
+
+        assert_eq!(
+            scrub("model openai/gpt-oss-20b and doubao-seed-2-1-lite-260915"),
+            "model openai/gpt-oss-20b and doubao-seed-2-1-lite-260915"
+        );
+        let digest = "0123456789abcdef".repeat(4);
+        assert_eq!(digest.len(), 64);
+        assert_eq!(scrub(&format!("sha {digest}")), "sha [redacted]");
+        assert_eq!(
+            scrub("密钥 abcdefghijklmnopqrstuvwxyz012345 结束"),
+            "密钥 [redacted] 结束"
+        );
     }
 
     #[test]
