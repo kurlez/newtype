@@ -412,9 +412,9 @@ fn assign_provider_text(
 
 /// Store one chord and leave the other two alone.
 ///
-/// A Typeless clash is a warning. The chord is still stored. An empty chord,
-/// an unknown key, or a duplicate of another mode is an error and the previous
-/// value stays in place.
+/// A shortcut clash, including one with Typeless, is a warning. The chord is
+/// still stored. An empty chord, an unknown key, or a duplicate of another mode
+/// is an error and the previous value stays in place.
 pub fn assign_hotkey(
     settings: &mut DictationSettings,
     mode: &str,

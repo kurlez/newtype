@@ -314,7 +314,7 @@ pub fn local_asr_backend(id: &str) -> Option<LocalAsrBackend> {
 
 pub fn attribution(sensevoice_installed: bool) -> String {
     let mut text = String::from(
-        "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
+        "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT. newtype is not affiliated with or endorsed by Typeless.",
     );
     if sensevoice_installed {
         text.push_str(" SenseVoice-Small is installed. Its weights use the FunASR Model License and require attribution to FunAudioLLM / Alibaba.");

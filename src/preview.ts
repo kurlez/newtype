@@ -45,7 +45,7 @@ export const previewSnapshot: Snapshot = {
         volcAppId: "",
       },
       dashscope: {
-        asrModel: "qwen3-asr-flash",
+        asrModel: "qwen-audio-3.1-asr-flash",
         llmModel: "qwen3.8-flash",
         base: "",
         asrBase: "",
@@ -122,12 +122,12 @@ export const previewSnapshot: Snapshot = {
       llmReady: true,
       baseEditable: true,
       defaultBase: "",
-      defaultAsr: "qwen3-asr-flash",
+      defaultAsr: "qwen-audio-3.1-asr-flash",
       defaultLlm: "qwen3.8-flash",
-      asrModels: ["qwen3-asr-flash"],
+      asrModels: ["qwen-audio-3.1-asr-flash"],
       llmModels: ["qwen3.8-flash", "qwen3.8-max"],
       asrWire: "dashscope",
-      note: "Partial. HTTP audio chat only. Paste the workspace base URL. The WebSocket message model is not implemented.",
+      note: "Speech is Qwen-Audio ASR. Paste a workspace base URL ending in /compatible-mode/v1. Rewrite uses qwen3.8-flash.",
       verified: "Checked 2026-11-12.",
     },
     {
@@ -232,7 +232,7 @@ export const previewSnapshot: Snapshot = {
     activeLlm: "qwen3-4b-q4",
     downloading: "",
     attribution:
-      "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT.",
+      "Cleanup prompts keep the MIT attribution for ckckck/OpenTypeless. No prompt text is taken from Open-Less/openless. Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT. newtype is not affiliated with or endorsed by Typeless.",
     skipWarning:
       "Skip the local download? Offline fallback needs both the local speech model and the local rewrite model. This reminder stays until both are installed.",
     models: [

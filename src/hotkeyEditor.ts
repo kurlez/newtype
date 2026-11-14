@@ -55,10 +55,10 @@ export function markApplied(editor: HotkeyEditor): HotkeyEditor {
 
 export function knownConflict(chord: string): string | null {
   if (chord === "AltRight") {
-    return "Right Option / Right Alt is Typeless's dictate key, including a PC keyboard on a Mac. The newtype default is Right Ctrl.";
+    return "Right Option / Right Alt is also used by Typeless as a dictate key, including a PC keyboard on a Mac. The newtype default is Right Ctrl.";
   }
   if (chord === "AltRight+ShiftRight") {
-    return "Right Option + Right Shift is a Typeless shortcut. The newtype default is Right Ctrl + Right Shift.";
+    return "Right Option + Right Shift is also a Typeless shortcut. The newtype default is Right Ctrl + Right Shift.";
   }
   return null;
 }

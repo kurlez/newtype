@@ -527,8 +527,8 @@ impl TalkController {
 }
 
 pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
-    // macOS matches Windows. Right Option is Typeless when a PC keyboard
-    // (Right Alt) is used on the Mac, so the factory key is Right Control.
+    // macOS matches Windows. Right Option is also used by Typeless when a PC
+    // keyboard (Right Alt) is attached to a Mac, so the factory key is Right Control.
     let mut chord = Chord::new();
     chord.insert(KeyId::ControlRight);
     match mode {
@@ -636,20 +636,20 @@ fn known_conflict(chord: &Chord, os: OsKind) -> Option<&'static str> {
     let is = |keys: &[KeyId]| chord == &keys.iter().copied().collect::<Chord>();
     if os == OsKind::Mac && is(&[KeyId::Fn]) {
         return Some(
-            "Fn is Typeless's dictate key on macOS. Pick another key if both apps are running.",
+            "Fn is also used by Typeless as a dictate key on macOS. Pick another key if both apps are running.",
         );
     }
     if os == OsKind::Mac && is(&[KeyId::Fn, KeyId::ShiftLeft]) {
-        return Some("Fn + Left Shift is a Typeless shortcut on macOS.");
+        return Some("Fn + Left Shift is also a Typeless shortcut on macOS.");
     }
     if os == OsKind::Mac && is(&[KeyId::Fn, KeyId::Space]) {
-        return Some("Fn + Space is a Typeless shortcut on macOS.");
+        return Some("Fn + Space is also a Typeless shortcut on macOS.");
     }
     if is(&[KeyId::AltRight]) {
-        return Some("Right Option / Right Alt is Typeless's dictate key, including a PC keyboard on a Mac. The newtype default is Right Ctrl.");
+        return Some("Right Option / Right Alt is also used by Typeless as a dictate key, including a PC keyboard on a Mac. The newtype default is Right Ctrl.");
     }
     if is(&[KeyId::AltRight, KeyId::ShiftRight]) {
-        return Some("Right Option + Right Shift is a Typeless shortcut. The newtype default is Right Ctrl + Right Shift.");
+        return Some("Right Option + Right Shift is also a Typeless shortcut. The newtype default is Right Ctrl + Right Shift.");
     }
     if is(&[KeyId::ControlLeft, KeyId::Space]) {
         return Some("Left Ctrl + Space switches input methods on many systems.");
