@@ -4,8 +4,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
-    #[default]
     Dev,
+    #[default]
     Stable,
 }
 
@@ -41,7 +41,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            channel: Channel::Dev,
+            // New installs follow stable. A saved "dev" or "stable" value is
+            // loaded as written and is not rewritten.
+            channel: Channel::Stable,
         }
     }
 }
@@ -85,4 +87,36 @@ fn feeds() -> &'static Feeds {
             stable: file.channels.stable,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_install_uses_stable_and_a_saved_dev_channel_stays() {
+        assert_eq!(Channel::default(), Channel::Stable);
+        assert_eq!(Settings::default().channel, Channel::Stable);
+
+        let dir = std::env::temp_dir().join(format!(
+            "newtype-settings-channel-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(load(&dir.join("missing.json")).channel, Channel::Stable);
+
+        let saved = dir.join("settings.json");
+        std::fs::write(&saved, "{\"channel\":\"dev\"}\n").unwrap();
+        assert_eq!(load(&saved).channel, Channel::Dev);
+
+        std::fs::write(&saved, "{\"channel\":\"stable\"}\n").unwrap();
+        assert_eq!(load(&saved).channel, Channel::Stable);
+
+        std::fs::write(&saved, "{").unwrap();
+        assert_eq!(load(&saved).channel, Channel::Stable);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
