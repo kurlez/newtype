@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+Public release notes. A `v0.2.1` tag publishes that version on the stable channel. Later builds from `main` are `0.2.2-dev.N`, which the updater treats as newer than `0.2.1`.
+
+- The project is dual-licensed under MIT or Apache-2.0. Third-party licenses, including the MPL-2.0 crates and the downloaded models, are summarized in `THIRD_PARTY_NOTICES.md`.
+- The README is an end-user guide in English and Simplified Chinese. Download, install, API keys, local models, default hotkeys, and privacy are documented there. Version scheme, signing, and the publish flow are in `docs/RELEASING.md`.
+- A new install follows the stable update channel. A channel already saved as dev or stable is left as it is.
+- newtype is described as an AI voice input method and is not affiliated with or endorsed by Typeless.
+- The log redacts Groq `gsk_` keys, Volcengine `AKLT` keys, Alibaba `LTAI` keys, and other long token-like strings.
+
 ## 0.2.0
 
 First stable release. A `v0.2.0` tag publishes that version on the stable channel and, when the dev feed is older, on the dev channel too. Later builds from `main` are `0.2.1-dev.N`, which the updater treats as newer than `0.2.0`.

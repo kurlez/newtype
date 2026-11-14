@@ -121,7 +121,7 @@ After the secrets and the public key are on `main`, the publish job uploads a **
 - macOS: download the `.dmg`.
 - Windows: download the NSIS `-setup.exe`.
 
-First-launch steps are in the README. A new install uses the **stable** channel and does not follow every main push. Switch the in-app channel to **dev** when you want those builds. A channel already saved on a machine is left as it is; installing a newer build does not rewrite `settings.json`. Later pushes to `main` publish a higher `0.2.1-dev.<run>` build on the dev feed. The app checks the selected channel at startup and about once an hour, downloads in the background, and asks you to restart.
+First-launch steps are in the README. A new install uses the **stable** channel and does not follow every main push. Switch the in-app channel to **dev** when you want those builds. A channel already saved on a machine is left as it is; installing a newer build does not rewrite `settings.json`. Later pushes to `main` publish a higher `0.2.2-dev.<run>` build on the dev feed. The app checks the selected channel at startup and about once an hour, downloads in the background, and asks you to restart.
 
 ## 7. After the 0.2.0 tag
 
@@ -136,6 +136,6 @@ git push origin v0.2.0
 
 The workflow does not create the tag. That push builds version `0.2.0` and uploads a non-prerelease `v0.2.0` on `kurlez/newtype-releases`, including the macOS and Windows installers, the signed updater files, and `latest.json`. The stable channel reads `https://github.com/kurlez/newtype-releases/releases/latest/download/latest.json`. The same publish copies those files onto the `dev` tag when the dev feed is older than `0.2.0`, so dev-channel installs are offered `0.2.0`.
 
-The plain version in the repo stays `0.2.0`. Main builds are `0.2.1-dev.<run>`, which is newer than `0.2.0`. After you publish `v0.2.1`, bump `tauri.conf.json`, `src-tauri/Cargo.toml`, and `package.json` to `0.2.1` before the next main push. Dev builds then become `0.2.2-dev.<run>`. If you skip the bump, `0.2.1-dev.N` stays older than `0.2.1`.
+`v0.2.1` is published. The plain version in the repo is `0.2.1`. Main builds are `0.2.2-dev.<run>`, which is newer than `0.2.1`. After you publish `v0.2.2`, bump `tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json`, and both lockfiles to `0.2.2` before the next main push. Dev builds then become `0.2.3-dev.<run>`. If you skip the bump, `0.2.2-dev.N` stays older than `0.2.2`.
 
 Do not rename `.github/workflows/build.yml`. Its `github.run_number` is the dev build counter, and renaming the file starts that counter over.
