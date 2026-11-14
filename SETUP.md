@@ -60,7 +60,7 @@ gh secret set NEWTYPE_RELEASES_TOKEN --repo kurlez/newtype
 
 ## 4. Create `NEWTYPE_RELEASES_TOKEN`
 
-Updates are published to the public repository `https://github.com/kurlez/newtype-releases` because this source repository is private and installed apps cannot download from it.
+Updates are published to the public repository `https://github.com/kurlez/newtype-releases`. Installed apps download `latest.json` and the update files from there with no credentials.
 
 Create a fine-grained personal access token:
 
@@ -121,7 +121,7 @@ After the secrets and the public key are on `main`, the publish job uploads a **
 - macOS: download the `.dmg`.
 - Windows: download the NSIS `-setup.exe`.
 
-First-launch steps are in the README. After that install, leave the in-app channel on **dev**. Later pushes to `main` publish a higher `0.2.1-dev.<run>` build; the app checks at startup and about once an hour, downloads in the background, and asks you to restart.
+First-launch steps are in the README. A new install uses the **stable** channel and does not follow every main push. Switch the in-app channel to **dev** when you want those builds. A channel already saved on a machine is left as it is; installing a newer build does not rewrite `settings.json`. Later pushes to `main` publish a higher `0.2.1-dev.<run>` build on the dev feed. The app checks the selected channel at startup and about once an hour, downloads in the background, and asks you to restart.
 
 ## 7. After the 0.2.0 tag
 

@@ -1,34 +1,153 @@
 # newtype
 
-Menu-bar voice input for macOS (Apple Silicon) and Windows. Auto is the default: dictation uses the configured cloud provider, switches to the local models when that provider stays unreachable, and returns to cloud after the connection holds. Cloud only never uses the local models. Local only stays on this computer. Strict offline also blocks probes, update checks, and model downloads. The tray app, the settings window, and the in-app updater from the first milestone are still here. Do not change the version or publish flow below.
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-Model weights are not in the installer. See [docs/local-models.md](docs/local-models.md) for which files download, where they land, and how the runtime binaries are chosen. Translate and command use the same router as dictation. A local rewrite model below 4B does not translate or run commands. Volcengine speech uses the openspeech bigmodel socket.
+AI voice input method for macOS and Windows.
 
-## Version scheme
+Hold a hotkey to dictate. newtype transcribes your speech, optionally polishes the wording, and pastes the result into the app you were using. The same hotkey path can translate, or act on selected text. Cloud providers and local models are both supported. newtype is not affiliated with or endorsed by Typeless.
 
-The comparable version is what the updater orders. The string in the tray and the About section also shows the commit.
+## What it does
 
-| Build | Updater version | Shown in the app |
-| --- | --- | --- |
-| Local, or CI without `GITHUB_RUN_NUMBER` | `0.2.1-dev.0` | `0.2.1-dev.0+<7-char commit>` |
-| Push to `main`, and pull requests | `0.2.1-dev.<github.run_number>` | `0.2.1-dev.<run>+<7-char commit>` |
-| Git tag `v0.2.0` | `0.2.0` | `0.2.0+<7-char commit>` |
+- **Dictate.** Right Ctrl starts and stops a recording. The default mode is toggle. Hold-to-talk is in Settings. Escape cancels.
+- **Polish.** The default cleanup smooths wording and does not answer the request. Literal mode stays closer to the transcript. A personal dictionary replaces terms before the model sees the text.
+- **Translate.** A second chord translates into the language you set (English by default).
+- **Command.** A third chord uses the selected text when something is selected, and otherwise treats the dictation as a writing request. Translate and command need a cloud model, or a local rewrite model of at least 4B.
+- **Auto routing.** The default path uses your cloud provider when it answers, switches to local models when that provider stays unreachable, and returns to cloud after the connection holds. Cloud only never uses local models. Local only stays on this computer. Strict offline also blocks probes, update checks, and model downloads.
+- **Local models.** Qwen3-ASR for speech, Qwen3 for rewrite, Silero VAD to trim silence on the local path, sherpa-onnx and llama.cpp as the runtimes. Weights are downloaded when you ask for them. They are not inside the installer.
+- **Cloud presets.** Groq is the default for a new install. OpenAI, Volcengine (火山引擎), DashScope (通义 / 百炼), and a custom OpenAI-compatible endpoint are included.
+- **History.** Entries stay on this computer. The default keeps 30 days and the newest 300.
+- **Windows taskbar strip.** While you record, a strip can sit in the empty space just left of the clock. It floats if that space is too small. macOS uses a floating indicator. Either can be hidden.
+- **Updates.** A new install checks the stable channel, downloads in the background, and asks before restarting. You can switch to the dev channel in Settings. A channel you already saved is left as it is.
 
-`0.2.0` in `src-tauri/tauri.conf.json` is the **latest stable** version. Dev builds use the next patch, so they sort above that release. Ordering, which is what `tauri-plugin-updater` uses (`semver::Version`'s `Ord`), is:
+## Screenshots
 
-```text
-0.1.0-dev.89 < 0.2.0 < 0.2.1-dev.1 < 0.2.1-dev.10 < 0.2.1
-```
+Screenshots are not in this repository yet.
 
-The `+commit` suffix is display-only. It is not part of the package version. SemVer treats `+…` as build metadata, and this updater compares metadata alphabetically, so a commit hash is not a monotonic build number. A `+` in the version also breaks installer file names. The number after `-dev.` is `github.run_number` for `.github/workflows/build.yml`. Do not rename that file; the counter would restart and new builds would look older.
+<!-- TODO: add product screenshots before wider promotion.
+     Suggested: the settings window, the Windows taskbar strip, and History.
+     Files under src-tauri/icons and app-icon.png are the app icon, not screenshots.
+     Do not add placeholder images. -->
 
-Pull-request builds use the same counter but are not published. The next main build still has a higher number.
+## Download
 
-A stable tag must be `v` plus plain `MAJOR.MINOR.PATCH`. The tag sets the published version. After you publish `v0.2.1`, bump the plain version in `tauri.conf.json`, `src-tauri/Cargo.toml`, and `package.json` to `0.2.1` before the next main push. Dev builds then become `0.2.2-dev.N`, which is newer than `0.2.1`. If you skip the bump, `0.2.1-dev.N` stays older than `0.2.1` and the updater will not offer it. See [SETUP.md](SETUP.md).
+Install the current stable build from:
 
-## Building locally
+**[github.com/kurlez/newtype-releases/releases/latest](https://github.com/kurlez/newtype-releases/releases/latest)**
 
-Requirements: Node 22, Rust stable (see `rust-toolchain.toml`), and the platform libraries Tauri documents for a desktop build.
+| Platform | File |
+| --- | --- |
+| Windows 64-bit | `newtype_<ver>_x64-setup.exe` |
+| Mac, Apple Silicon | `newtype_<ver>_aarch64.dmg` |
+
+`<ver>` is the version on that release, for example `newtype_0.2.0_x64-setup.exe`. There is no Intel Mac build and no Linux installer.
+
+The `.dmg` and the Windows setup program are the first-install files. Later updates come from inside the app. The updater uses the signed `.app.tar.gz` (Mac) and the signed `-setup.exe` (Windows), not the `.dmg`.
+
+## Requirements
+
+- **macOS 12 or later**, Apple Silicon.
+- **Windows 10 or later**, 64-bit.
+- A microphone.
+- For cloud dictation: a network connection and an API key for the provider you pick.
+- For local models: several gigabytes of free disk. A Mac with 16 GB of RAM or more uses Qwen3-ASR 1.7B and Qwen3 4B. Windows, and Macs below that, use Qwen3-ASR 0.6B and Qwen3 1.7B. Sizes and checksums are in [docs/local-models.md](docs/local-models.md).
+
+## Install
+
+The builds are not notarized and are not signed with an Apple Developer ID or a Windows Authenticode certificate.
+
+### macOS
+
+1. Open the `.dmg` and drag **newtype** to Applications.
+2. Do not double-click it the first time. Gatekeeper blocks an app whose developer it cannot verify.
+3. In Finder, right-click (or Control-click) **newtype** → **Open**, then click **Open** in the dialog.
+4. If a double-click was already blocked: **System Settings → Privacy & Security**, scroll to the block message, and click **Open Anyway**. macOS may ask for an administrator password.
+5. Later launches from the same path should open without that prompt, until a new signature identity makes macOS treat the app as a different program. An update may ask for Microphone and Accessibility again.
+
+### Windows
+
+The installer is per-user.
+
+1. Run `newtype_<ver>_x64-setup.exe`.
+2. If SmartScreen shows “Windows protected your PC”, click **More info**, then **Run anyway**.
+
+## First run
+
+1. Allow the microphone. On macOS, also allow **Accessibility**. If the hotkey does nothing, allow **Input Monitoring** as well. The settings window has buttons that open the matching system pane.
+2. The default provider is **Groq**. Open Settings, paste an API key, and click **Save key**. The key is written to the macOS Keychain or Windows Credential Manager and read back before the window says it was saved. It is not stored in `dictation.json`.
+3. Focus another app. Press **Right Ctrl** to start, speak, and press **Right Ctrl** again to stop. newtype pastes the text and then restores the previous clipboard. On macOS that paste is Command+V. On Windows it is Ctrl+V.
+4. Optional: add dictionary terms, change the route to Local only or Strict offline, or download local models. Strict offline cannot download, so download first if you want those models.
+
+## API keys
+
+Create a key in the provider’s console, then paste it into Settings. **Load models** calls `GET /v1/models` with the saved key. The model ids below are the ones a new install suggests. You can type another id.
+
+| Provider | Speech | Rewrite | Where to create a key |
+| --- | --- | --- | --- |
+| Groq (default) | `whisper-large-v3-turbo` | `openai/gpt-oss-20b` | [console.groq.com/keys](https://console.groq.com/keys) |
+| OpenAI | `gpt-transcribe` | `gpt-4o-mini` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| Volcengine · 火山 | openspeech `bigmodel` | `doubao-seed-2-1-lite-260915` (pro: `doubao-seed-2-1-pro-260915`) | Speech: [豆包语音控制台](https://console.volcengine.com/speech/app). Rewrite: [火山方舟 Ark](https://console.volcengine.com/ark). |
+| DashScope · 通义 / 百炼 | `qwen-audio-3.1-asr-flash` | `qwen3.8-flash` (also `qwen3.8-max`) | [百炼控制台](https://bailian.console.aliyun.com/). Paste a base URL that ends with `/compatible-mode/v1`. |
+| OpenAI-compatible | you type it | you type it | Your own endpoint. `https`, or `http` on localhost. |
+
+**Groq.** One key covers speech and rewrite. Rewrite uses reasoning effort `low`, which is the lowest that `openai/gpt-oss-20b` accepts. A separate “Groq + GPT-4o mini” bundle uses the Groq key for speech and an OpenAI key for rewrite. Those keys are stored separately.
+
+**Volcengine.** Speech uses the openspeech socket (`volc.seedasr.sauc.duration`, model name `bigmodel`). On the new console, save the speech API key. On the old console, save the App ID and the access token. The rewrite key is the Ark key, in the Volcengine API key field. Thinking is turned off. `doubao-seed-asr-1-0` is not used.
+
+**DashScope.** Speech is Qwen-Audio ASR on the Model Studio multimodal generation endpoint, with dictionary terms sent as instant hotwords. Paste a workspace base URL that ends with `/compatible-mode/v1`, for example `https://dashscope.aliyuncs.com/compatible-mode/v1` or `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`. Rewrite uses the chat API on that same base, with thinking requested off. This path is HTTP. It is not the realtime WebSocket message model.
+
+The in-app bundles quote about $1.8 / month for Groq, about $2.5 for Groq plus GPT-4o mini, and about $8 for OpenAI, at 200 dictations a day. Those figures were checked on 2026-11-12 and are estimates, not a bill.
+
+## Local models
+
+Leave the route on **Auto** if you only want a fallback, or switch to **Local only** / **Strict offline** when the files are installed. In Settings, download the recommended speech model and rewrite model. Silero VAD is installed with a speech model and trims silence before local recognition. If that file is missing, the whole recording is recognized on device and nothing is sent out because of it.
+
+A local rewrite model below 4B does not translate and does not run commands. On a Mac at 16 GB or above, the default rewrite model is Qwen3 4B, so those modes can run locally. On Windows the default rewrite model is Qwen3 1.7B, so translate and command stay on a cloud model unless you install a 4B model.
+
+Strict offline blocks the download. Download on Auto or Local only, then switch. Details, checksums, and licenses: [docs/local-models.md](docs/local-models.md).
+
+## Hotkeys
+
+macOS and Windows use the same defaults. Left and right modifiers stay distinct. An empty saved chord means “use the default”.
+
+| Action | Default |
+| --- | --- |
+| Dictate | Right Ctrl (`ControlRight`, not Left Ctrl) |
+| Translate | Right Ctrl + Right Shift |
+| Command | Right Ctrl + Enter |
+| Cancel a recording | Escape |
+
+Toggle is the default: press to start, press again to stop. Hold-to-talk stops when you release the chord.
+
+Some keyboards have no Right Ctrl key. The defaults stay Right Ctrl. Open **Hotkeys**, click **Capture**, press a chord that exists (Right Alt works), then click **Set**. Set writes the chord and the listener uses it immediately. Cancel or Escape during capture leaves the saved chord in place. A clash with another app’s shortcut, including chords also used by Typeless, is a warning. Set still saves the chord.
+
+## Privacy
+
+- **API keys** are stored in the macOS Keychain or Windows Credential Manager. `dictation.json` does not contain them. A startup check writes and deletes a throwaway credential. If that check fails, Settings says the store is unavailable.
+- **No telemetry.** newtype does not phone home with usage stats.
+- **Logs** are a rolling `newtype.log` in the app log directory. The settings page and the tray menu show that path. A line records metadata: phase, route, model id, character counts, and error text. It does not record the transcript or the audio. Before a line is written, API-key-shaped text is removed, including `sk-…`, Groq `gsk_…`, Volcengine `AKLT…`, Alibaba `LTAI…`, and other long token-like strings.
+- **Cloud.** On a cloud path, the recording is sent to the speech provider you picked, and the transcript plus the prompt (including dictionary terms used as hints) is sent to the rewrite provider. Auto does that when the provider is reachable. Local only does not send speech or transcripts to a cloud provider. Strict offline also blocks connectivity probes, update checks, and model downloads. The local llama.cpp server is reached at `127.0.0.1` and keeps working in strict offline.
+- **History** is plaintext JSON on this computer. The default retention is 30 days, and only the newest 300 entries in that window are kept. Settings → History → **Don't keep** stores nothing new. **Clear** deletes what is already there. If a cloud step fails and the recording cannot be finished on this computer, that entry may keep a wav beside the history file. Deleting the entry removes the wav. History audio is not written into the log.
+- **Strict offline** is the switch for “do not leave this computer.” It does not by itself delete history you already have.
+
+## FAQ
+
+**The hotkey does nothing.** On macOS, grant Accessibility, then Input Monitoring if it still does not fire. On both systems, confirm the microphone permission and that the saved chord is the key you are pressing. Left Ctrl is not the default.
+
+**This keyboard has no Right Ctrl.** Use Capture, then Set. The warning about another app’s shortcut does not block the save.
+
+**macOS says the developer cannot be verified.** Use the right-click → Open steps above. Do not rely on the first double-click.
+
+**SmartScreen blocks the installer.** More info → Run anyway.
+
+**Updates do not appear.** A new install follows **stable**, which only moves when a version tag is published. Main-branch builds are on the **dev** channel. Switching channel does not downgrade. Strict offline turns update checks off. A channel already saved in `settings.json` is not changed by an upgrade.
+
+**Translate or command did not insert.** Those modes need a cloud rewrite model or a local model of at least 4B. The transcript stays in History when the result is withheld.
+
+**Where is the log?** Settings and the tray menu show the `newtype.log` path. It is metadata, not a transcript.
+
+## Build from source
+
+You need Node 22, Rust stable (see `rust-toolchain.toml`), and the platform libraries [Tauri documents](https://tauri.app/start/prerequisites/) for a desktop build.
 
 ```bash
 npm install
@@ -37,148 +156,18 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 npm run app:dev
 ```
 
-`npm run app:dev` is the supported dev command. It stamps the running app as `0.2.1-dev.0+<commit>`. The window opens on launch and stays in the taskbar and Alt+Tab. Closing it minimizes the window. Quit is on the tray menu.
+`npm run app:dev` is the supported dev command. The window opens on launch. Closing it minimizes. Quit is on the tray menu. Linux can run the UI this way. CI does not ship a Linux installer.
 
-A local installer needs the updater signing key in the environment, because update artifacts are signed at bundle time. `.env` files are not read.
+A local installer also needs the updater signing key in the environment. Do not commit that key. The release steps are in [docs/RELEASING.md](docs/RELEASING.md).
 
-```bash
-export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.tauri/newtype.key")"
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='the password from SETUP.md'
+## Contributing
 
-npm run app:build -- --bundles app,dmg    # macOS Apple Silicon
-npm run app:build -- --bundles nsis       # Windows x64
-```
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, the prompt harness, and the manual checks that need a real Mac or Windows machine. Version numbers, signing, and the publish flow are in [docs/RELEASING.md](docs/RELEASING.md).
 
-Generate that key with the commands in [SETUP.md](SETUP.md). Do not commit it. Linux can run `npm run app:dev` for UI work. CI does not ship a Linux installer.
+## License
 
-## Release and update flow
+newtype is dual-licensed under the MIT License or the Apache License 2.0, at your option. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE). Copyright 2026 Wenfeng Liu.
 
-```text
-push to main ──► build macOS arm64 (.dmg + .app.tar.gz) and Windows x64 (NSIS)
-                 sign the updater artifacts with TAURI_SIGNING_PRIVATE_KEY
-                 upload them and latest.json to the public dev prerelease
+Other licenses — Rust crates (including the MPL-2.0 crates cssparser, selectors, option-ext, and dtoa-short), npm packages, downloaded models, FLEURS samples, and the OpenTypeless prompt attribution — are summarized in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-tag v0.2.0  ──► same artifacts, uploaded as a non-prerelease v0.2.0
-                 also copied onto the dev feed when that feed is older than 0.2.0
-```
-
-The source repository is private, so clients cannot download from it. Artifacts go to the public repository `https://github.com/kurlez/newtype-releases`.
-
-| Channel | In-app endpoint | Release |
-| --- | --- | --- |
-| dev (default) | `https://github.com/kurlez/newtype-releases/releases/download/dev/latest.json` | Rolling prerelease tag `dev`, replaced on every main push |
-| stable | `https://github.com/kurlez/newtype-releases/releases/latest/download/latest.json` | Newest non-prerelease `v*` tag |
-
-`latest.json` lists the signed updater files only: macOS `.app.tar.gz` and Windows `-setup.exe`. The `.dmg` is attached for the first macOS install and is not an updater payload. The app checks the selected channel at startup and about once an hour, downloads in the background, and asks before restarting into the new build. Switching from a newer build to an older channel does not downgrade.
-
-Pull requests run the tests and both installers on GitHub-hosted runners (`windows-latest` and `macos-latest`). A pull request, including one from a fork, does not receive signing or publish secrets. It signs the updater with a throwaway key and ad-hoc signs the Mac app. Publish runs on `ubuntu-latest` only for a push to `main`, a `v*` tag, or a manual run of one of those refs, and only when both `TAURI_SIGNING_PRIVATE_KEY` and `NEWTYPE_RELEASES_TOKEN` are set. Each updater artifact is checked against `plugins.updater.pubkey` before upload. A placeholder key or a mismatched pair stops the upload and leaves the previous release in place. `scripts/runner/` is optional documentation for a machine you register yourself. CI does not use it.
-
-The public key embedded in the app is not an Apple certificate. It only verifies updater payloads.
-
-## First install
-
-Install once from the [dev release](https://github.com/kurlez/newtype-releases/releases/tag/dev). Later main builds arrive through the app.
-
-### macOS
-
-The `.dmg` is not notarized and is not Developer ID signed.
-
-1. Open the `.dmg` and drag **newtype** to Applications.
-2. Do not double-click it the first time. Gatekeeper blocks an app whose developer it cannot verify.
-3. In Finder, right-click (or Control-click) **newtype** → **Open**, then click **Open** in the dialog.
-4. If a double-click was already blocked: **System Settings → Privacy & Security**, scroll to the block message, and click **Open Anyway**. macOS may ask for an administrator password.
-5. Later launches from the same path should open without that prompt, until a new signature identity makes macOS treat the app as a different program.
-
-首次打开（未公证）：
-
-1. 打开 `.dmg`，把 newtype 拖到「应用程序」。
-2. 第一次不要双击。Gatekeeper 会提示无法验证开发者。
-3. 在 Finder 中右键（或按住 Control 点击）该应用 → **打开**，再在对话框里点 **打开**。
-4. 如果已经双击失败：打开 **系统设置 → 隐私与安全性**，找到被拦截的提示，点 **仍要打开**。可能需要管理员密码。
-
-Pull requests are ad-hoc signed. A push to `main` or a `v*` tag ad-hoc signs unless `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` are all set. Those three secrets are a self-signed Code Signing certificate, not an Apple Developer ID, and they are optional: if they are absent the job stays on ad-hoc and stays green. Ad-hoc signing changes the code hash every build. The stable identity is the mitigation for Accessibility and Microphone grants surviving an update. That has not been verified on a real Mac, so it is not a promise yet. Hardened runtime stays off. `llama-server` and its libraries are signed with that same identity when the private key is in the keychain, and ad-hoc as a set otherwise. Details and the one-time certificate steps are in [SETUP.md](SETUP.md).
-
-### Windows
-
-The NSIS installer is per-user and is not Authenticode signed.
-
-1. Run the `-setup.exe`.
-2. If SmartScreen shows “Windows protected your PC”, click **More info**, then **Run anyway**.
-
-## Dictation
-
-The hotkey starts and stops a recording. macOS and Windows use the same defaults: dictate is Right Ctrl (the right-hand Control key, `ControlRight`, not Left Control), translate is Right Ctrl + Right Shift, and command is Right Ctrl + Enter (Return). Right Option is not a default. On a PC keyboard attached to a Mac, Right Alt is Right Option, and that key belongs to Typeless. Left and right modifiers stay distinct. Toggle is the default. Hold-to-talk is in settings. Escape cancels a recording. Translate and command are registered and do not record.
-
-Some keyboards have no Right Ctrl key. The defaults stay Right Ctrl. To pick a key that exists, open Hotkey, click Capture, press the chord, then click Set. Set writes that chord into `dictation.json` and the listener uses it immediately. Cancel or Escape during capture leaves the saved chord in place. A saved `AltRight`, `AltRight+ShiftRight`, and `AltRight+Enter` binding keeps working. Right Alt still warns that it clashes with Typeless, and Set still saves it. The applied chord is written to `newtype.log`.
-
-Saving a key writes it to the macOS Keychain or Windows Credential Manager and reads it back before the settings window says it was saved. The build enables keyring's `apple-native` and `windows-native` features. Without those, keyring keeps the secret in process memory only, `cmdkey /list` stays empty, and the next launch has no key. `dictation.json` does not contain the key. On Linux the settings window can store a key in a mode `0600` file under the app config directory so the UI can run. That file is not used on macOS or Windows.
-
-A startup check writes and deletes a throwaway credential. If that check fails, the settings page says the store is unavailable. Dictation errors open the floating indicator instead of failing silently. A rolling log is `newtype.log` in the app log directory. The settings page and the tray menu show that path. The log does not contain API keys.
-
-A new install uses Groq: speech `whisper-large-v3-turbo` at `https://api.groq.com/openai/v1/audio/transcriptions`, and rewrite `openai/gpt-oss-20b` with `reasoning_effort: low`. About $1.8/month at 200 dictations a day. Groq + GPT-4o mini is about $2.5 and needs a Groq key plus an OpenAI key, stored separately. OpenAI (`gpt-transcribe` and `gpt-4o-mini`) is about $8. An install that already saved a provider and its model ids keeps them.
-
-Speech is sent only after you stop, to the provider you picked. The rewrite uses temperature 0 and turns thinking off where that model allows it. Groq `openai/gpt-oss-20b` cannot turn reasoning off, so the request uses `low` and at least 512 output tokens. If the rewrite fails, times out, or looks like an answer, the text after hot-word replacement is pasted instead. Paste uses the clipboard and then restores the previous clipboard text. On macOS that is Command+V. On Windows it is Ctrl+V.
-
-### Providers and model ids
-
-Checked against vendor docs on 2026-11-12. The settings fields are not locked to these ids. **Load models** calls `GET /v1/models` with the saved key.
-
-| Provider | Speech | Rewrite | In this build |
-| --- | --- | --- | --- |
-| Groq (default for a new install) | `whisper-large-v3-turbo` | `openai/gpt-oss-20b` | Ready. About $1.8/month at 200 dictations a day. `reasoning_effort: low`. |
-| Groq + GPT-4o mini | Groq `whisper-large-v3-turbo` | OpenAI `gpt-4o-mini` | Ready. About $2.5/month. The Groq key and the OpenAI key are stored separately. |
-| OpenAI | `gpt-transcribe` | `gpt-4o-mini` | Ready. About $8/month. One OpenAI key. |
-| DashScope · 通义 | `qwen3-asr-flash` | `qwen3.8-flash` (also `qwen3.8-max`) | Partial. HTTP chat with input audio. You paste the workspace base URL. The WebSocket message model is not implemented. |
-| Volcengine · 火山 | not set | `doubao-seed-2-1-lite-260915` (pro: `doubao-seed-2-1-pro-260915`) | Partial. The Ark chat API is implemented, with `thinking.type` disabled. Openspeech WebSocket speech is not. `doubao-seed-asr-1-0` is not used. |
-| OpenAI-compatible | you type it | you type it | Ready. `https`, or `http` on localhost. |
-
-`gpt-5-nano`, `whisper-1`, `gpt-4o-transcribe`, and `gpt-4o-mini-transcribe` are not suggested. `llama-3.1-8b-instant` is not used. Model ids stay editable. `qwen-audio-3.1-asr-flash-message` and `qwen3.7-plus` were not in the model list that was checked, so they are not suggested either.
-
-### Prompts
-
-`prompts/v2-polish.system.txt` is the default. `prompts/v1-literal.system.txt` is the literal level. Both keep the MIT attribution to ckckck/OpenTypeless in `prompts/ATTRIBUTION.md`. The transcript is untrusted data inside `<transcript>`. Hot words are replaced before the model and also listed in the prompt. No prompt text is copied from Open-Less/openless.
-
-### Tests
-
-```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-```
-
-That covers hot-word replacement, left/right hotkeys, routing, and the rewrite fallback. It does not call a provider.
-
-To run the 15 cleanup cases from the literal prompt against a configured provider:
-
-```bash
-export NEWTYPE_PROMPT_API_KEY='your key'
-# optional
-export NEWTYPE_PROMPT_BASE='https://api.openai.com/v1'
-export NEWTYPE_PROMPT_MODEL='gpt-4o-mini'
-export NEWTYPE_PROMPT_LEVEL='both'   # or literal, or polish
-export NEWTYPE_PROMPT_CASES='10,13,14,15'
-
-cargo test --manifest-path src-tauri/Cargo.toml --lib prompt_harness -- --nocapture
-```
-
-CI does not set `NEWTYPE_PROMPT_API_KEY`, so `prompt_harness` returns without a network call. A missing key is a skip, not a failure.
-
-### What you still have to try on a real Mac or Windows machine
-
-This environment cannot grant Accessibility, open a microphone, or paste into another app.
-
-- Right Ctrl on both Mac and Windows starts recording when that is still the saved chord. Left Ctrl does not. Hold-to-talk releases cleanly.
-- A keyboard with no Right Ctrl can keep a saved Right Alt chord (`AltRight`, `AltRight+ShiftRight`, `AltRight+Enter`). Changing a chord is Capture, then Set. The settings page warns about Typeless and still saves. `newtype.log` records the applied chord. The press used to capture does not start dictation.
-- The floating indicator shows recording, processing, and error, and names Cloud or the local path.
-- The first launch asks for the microphone. macOS also needs Accessibility, and some versions need Input Monitoring before the hotkey tap runs.
-- Dictation pastes into the focused app and the previous clipboard comes back.
-- A rewrite timeout still inserts the hot-word text.
-- After an update, check whether Microphone and Accessibility survived. Ad-hoc signing can drop them.
-
-## Layout
-
-`src-tauri/src/pipeline/` is the dictation path: cloud speech, hot words, prompts, the router, hotkeys, paste, and history. `prompts/` holds the versioned prompts. VAD remains a stub for the later local path.
-
-The tray menu starts with **History** and **Show last result**, then the path, **Start or stop dictation**, the full version, the commit, and **Check for updates**. The window opens on History. The window shows the same version and commit.
-
-## Setup checklist
-
-The remaining owner steps — updater keypair, the three required secret names, the releases token, and the optional macOS certificate — are in [SETUP.md](SETUP.md).
+newtype is not affiliated with or endorsed by Typeless.

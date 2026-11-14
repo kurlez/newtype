@@ -12,6 +12,7 @@ First stable release. A `v0.2.0` tag publishes that version on the stable channe
 - Settings can compare Groq, Volcengine, and DashScope on one recording: raw text, polished text, both latencies, and a redacted error. Volcengine and DashScope receive the dictionary as native hotwords. The result can be saved on this computer.
 - Translate and command record. History can be searched, copied, inserted again, and kept for a chosen period. Local Qwen speech and rewrite models download on demand. API keys stay in the macOS Keychain or Windows Credential Manager.
 
+- 2026-11-14: A new install follows the stable update channel. A channel already saved as dev or stable is left as it is. The log also redacts Groq `gsk_` keys, Volcengine `AKLT` keys, Alibaba `LTAI` keys, and other long token-like strings.
 - 2026-11-13: The Windows keyboard hook lets Enter and Escape through unless they finish a saved chord or a recording is in progress. An empty hotkey matches nothing, and a slow hook passes the key on.
 - 2026-11-13: Settings can compare Groq, Volcengine, and DashScope on one recording. Each row shows the raw transcript, the polished text, both latencies, and a redacted error. Volcengine and DashScope receive the dictionary as native hotwords.
 - 2026-11-13: Cloud speech sends only as many dictionary terms as the provider allows. Groq stays at 896 characters and OpenAI at 800, newest terms first, and a term is never cut in half. A prompt-length rejection is retried once with an empty prompt. The rewrite step still sees the full dictionary.

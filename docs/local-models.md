@@ -42,6 +42,6 @@ The Windows llama.cpp build is the CPU zip, so a machine without Vulkan or CUDA 
 
 ## Licenses
 
-Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT. The polish prompts keep the ckckck/OpenTypeless MIT attribution in `prompts/ATTRIBUTION.md`.
+Qwen3-ASR and Qwen3 weights are Apache-2.0. sherpa-onnx is Apache-2.0. llama.cpp is MIT. Silero VAD is MIT. The polish prompts keep the ckckck/OpenTypeless MIT attribution in `prompts/ATTRIBUTION.md`. newtype is not affiliated with or endorsed by Typeless.
 
 SenseVoice-Small int8 is optional. It is not selected for a new install. The weights are the sherpa-onnx export of FunAudioLLM SenseVoice-Small (`model.int8.onnx` plus `tokens.txt`) and use the FunASR Model License. The About page names FunASR only after the files are installed and checksummed. Inverse text normalization stays on. ModelScope does not publish this export (checked 2026-11-12); Auto uses Hugging Face, then hf-mirror. The same bytes are inside the k2-fsa release tarball `sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2`.
