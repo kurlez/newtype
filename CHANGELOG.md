@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- On macOS 26 the app no longer crashes at launch while opening the floating indicator. The indicator window is configured when it is created, and its style mask is not changed after the web view is attached.
+
 ## 0.2.1
 
 Public release notes. A `v0.2.1` tag publishes that version on the stable channel. Later builds from `main` are `0.2.2-dev.N`, which the updater treats as newer than `0.2.1`.
