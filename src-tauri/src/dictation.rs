@@ -2107,6 +2107,13 @@ fn watch_taskbar(app: AppHandle) {
 fn sync_indicator(app: &AppHandle) {
     use std::sync::atomic::AtomicU8;
     static LAST: AtomicU8 = AtomicU8::new(255);
+    // Setup already runs on the main thread, so the first show is not queued.
+    // Later ticks (the session thread, the level meter) hop once and coalesce.
+    #[cfg(target_os = "macos")]
+    if !crate::overlay::is_main_thread() {
+        schedule_indicator_sync(app);
+        return;
+    }
     if app.get_webview_window("indicator").is_none() {
         open_indicator(app);
     }
@@ -2198,7 +2205,32 @@ fn note_indicator(category: &str, line: Option<&str>) {
     crate::diag::record(line);
 }
 
+#[cfg(target_os = "macos")]
+fn schedule_indicator_sync(app: &AppHandle) {
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let shown = app.clone();
+    if shown
+        .run_on_main_thread(move || {
+            PENDING.store(false, Ordering::Release);
+            sync_indicator(&shown);
+        })
+        .is_err()
+    {
+        PENDING.store(false, Ordering::Release);
+        log_indicator(
+            "window",
+            "indicator update skipped: main thread unavailable",
+        );
+    }
+}
+
 fn show_floating(window: &tauri::WebviewWindow, reposition: bool) {
+    // Already-visible floating updates only clamp the position. Chrome is
+    // applied when the window is first shown or the layout changes, and
+    // configure_indicator itself does nothing when the chrome already matches.
     if reposition || !window.is_visible().unwrap_or(false) {
         place(window);
         crate::overlay::configure_indicator(window);
@@ -2392,7 +2424,7 @@ fn open_indicator(app: &AppHandle) {
     if app.get_webview_window("indicator").is_some() {
         return;
     }
-    let built = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "indicator",
         WebviewUrl::App("index.html?view=indicator".into()),
@@ -2408,8 +2440,12 @@ fn open_indicator(app: &AppHandle) {
     .background_color(tauri::webview::Color(0, 0, 0, 0))
     .resizable(false)
     .shadow(false)
-    .initialization_script("window.__newtypeIndicator = true;")
-    .build();
+    .initialization_script("window.__newtypeIndicator = true;");
+    // Style is fixed here, before the webview exists. macOS 26 crashes if
+    // setStyleMask runs after the WKWebView is attached.
+    #[cfg(target_os = "macos")]
+    let builder = builder.visible_on_all_workspaces(true).focusable(false);
+    let built = builder.build();
     match built {
         Ok(window) => {
             crate::overlay::configure_indicator(&window);
