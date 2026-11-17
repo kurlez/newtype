@@ -8,6 +8,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use tauri::WebviewWindow;
 
 const INDICATOR_LOGICAL_W: f64 = 256.0;
@@ -82,9 +84,7 @@ pub fn show_without_activating(window: &WebviewWindow) {
             return;
         }
         if let Some(ns) = ns_window(window) {
-            unsafe {
-                msg_void(ns, c"orderFrontRegardless");
-            }
+            msg_void(ns, c"orderFrontRegardless");
             return;
         }
     }
@@ -93,14 +93,14 @@ pub fn show_without_activating(window: &WebviewWindow) {
 
 pub fn configure_indicator(window: &WebviewWindow) {
     #[cfg(target_os = "macos")]
+    configure_indicator_macos(window);
+    #[cfg(not(target_os = "macos"))]
     {
-        configure_indicator_macos(window);
-        return;
+        let _ = window.set_focusable(false);
+        let _ = window.set_shadow(false);
+        #[cfg(target_os = "windows")]
+        apply_windows_noactivate(window);
     }
-    let _ = window.set_focusable(false);
-    let _ = window.set_shadow(false);
-    #[cfg(target_os = "windows")]
-    apply_windows_noactivate(window);
 }
 
 #[cfg(target_os = "macos")]

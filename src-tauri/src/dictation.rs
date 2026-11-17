@@ -2211,11 +2211,11 @@ fn schedule_indicator_sync(app: &AppHandle) {
     if PENDING.swap(true, Ordering::AcqRel) {
         return;
     }
-    let shown = app.clone();
-    if shown
+    let queued = app.clone();
+    if app
         .run_on_main_thread(move || {
             PENDING.store(false, Ordering::Release);
-            sync_indicator(&shown);
+            sync_indicator(&queued);
         })
         .is_err()
     {
