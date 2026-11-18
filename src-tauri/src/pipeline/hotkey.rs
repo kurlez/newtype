@@ -1028,6 +1028,124 @@ pub fn key_from_windows_vk(code: u32) -> KeyId {
     }
 }
 
+/// macOS virtual keycode. These are physical keys, not characters from the
+/// current input source, so the listener does not call TIS or TSM.
+pub fn key_from_mac_keycode(code: u16) -> KeyId {
+    match code {
+        58 => KeyId::AltLeft,
+        61 => KeyId::AltRight,
+        59 => KeyId::ControlLeft,
+        62 => KeyId::ControlRight,
+        56 => KeyId::ShiftLeft,
+        60 => KeyId::ShiftRight,
+        55 => KeyId::MetaLeft,
+        54 => KeyId::MetaRight,
+        36 => KeyId::Enter,
+        49 => KeyId::Space,
+        53 => KeyId::Escape,
+        63 => KeyId::Fn,
+        122 => KeyId::Function(1),
+        120 => KeyId::Function(2),
+        99 => KeyId::Function(3),
+        118 => KeyId::Function(4),
+        96 => KeyId::Function(5),
+        97 => KeyId::Function(6),
+        98 => KeyId::Function(7),
+        100 => KeyId::Function(8),
+        101 => KeyId::Function(9),
+        109 => KeyId::Function(10),
+        103 => KeyId::Function(11),
+        111 => KeyId::Function(12),
+        0 => KeyId::Letter(b'A'),
+        11 => KeyId::Letter(b'B'),
+        8 => KeyId::Letter(b'C'),
+        2 => KeyId::Letter(b'D'),
+        14 => KeyId::Letter(b'E'),
+        3 => KeyId::Letter(b'F'),
+        5 => KeyId::Letter(b'G'),
+        4 => KeyId::Letter(b'H'),
+        34 => KeyId::Letter(b'I'),
+        38 => KeyId::Letter(b'J'),
+        40 => KeyId::Letter(b'K'),
+        37 => KeyId::Letter(b'L'),
+        46 => KeyId::Letter(b'M'),
+        45 => KeyId::Letter(b'N'),
+        31 => KeyId::Letter(b'O'),
+        35 => KeyId::Letter(b'P'),
+        12 => KeyId::Letter(b'Q'),
+        15 => KeyId::Letter(b'R'),
+        1 => KeyId::Letter(b'S'),
+        17 => KeyId::Letter(b'T'),
+        32 => KeyId::Letter(b'U'),
+        9 => KeyId::Letter(b'V'),
+        13 => KeyId::Letter(b'W'),
+        7 => KeyId::Letter(b'X'),
+        16 => KeyId::Letter(b'Y'),
+        6 => KeyId::Letter(b'Z'),
+        44 => KeyId::Slash,
+        42 => KeyId::Backslash,
+        43 => KeyId::Comma,
+        47 => KeyId::Period,
+        27 => KeyId::Minus,
+        24 => KeyId::Equal,
+        41 => KeyId::Semicolon,
+        39 => KeyId::Quote,
+        33 => KeyId::BracketLeft,
+        30 => KeyId::BracketRight,
+        50 => KeyId::Backquote,
+        48 => KeyId::Tab,
+        51 => KeyId::Backspace,
+        18 => KeyId::Digit(1),
+        19 => KeyId::Digit(2),
+        20 => KeyId::Digit(3),
+        21 => KeyId::Digit(4),
+        23 => KeyId::Digit(5),
+        22 => KeyId::Digit(6),
+        26 => KeyId::Digit(7),
+        28 => KeyId::Digit(8),
+        25 => KeyId::Digit(9),
+        29 => KeyId::Digit(0),
+        other => KeyId::Vk(other),
+    }
+}
+
+/// Device-dependent modifier bits from `IOLLEvent.h`. A flags-changed event
+/// names the key in `code`; the bit says whether that key went down or up.
+const MAC_FLAG_LEFT_CONTROL: u64 = 0x0000_0001;
+const MAC_FLAG_LEFT_SHIFT: u64 = 0x0000_0002;
+const MAC_FLAG_RIGHT_SHIFT: u64 = 0x0000_0004;
+const MAC_FLAG_LEFT_COMMAND: u64 = 0x0000_0008;
+const MAC_FLAG_RIGHT_COMMAND: u64 = 0x0000_0010;
+const MAC_FLAG_LEFT_OPTION: u64 = 0x0000_0020;
+const MAC_FLAG_RIGHT_OPTION: u64 = 0x0000_0040;
+const MAC_FLAG_RIGHT_CONTROL: u64 = 0x0000_2000;
+const MAC_FLAG_FN: u64 = 0x0080_0000;
+const MAC_FLAG_CAPS_LOCK: u64 = 0x0001_0000;
+
+/// Press or release for a macOS `flagsChanged` event. `None` when `code` is
+/// not a modifier key.
+pub fn mac_flags_changed(code: u16, flags: u64) -> Option<KeyEdge> {
+    let mask = match code {
+        59 => MAC_FLAG_LEFT_CONTROL,
+        62 => MAC_FLAG_RIGHT_CONTROL,
+        56 => MAC_FLAG_LEFT_SHIFT,
+        60 => MAC_FLAG_RIGHT_SHIFT,
+        58 => MAC_FLAG_LEFT_OPTION,
+        61 => MAC_FLAG_RIGHT_OPTION,
+        55 => MAC_FLAG_LEFT_COMMAND,
+        54 => MAC_FLAG_RIGHT_COMMAND,
+        63 => MAC_FLAG_FN,
+        57 => MAC_FLAG_CAPS_LOCK,
+        _ => return None,
+    };
+    let key = key_from_mac_keycode(code);
+    if flags & mask != 0 {
+        Some(KeyEdge::Down(key))
+    } else {
+        Some(KeyEdge::Up(key))
+    }
+}
+
 /// Map a hardware key from the listener. Right Option and Right Alt are `AltRight`.
 pub fn key_from_rdev(key: &rdev::Key) -> Option<KeyId> {
     use rdev::Key::*;
@@ -1131,6 +1249,40 @@ mod tests {
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
+    }
+
+    #[test]
+    fn mac_keycodes_name_the_physical_key_without_an_input_source() {
+        assert_eq!(key_from_mac_keycode(62), KeyId::ControlRight);
+        assert_eq!(key_from_mac_keycode(59), KeyId::ControlLeft);
+        assert_eq!(key_from_mac_keycode(61), KeyId::AltRight);
+        assert_eq!(key_from_mac_keycode(58), KeyId::AltLeft);
+        assert_eq!(key_from_mac_keycode(0), KeyId::Letter(b'A'));
+        assert_eq!(key_from_mac_keycode(36), KeyId::Enter);
+        assert_eq!(key_from_mac_keycode(44), KeyId::Slash);
+        assert_eq!(key_from_mac_keycode(117), KeyId::Vk(117));
+        assert_ne!(key_from_mac_keycode(62), key_from_mac_keycode(59));
+    }
+
+    #[test]
+    fn mac_flags_changed_uses_the_side_of_the_modifier() {
+        assert_eq!(
+            mac_flags_changed(62, MAC_FLAG_RIGHT_CONTROL),
+            Some(KeyEdge::Down(KeyId::ControlRight))
+        );
+        assert_eq!(
+            mac_flags_changed(62, MAC_FLAG_LEFT_CONTROL),
+            Some(KeyEdge::Up(KeyId::ControlRight))
+        );
+        assert_eq!(
+            mac_flags_changed(59, MAC_FLAG_LEFT_CONTROL | MAC_FLAG_RIGHT_CONTROL),
+            Some(KeyEdge::Down(KeyId::ControlLeft))
+        );
+        assert_eq!(
+            mac_flags_changed(61, MAC_FLAG_RIGHT_OPTION),
+            Some(KeyEdge::Down(KeyId::AltRight))
+        );
+        assert_eq!(mac_flags_changed(0, MAC_FLAG_LEFT_CONTROL), None);
     }
 
     #[test]

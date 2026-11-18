@@ -713,22 +713,21 @@ fn spawn_listener(
                     crate::diag::record(&message);
                 }
             }
+            #[cfg(target_os = "macos")]
+            let listen_result = crate::mac_hotkey::listen().map_err(|err| err.to_string());
+            #[cfg(not(any(windows, target_os = "macos")))]
+            let listen_result = rdev::listen(move |event| {
+                let edge = match event.event_type {
+                    rdev::EventType::KeyPress(key) => hotkey::key_from_rdev(&key).map(KeyEdge::Down),
+                    rdev::EventType::KeyRelease(key) => hotkey::key_from_rdev(&key).map(KeyEdge::Up),
+                    _ => None,
+                };
+                if let Some(edge) = edge {
+                    crate::key_feed::push(edge, false);
+                }
+            });
             #[cfg(not(windows))]
             {
-                let listen_result = rdev::listen(move |event| {
-                    let edge = match event.event_type {
-                        rdev::EventType::KeyPress(key) => {
-                            hotkey::key_from_rdev(&key).map(KeyEdge::Down)
-                        }
-                        rdev::EventType::KeyRelease(key) => {
-                            hotkey::key_from_rdev(&key).map(KeyEdge::Up)
-                        }
-                        _ => None,
-                    };
-                    if let Some(edge) = edge {
-                        crate::key_feed::push(edge, false);
-                    }
-                });
                 if let Err(err) = listen_result {
                     let message = crate::locale::pick(
                         format!(

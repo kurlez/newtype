@@ -44,6 +44,7 @@ arboard = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 core-foundation = "0.10"
+core-graphics = "0.25"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
