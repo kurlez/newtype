@@ -181,7 +181,7 @@ pub fn request_on_launch(app: &tauri::AppHandle) {
 #[cfg(target_os = "macos")]
 pub fn request_microphone_access(app: &tauri::AppHandle) -> Result<String, String> {
     let status = av_status_name(mac_av::authorization_status());
-    let message = match status.as_str() {
+    let message = match status {
         "granted" => crate::locale::text("Microphone access is granted.", "麦克风权限已开启。"),
         "denied" | "restricted" => crate::locale::text(
             "Microphone access is off. Open Microphone settings and allow newtype. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed.",
