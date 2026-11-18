@@ -2924,6 +2924,7 @@ version = "0.2.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "block2",
  "bzip2 0.4.4",
  "core-foundation 0.10.1",
  "core-graphics 0.25.0",

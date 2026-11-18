@@ -1030,6 +1030,14 @@ pub fn key_from_windows_vk(code: u32) -> KeyId {
 
 /// macOS virtual keycode. These are physical keys, not characters from the
 /// current input source, so the listener does not call TIS or TSM.
+/// `kCGEventTapDisabledByTimeout` and `kCGEventTapDisabledByUserInput`.
+/// The tap callback must re-enable the tap when either arrives.
+pub const EVENT_TAP_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+pub fn event_tap_needs_reenable(event_type: u32) -> bool {
+    matches!(event_type, 0xFFFF_FFFE | 0xFFFF_FFFF)
+}
+
 pub fn key_from_mac_keycode(code: u16) -> KeyId {
     match code {
         58 => KeyId::AltLeft,
@@ -1249,6 +1257,15 @@ mod tests {
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
+    }
+
+    #[test]
+    fn a_disabled_event_tap_is_reenabled_without_reading_the_key() {
+        assert!(event_tap_needs_reenable(0xFFFF_FFFE));
+        assert!(event_tap_needs_reenable(0xFFFF_FFFF));
+        assert!(!event_tap_needs_reenable(10));
+        assert!(!event_tap_needs_reenable(12));
+        assert_eq!(EVENT_TAP_RETRY, std::time::Duration::from_secs(2));
     }
 
     #[test]

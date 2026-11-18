@@ -75,6 +75,7 @@ export interface PermissionInfo {
   guidance: string;
   microphoneState: string;
   accessibilityState: string;
+  inputMonitoringState: string;
   prompt: string;
   promptAction: string;
 }
