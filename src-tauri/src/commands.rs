@@ -253,6 +253,15 @@ pub fn local_delete(app: AppHandle, id: String) -> Result<crate::dictation::Snap
 }
 
 #[tauri::command]
+pub fn local_clear_redownload(
+    app: AppHandle,
+    id: String,
+    confirm_network: bool,
+) -> Result<(), String> {
+    crate::dictation::local_clear_redownload(&app, &id, confirm_network)
+}
+
+#[tauri::command]
 pub fn local_skip_download(app: AppHandle) -> Result<crate::dictation::Snapshot, String> {
     crate::dictation::local_skip_download(&app)
 }

@@ -44,6 +44,7 @@
     "allow-local-download",
     "allow-local-cancel-download",
     "allow-local-delete",
+    "allow-local-clear-redownload",
     "allow-local-skip-download",
     "allow-local-set-mirror",
     "allow-local-use-model",

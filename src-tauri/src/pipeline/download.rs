@@ -60,7 +60,8 @@ pub fn download_verified(
             }
         }
     }
-    if dest.exists() {
+    if last_error != "Download cancelled." {
+        let _ = fs::remove_file(partial_path(dest));
         let _ = fs::remove_file(dest);
     }
     Err(last_error)
@@ -86,11 +87,8 @@ fn download_one(
     progress: &mut impl FnMut(FetchProgress),
 ) -> Result<(), String> {
     let partial = partial_path(dest);
-    if partial.is_file() {
-        let len = partial.metadata().map(|meta| meta.len()).unwrap_or(0);
-        if expected_size > 0 && len > expected_size {
-            let _ = fs::remove_file(&partial);
-        }
+    if partial.is_file() && !partial_is_resumable(&partial, expected_sha256, expected_size) {
+        let _ = fs::remove_file(&partial);
     }
     let mut attempt_without_range = false;
     for _ in 0..2 {
@@ -197,6 +195,26 @@ fn finish_partial(
         total: expected_size.max(size),
     });
     Ok(())
+}
+
+/// A partial file can be resumed only when its size is still inside the
+/// expected length. A file that already has the expected size is kept only
+/// when its SHA-256 matches; anything else is discarded.
+pub fn partial_is_resumable(partial: &Path, expected_sha256: &str, expected_size: u64) -> bool {
+    let Ok(meta) = partial.metadata() else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    let len = meta.len();
+    if len == 0 || (expected_size > 0 && len > expected_size) {
+        return false;
+    }
+    if expected_size > 0 && len == expected_size {
+        return checksum::matches_file(partial, expected_sha256).unwrap_or(false);
+    }
+    true
 }
 
 pub fn partial_path(dest: &Path) -> PathBuf {
@@ -392,6 +410,29 @@ mod tests {
         assert!(err.contains("Strict offline"), "{err}");
         assert!(listener.accept().is_err());
         assert!(!dest.exists());
+    }
+
+    #[test]
+    fn an_oversized_partial_is_discarded_before_the_download() {
+        let body = b"abcd".to_vec();
+        let base = serve(Arc::new(vec![("/file".into(), 200, body.clone())]));
+        let dir = std::env::temp_dir().join(format!("newtype-dl-over-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.bin");
+        fs::write(partial_path(&dest), b"too-long-partial").unwrap();
+        download_verified(
+            &[format!("{base}/file")],
+            &dest,
+            &checksum::sha256_bytes(&body),
+            body.len() as u64,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), body);
+        assert!(!partial_path(&dest).exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

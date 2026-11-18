@@ -89,6 +89,7 @@ pub fn run() {
             commands::local_download,
             commands::local_cancel_download,
             commands::local_delete,
+            commands::local_clear_redownload,
             commands::local_skip_download,
             commands::local_set_mirror,
             commands::local_use_model,

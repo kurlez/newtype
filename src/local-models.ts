@@ -15,9 +15,10 @@ export function localPanel(local: LocalLibrary, preference: string): string {
       const active = model.active ? "In use for the next local dictation. " : "";
       const size = formatBytes(model.sizeBytes);
       const got = model.state === "partial" || model.state === "downloading" ? ` ${formatBytes(model.receivedBytes)} received.` : "";
+      const reset = `<button type="button" data-local-redownload="${escapeHtml(model.id)}" ${model.available ? "" : "disabled"}>${ui("Clear and re-download", "清除并重新下载")}</button>`;
       const action = model.state === "installed"
-        ? `<button type="button" data-local-use="${escapeHtml(model.role)}:${escapeHtml(model.id)}">${model.active ? "In use" : "Use"}</button><button type="button" data-local-delete="${escapeHtml(model.id)}">${pendingDelete === model.id ? "Delete files" : "Delete"}</button>`
-        : `<button type="button" data-local-download="${escapeHtml(model.id)}" ${model.available ? "" : "disabled"}>${model.state === "partial" ? "Resume" : "Download"}</button>`;
+        ? `<button type="button" data-local-use="${escapeHtml(model.role)}:${escapeHtml(model.id)}">${model.active ? "In use" : "Use"}</button><button type="button" data-local-delete="${escapeHtml(model.id)}">${pendingDelete === model.id ? "Delete files" : "Delete"}</button>${reset}`
+        : `<button type="button" data-local-download="${escapeHtml(model.id)}" ${model.available ? "" : "disabled"}>${model.state === "partial" ? "Resume" : "Download"}</button>${reset}`;
       return `<article class="model">
         <h3>${escapeHtml(model.name)} <span class="badge ${model.state === "installed" ? "" : "warn"}">${escapeHtml(model.state)}</span></h3>
         <p class="status">${escapeHtml(mark + active + model.notes)}</p>
@@ -123,6 +124,17 @@ export function bindLocal(preview: boolean, reloadLocal: () => Promise<void>): v
       void startDownload(preview, reloadLocal, [id], allow);
     });
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-local-redownload]")) {
+    button.addEventListener("click", () => {
+      const id = button.dataset.localRedownload ?? "";
+      const allow = confirmNetwork();
+      if (allow === null || !id) {
+        return;
+      }
+      pendingDelete = "";
+      void startRedownload(preview, reloadLocal, id, allow);
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-local-delete]")) {
     button.addEventListener("click", () => {
       const id = button.dataset.localDelete ?? "";
@@ -172,6 +184,23 @@ export function showProgress(event: LocalProgress): void {
   } else {
     bar.hidden = true;
   }
+}
+
+function startRedownload(preview: boolean, reloadLocal: () => Promise<void>, id: string, confirmNetwork: boolean): void {
+  if (preview) {
+    const line = document.querySelector("#local-progress");
+    if (line) {
+      line.textContent = "Preview does not download models.";
+    }
+    return;
+  }
+  void call("local_clear_redownload", { id, confirmNetwork }).then(() => reloadLocal()).catch(async (error: unknown) => {
+    const line = document.querySelector("#local-progress");
+    if (line) {
+      line.textContent = String(error);
+    }
+    await reloadLocal();
+  });
 }
 
 function startDownload(preview: boolean, reloadLocal: () => Promise<void>, ids: string[], confirmNetwork: boolean): void {
