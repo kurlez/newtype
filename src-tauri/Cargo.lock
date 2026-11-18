@@ -2926,6 +2926,7 @@ dependencies = [
  "base64 0.22.1",
  "bzip2 0.4.4",
  "core-foundation 0.10.1",
+ "core-graphics 0.25.0",
  "cpal",
  "flate2",
  "futures-util",

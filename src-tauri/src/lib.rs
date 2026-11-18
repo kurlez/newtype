@@ -5,6 +5,8 @@ mod dictate_config;
 mod dictation;
 mod key_feed;
 mod locale;
+#[cfg(target_os = "macos")]
+mod mac_hotkey;
 mod material;
 mod overlay;
 mod permissions;
