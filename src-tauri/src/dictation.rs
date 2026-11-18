@@ -2524,6 +2524,26 @@ pub fn local_cancel_download(app: &AppHandle) {
     app.state::<Dictation>().engines.cancel_download();
 }
 
+pub fn local_clear_redownload(
+    app: &AppHandle,
+    id: &str,
+    confirm_network: bool,
+) -> Result<(), String> {
+    let _ = confirm_network;
+    egress::authorize(egress::Purpose::ModelDownload)?;
+    let state = app.state::<Dictation>();
+    if !state.engines.downloading().is_empty() {
+        return Err("A download is already running.".into());
+    }
+    library::delete_model(state.engines.root(), id)?;
+    let settings = state.settings.lock().expect("settings").clone();
+    let mirror = Mirror::parse(&settings.local_mirror).unwrap_or(Mirror::Auto);
+    let engines = Arc::clone(&state.engines);
+    drop(state);
+    crate::diag::record(&format!("cleared local model {id} for a new download"));
+    engines.spawn_download(app.clone(), vec![id.to_string()], hotkey::host_os(), mirror)
+}
+
 pub fn local_delete(app: &AppHandle, id: &str) -> Result<Snapshot, String> {
     let state = app.state::<Dictation>();
     library::delete_model(state.engines.root(), id)?;

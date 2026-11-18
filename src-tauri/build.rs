@@ -42,6 +42,7 @@ fn main() {
             "local_download",
             "local_cancel_download",
             "local_delete",
+            "local_clear_redownload",
             "local_skip_download",
             "local_set_mirror",
             "local_use_model",

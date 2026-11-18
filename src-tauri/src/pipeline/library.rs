@@ -329,7 +329,12 @@ fn install_with(
     }
     let files = catalog::files_for(id, os)?;
     let dir = model_dir(root, id);
-    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    if installed(root, card, os) {
+        return Ok(());
+    }
+    if let Err(err) = prepare_model_dir(&dir, files) {
+        return fail_install(&dir, files, "Preparing", &err);
+    }
     for file in files {
         if cancel.load(Ordering::Relaxed) {
             return Err("Download cancelled.".into());
@@ -344,14 +349,27 @@ fn install_with(
             message: format!("Downloading {label}"),
         });
         let file_size = file.size;
-        download::download_verified(&urls, &dest, file.sha256, file.size, cancel, |fetch: FetchProgress| {
-            progress(InstallEvent {
-                phase: "downloading".into(),
-                received: fetch.received,
-                total: file_size.max(fetch.total),
-                message: format!("Downloading {label}"),
-            });
-        })?;
+        if let Err(err) = download::download_verified(
+            &urls,
+            &dest,
+            file.sha256,
+            file.size,
+            cancel,
+            |fetch: FetchProgress| {
+                progress(InstallEvent {
+                    phase: "downloading".into(),
+                    received: fetch.received,
+                    total: file_size.max(fetch.total),
+                    message: format!("Downloading {label}"),
+                });
+            },
+        ) {
+            if err == "Download cancelled." {
+                return Err(err);
+            }
+            let stage = if err.contains("SHA-256") { "Verifying" } else { "Downloading" };
+            return fail_install(&dir, files, stage, &format!("{label}: {err}"));
+        }
         if file.extract {
             progress(InstallEvent {
                 phase: "extracting".into(),
@@ -359,13 +377,14 @@ fn install_with(
                 total: file.size,
                 message: format!("Unpacking {label}"),
             });
-            extract::extract_archive(&dest, &dir)?;
+            if let Err(err) = extract::extract_archive_atomic(&dest, &dir) {
+                return fail_install(&dir, files, "Extracting", &format!("{label}: {err}"));
+            }
             let _ = fs::remove_file(&dest);
             for required in file.required {
                 if extract::find_named(&dir, required).is_none() {
-                    let message = format!("The archive did not contain {required}.");
-                    let _ = write_error(&dir, &message);
-                    return Err(message);
+                    let message = format!("{label}: the archive did not contain {required}.");
+                    return fail_install(&dir, files, "Extracting", &message);
                 }
             }
         }
@@ -383,6 +402,90 @@ fn install_with(
         message: format!("{} is installed.", card.name),
     });
     Ok(())
+}
+
+fn fail_install(dir: &Path, files: &[RemoteFile], stage: &str, detail: &str) -> Result<(), String> {
+    scrub_failed(dir, files);
+    let message = format!("{stage} failed. {detail}");
+    let _ = write_error(dir, &message);
+    Err(message)
+}
+
+/// Drop half-extracted files and partial downloads that cannot be checked.
+/// A complete file whose size and SHA-256 match is kept. A shorter partial is
+/// kept so the next attempt can resume it and still verify the hash.
+fn prepare_model_dir(dir: &Path, files: &[RemoteFile]) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    let mut keep = std::collections::BTreeSet::new();
+    for file in files {
+        let dest = dir.join(file.name);
+        let partial = download::partial_path(&dest);
+        if dest.is_file()
+            && size_matches(&dest, file.size)
+            && super::checksum::matches_file(&dest, file.sha256).unwrap_or(false)
+        {
+            keep.insert(file.name.to_string());
+        } else if dest.exists() {
+            let _ = fs::remove_file(&dest);
+        }
+        if partial.is_file() && download::partial_is_resumable(&partial, file.sha256, file.size) {
+            if let Some(name) = partial.file_name().and_then(|value| value.to_str()) {
+                keep.insert(name.to_string());
+            }
+        } else if partial.exists() {
+            let _ = fs::remove_file(&partial);
+        }
+    }
+    remove_unkept(dir, &keep);
+    Ok(())
+}
+
+fn scrub_failed(dir: &Path, files: &[RemoteFile]) {
+    let _ = fs::remove_dir_all(dir.join(".unpack-staging"));
+    for file in files {
+        let dest = dir.join(file.name);
+        let partial = download::partial_path(&dest);
+        let _ = fs::remove_file(&partial);
+        let verified = dest.is_file()
+            && size_matches(&dest, file.size)
+            && super::checksum::matches_file(&dest, file.sha256).unwrap_or(false);
+        if !verified {
+            let _ = fs::remove_file(&dest);
+        }
+    }
+    let keep = files
+        .iter()
+        .filter(|file| {
+            let dest = dir.join(file.name);
+            dest.is_file()
+                && size_matches(&dest, file.size)
+                && super::checksum::matches_file(&dest, file.sha256).unwrap_or(false)
+        })
+        .map(|file| file.name.to_string())
+        .collect();
+    remove_unkept(dir, &keep);
+}
+
+fn size_matches(path: &Path, expected: u64) -> bool {
+    expected == 0 || path.metadata().map(|meta| meta.len() == expected).unwrap_or(false)
+}
+
+fn remove_unkept(dir: &Path, keep: &std::collections::BTreeSet<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if keep.contains(&name) || name == ERROR_NAME {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = fs::remove_dir_all(&path);
+        } else {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 pub fn delete_model(root: &Path, id: &str) -> Result<(), String> {
@@ -628,6 +731,23 @@ mod tests {
         assert!(delete_model(&kept, "missing-model").is_err());
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&kept);
+    }
+
+    #[test]
+    fn a_half_unpacked_directory_is_removed_and_a_verified_file_is_kept() {
+        let dir = scratch("tidy");
+        let model = dir.join("demo");
+        fs::create_dir_all(model.join("llama-b12292")).unwrap();
+        fs::write(model.join("llama-b12292").join("llama-server"), b"partial").unwrap();
+        fs::write(model.join("tiny.bin.partial"), b"too-much-data").unwrap();
+        let files = [tiny()];
+        prepare_model_dir(&model, &files).unwrap();
+        assert!(!model.join("llama-b12292").exists());
+        assert!(!model.join("tiny.bin.partial").exists());
+        fs::write(model.join("tiny.bin"), b"test").unwrap();
+        prepare_model_dir(&model, &files).unwrap();
+        assert!(!model.join("tiny.bin").exists(), "a file with the wrong checksum is discarded");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
