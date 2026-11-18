@@ -5,6 +5,7 @@
 - On macOS 26 the app no longer crashes at launch while opening the floating indicator. The indicator window is configured when it is created, and its style mask is not changed after the web view is attached.
 - On macOS 26 the floating indicator is shown without becoming the key window, and its window class is left unchanged. Swapping that class aborted AppKit while the window was ordered in.
 - On macOS 26 the hotkey listener no longer looks up the key name on the listener thread. That lookup aborted inside the text input system on the first key. The listener reads the hardware keycode instead.
+- On macOS, launch asks for the microphone when it has not been decided, and for Input Monitoring when the hotkey tap is not allowed. The hotkey listener keeps trying every two seconds until the tap exists, and turns the tap back on if macOS disables it. Permissions lists Microphone, Accessibility, and Input Monitoring separately. After an update, an old ad-hoc newtype entry may need to be removed and added again.
 - A failed model download deletes its partial file and any half-unpacked directory. The next attempt keeps a partial file only when its size still fits and the finished file can be checksummed. Archives are unpacked in a temporary directory and moved into place only after they succeed. The macOS llama.cpp package is unpacked including its relative library links, which is what stopped Qwen3-ASR 1.7B at the extracting stage. Each model has a Clear and re-download action, and the error names the stage that failed.
 
 ## 0.2.1

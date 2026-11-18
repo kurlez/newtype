@@ -17,16 +17,24 @@ pub struct PermissionSnapshot {
     pub microphone_state: String,
     /// `granted`, `required`, or `notApplicable`.
     pub accessibility_state: String,
+    /// `granted`, `required`, or `notApplicable`.
+    pub input_monitoring_state: String,
     /// Empty when nothing is missing.
     pub prompt: String,
-    /// `microphone`, `accessibility`, or `both`.
+    /// `microphone`, `accessibility`, `input`, `both`, or `all`.
     pub prompt_action: String,
 }
 
 pub fn snapshot(microphone: &str) -> PermissionSnapshot {
     let microphone_state = microphone_state(microphone);
     let accessibility_state = accessibility_state();
-    let (prompt, prompt_action) = access_prompt(std::env::consts::OS, &microphone_state, &accessibility_state);
+    let input_monitoring_state = input_monitoring_state();
+    let (prompt, prompt_action) = access_prompt(
+        std::env::consts::OS,
+        &microphone_state,
+        &accessibility_state,
+        &input_monitoring_state,
+    );
     PermissionSnapshot {
         microphone: microphone.to_string(),
         accessibility: accessibility_label(),
@@ -34,6 +42,7 @@ pub fn snapshot(microphone: &str) -> PermissionSnapshot {
         guidance: guidance(),
         microphone_state,
         accessibility_state,
+        input_monitoring_state,
         prompt,
         prompt_action,
     }
@@ -50,21 +59,18 @@ pub fn microphone_state(reported: &str) -> String {
     }
 }
 
-pub fn access_prompt(platform: &str, microphone: &str, accessibility: &str) -> (String, String) {
+pub fn access_prompt(
+    platform: &str,
+    microphone: &str,
+    accessibility: &str,
+    listen: &str,
+) -> (String, String) {
     let mic_missing = matches!(microphone, "denied" | "restricted" | "notDetermined");
     let ax_missing = platform == "macos" && accessibility != "granted";
-    let zh = crate::locale::prefers_zh();
-    match (mic_missing, ax_missing) {
-        (true, true) => (
-            if zh {
-                "麦克风和辅助功能都关着。口授听不到声音，快捷键和粘贴也会失败。更新后系统常会再次询问，因为这个构建没有开发者签名。"
-            } else {
-                "Microphone and Accessibility are off. Dictation cannot hear you, and hotkeys or paste will fail. macOS often asks again after an update because this build is not Developer ID signed."
-            }
-            .into(),
-            "both".into(),
-        ),
-        (true, false) if platform == "windows" => (
+    let listen_missing = platform == "macos" && listen != "granted" && listen != "notApplicable";
+    if platform == "windows" && mic_missing {
+        let zh = crate::locale::prefers_zh();
+        return (
             if zh {
                 "系统正在拦截麦克风。请打开麦克风隐私设置并允许 newtype。在此之前不会录音。"
             } else {
@@ -72,27 +78,51 @@ pub fn access_prompt(platform: &str, microphone: &str, accessibility: &str) -> (
             }
             .into(),
             "microphone".into(),
-        ),
-        (true, false) => (
-            if zh {
-                "麦克风权限关着。newtype 听不到你。更新后系统可能再次询问，因为这个构建没有开发者签名。"
-            } else {
-                "Microphone access is off. newtype cannot hear you. After an update, macOS may ask again because this build is not Developer ID signed."
-            }
-            .into(),
-            "microphone".into(),
-        ),
-        (false, true) => (
-            if zh {
-                "辅助功能关着。快捷键和粘贴需要它。更新后系统可能忘掉这项权限，因为这个构建没有开发者签名。"
-            } else {
-                "Accessibility is off. The hotkey and paste need it. After an update, macOS may forget this permission because the build is not Developer ID signed."
-            }
-            .into(),
-            "accessibility".into(),
-        ),
-        _ => (String::new(), String::new()),
+        );
     }
+    if platform != "macos" || (!mic_missing && !ax_missing && !listen_missing) {
+        return (String::new(), String::new());
+    }
+    let zh = crate::locale::prefers_zh();
+    let names = if zh {
+        let mut parts = Vec::new();
+        if mic_missing {
+            parts.push("麦克风");
+        }
+        if ax_missing {
+            parts.push("辅助功能");
+        }
+        if listen_missing {
+            parts.push("输入监视");
+        }
+        parts.join("、")
+    } else {
+        let mut parts = Vec::new();
+        if mic_missing {
+            parts.push("Microphone");
+        }
+        if ax_missing {
+            parts.push("Accessibility");
+        }
+        if listen_missing {
+            parts.push("Input Monitoring");
+        }
+        parts.join(", ")
+    };
+    let message = if zh {
+        format!("{names}未开启。更新之后，如果系统里还有旧的 newtype 条目，先删掉再重新添加，因为这个构建没有开发者签名。")
+    } else {
+        format!("Allow {names}. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed.")
+    };
+    let action = match (mic_missing, ax_missing, listen_missing) {
+        (true, true, true) => "all",
+        (true, true, false) => "both",
+        (true, false, false) => "microphone",
+        (false, true, false) => "accessibility",
+        (false, false, true) => "input",
+        _ => "all",
+    };
+    (message, action.into())
 }
 
 pub fn av_status_name(code: i64) -> &'static str {
@@ -130,6 +160,86 @@ pub fn accessibility_granted() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub fn request_on_launch(app: &tauri::AppHandle) {
+    run_on_main(app, || {
+        if av_status_name(mac_av::authorization_status()) == "notDetermined" {
+            mac_av::request_access();
+            crate::diag::record("microphone access requested");
+        }
+        if !mac_listen::preflight() {
+            let _ = mac_listen::request();
+            crate::diag::record("input monitoring access requested");
+        }
+        if !mac::trusted() {
+            let _ = mac::prompt();
+            crate::diag::record("accessibility access requested");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+pub fn request_microphone_access(app: &tauri::AppHandle) -> Result<String, String> {
+    let status = av_status_name(mac_av::authorization_status());
+    let message = match status.as_str() {
+        "granted" => crate::locale::text("Microphone access is granted.", "麦克风权限已开启。"),
+        "denied" | "restricted" => crate::locale::text(
+            "Microphone access is off. Open Microphone settings and allow newtype. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed.",
+            "麦克风权限关着。请打开麦克风设置并允许 newtype。更新之后，先删掉旧的 newtype 条目再重新添加，因为这个构建没有开发者签名。",
+        ),
+        "notDetermined" => {
+            let queued = app.clone();
+            run_on_main(&queued, mac_av::request_access);
+            crate::locale::text(
+                "macOS is asking for microphone access. Allow newtype so it is listed under Microphone.",
+                "macOS 正在询问麦克风权限。允许 newtype 之后，它会出现在麦克风列表里。",
+            )
+        }
+        _ => crate::locale::text(
+            "Could not read the microphone permission.",
+            "读不到麦克风权限。",
+        ),
+    };
+    Ok(message.into())
+}
+
+pub fn request_input_monitoring(app: &tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if mac_listen::preflight() {
+            return Ok(crate::locale::text(
+                "Input Monitoring is granted.",
+                "输入监视已开启。",
+            )
+            .into());
+        }
+        let queued = app.clone();
+        run_on_main(&queued, || {
+            let _ = mac_listen::request();
+        });
+        crate::diag::record("input monitoring access requested");
+        return Ok(crate::locale::text(
+            "macOS is asking for Input Monitoring. Allow newtype so the global hotkey can be heard.",
+            "macOS 正在询问输入监视。允许 newtype 之后才能听到全局快捷键。",
+        )
+        .into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("Input Monitoring is a macOS permission.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_on_main(app: &tauri::AppHandle, work: impl FnOnce() + Send + 'static) {
+    if crate::overlay::is_main_thread() {
+        work();
+    } else if app.run_on_main_thread(work).is_err() {
+        crate::diag::record("permission prompt skipped: main thread unavailable");
+    }
+}
+
 pub fn prompt_accessibility() -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
@@ -160,6 +270,26 @@ pub fn open_privacy(kind: &str) -> Result<(), String> {
         }
     };
     open_url(url)
+}
+
+fn input_monitoring_state() -> String {
+    match std::env::consts::OS {
+        "macos" => {
+            #[cfg(target_os = "macos")]
+            {
+                if mac_listen::preflight() {
+                    "granted".into()
+                } else {
+                    "required".into()
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                "required".into()
+            }
+        }
+        _ => "notApplicable".into(),
+    }
 }
 
 fn accessibility_state() -> String {
@@ -224,9 +354,9 @@ fn guidance() -> String {
     match std::env::consts::OS {
         "macos" => {
             if zh {
-                "请允许 newtype 使用麦克风和辅助功能。辅助功能用来监听右侧 Ctrl 快捷键，并粘贴到当前应用。有的系统版本还会要求输入监视；如果辅助功能已开但快捷键没反应，也请打开它。位置在系统设置的隐私与安全性。更新后可能会再次询问，因为这个构建没有开发者签名。"
+                "请分别允许麦克风、辅助功能和输入监视。麦克风用来听你说话，辅助功能用来粘贴，输入监视用来接收全局快捷键。更新之后，如果系统里还有旧的 newtype 条目，先删掉再重新添加，因为这个构建没有开发者签名。"
             } else {
-                "Allow Microphone and Accessibility for newtype. Accessibility is required to hear the Right Control hotkey and to paste into the focused app. Some macOS versions also ask for Input Monitoring; if the hotkey does nothing after Accessibility is on, enable that too. System Settings → Privacy & Security. After an update, macOS may ask again because this build is not Developer ID signed."
+                "Allow Microphone, Accessibility, and Input Monitoring separately. The microphone hears you, Accessibility pastes, and Input Monitoring receives the global hotkey. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed."
             }
             .into()
         }
@@ -274,18 +404,26 @@ mod tests {
 
     #[test]
     fn missing_microphone_and_accessibility_name_the_right_pane() {
-        let (message, action) = access_prompt("macos", "denied", "required");
-        assert_eq!(action, "both");
+        let (message, action) = access_prompt("macos", "denied", "required", "required");
+        assert_eq!(action, "all");
         assert!(message.contains("Microphone") || message.contains("麦克风"));
         assert!(message.contains("Accessibility") || message.contains("辅助功能"));
+        assert!(message.contains("Input Monitoring") || message.contains("输入监视"));
+        assert!(message.contains("remove the old newtype entry") || message.contains("先删掉再重新添加"));
         assert!(message.contains("not Developer ID signed") || message.contains("开发者签名"));
-        let (message, action) = access_prompt("macos", "granted", "required");
+        let (message, action) = access_prompt("macos", "granted", "required", "granted");
         assert_eq!(action, "accessibility");
         assert!(message.contains("Accessibility") || message.contains("辅助功能"));
-        let (message, action) = access_prompt("windows", "denied", "notApplicable");
+        let (message, action) = access_prompt("macos", "granted", "granted", "required");
+        assert_eq!(action, "input");
+        assert!(message.contains("Input Monitoring") || message.contains("输入监视"));
+        let (message, action) = access_prompt("windows", "denied", "notApplicable", "notApplicable");
         assert_eq!(action, "microphone");
         assert!(message.contains("Windows") || message.contains("麦克风"));
-        assert!(access_prompt("linux", "unknown", "notApplicable").0.is_empty());
+        assert!(access_prompt("linux", "unknown", "notApplicable", "notApplicable")
+            .0
+            .is_empty());
+        assert!(access_prompt("macos", "granted", "granted", "granted").0.is_empty());
     }
 
     #[test]
@@ -327,6 +465,62 @@ mod mac_av {
             ) -> isize = std::mem::transmute(objc_msgSend as *const ());
             function(class, selector, media.as_concrete_TypeRef() as *const std::ffi::c_void) as i64
         }
+    }
+
+    pub fn request_access() {
+        #[link(name = "AVFoundation", kind = "framework")]
+        extern "C" {}
+        #[link(name = "objc", kind = "dylib")]
+        extern "C" {
+            fn objc_getClass(name: *const i8) -> *mut std::ffi::c_void;
+            fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
+            fn objc_msgSend();
+        }
+        let block = block2::RcBlock::new(|granted: u8| {
+            crate::diag::record(if granted != 0 {
+                "microphone access granted"
+            } else {
+                "microphone access not granted"
+            });
+        });
+        unsafe {
+            let class = objc_getClass(c"AVCaptureDevice".as_ptr());
+            if class.is_null() {
+                crate::diag::record("microphone access request failed: AVCaptureDevice missing");
+                return;
+            }
+            let selector = sel_registerName(c"requestAccessForMediaType:completionHandler:".as_ptr());
+            let media = core_foundation::string::CFString::new("soun");
+            let function: unsafe extern "C" fn(
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *const std::ffi::c_void,
+                *mut std::ffi::c_void,
+            ) = std::mem::transmute(objc_msgSend as *const ());
+            function(
+                class,
+                selector,
+                media.as_concrete_TypeRef() as *const std::ffi::c_void,
+                block2::RcBlock::as_ptr(&block) as *mut std::ffi::c_void,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac_listen {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGPreflightListenEventAccess() -> u8;
+        fn CGRequestListenEventAccess() -> u8;
+    }
+
+    pub fn preflight() -> bool {
+        unsafe { CGPreflightListenEventAccess() != 0 }
+    }
+
+    pub fn request() -> bool {
+        unsafe { CGRequestListenEventAccess() != 0 }
     }
 }
 

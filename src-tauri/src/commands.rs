@@ -82,12 +82,26 @@ pub fn dictation_request_access(app: AppHandle, kind: String) -> Result<String, 
         "accessibility" => {
             let granted = crate::permissions::prompt_accessibility()?;
             Ok(if granted {
-                "Accessibility is granted.".into()
+                crate::locale::text("Accessibility is granted.", "辅助功能已开启。").into()
             } else {
-                "Accessibility is not granted yet. Use the button to open System Settings, enable newtype, then come back.".into()
+                crate::locale::text(
+                    "Accessibility is not granted yet. Open Accessibility settings, enable newtype, then come back. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed.",
+                    "辅助功能还没开。请打开辅助功能设置，启用 newtype，然后回来。更新之后，先删掉旧的 newtype 条目再重新添加，因为这个构建没有开发者签名。",
+                )
+                .into()
             })
         }
-        "microphone" => crate::dictation::probe_microphone(&app, ""),
+        "microphone" => {
+            #[cfg(target_os = "macos")]
+            {
+                crate::permissions::request_microphone_access(&app)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                crate::dictation::probe_microphone(&app, "")
+            }
+        }
+        "input" => crate::permissions::request_input_monitoring(&app),
         other => Err(format!("Unknown permission \"{other}\".")),
     }
 }

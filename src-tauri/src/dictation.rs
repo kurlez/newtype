@@ -264,6 +264,8 @@ impl Dictation {
     }
 
     pub fn launch(app: AppHandle) {
+        #[cfg(target_os = "macos")]
+        crate::permissions::request_on_launch(&app);
         open_indicator(&app);
         show_indicator(&app);
         #[cfg(windows)]
@@ -714,7 +716,27 @@ fn spawn_listener(
                 }
             }
             #[cfg(target_os = "macos")]
-            let listen_result = crate::mac_hotkey::listen().map_err(|err| err.to_string());
+            crate::mac_hotkey::listen(|listening| {
+                if listening {
+                    set_listener(
+                        &app,
+                        &listener,
+                        crate::locale::text(
+                            "Listening for the right-hand Control key.",
+                            "正在监听右侧 Ctrl 键。",
+                        ),
+                    );
+                } else {
+                    set_listener(
+                        &app,
+                        &listener,
+                        crate::locale::text(
+                            "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
+                            "快捷键监听在等待输入监视或辅助功能。它会再试。",
+                        ),
+                    );
+                }
+            });
             #[cfg(not(any(windows, target_os = "macos")))]
             let listen_result = rdev::listen(move |event| {
                 let edge = match event.event_type {
@@ -726,7 +748,7 @@ fn spawn_listener(
                     crate::key_feed::push(edge, false);
                 }
             });
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             {
                 if let Err(err) = listen_result {
                     let message = crate::locale::pick(
@@ -1074,6 +1096,7 @@ fn begin_recording(
             std::env::consts::OS,
             &mic_state,
             &current.accessibility_state,
+            &current.input_monitoring_state,
         );
         let message = if prompt.is_empty() {
             "Microphone access is off.".to_string()

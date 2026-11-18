@@ -386,19 +386,7 @@ function paint(): void {
       ], settings.preference)}
     </section>
     ${localPanel(snap.local, settings.preference)}
-    <section>
-      <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
-      ${snap.permissions.prompt ? `<p class="banner warn" id="permission-prompt">${escapeHtml(snap.permissions.prompt)}</p><div class="row">${promptButtons(snap.permissions.promptAction)}</div>` : ""}
-      <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
-      <p class="status">${ui("Microphone", "麦克风")}：${escapeHtml(snap.permissions.microphone)} · ${ui("Accessibility", "辅助功能")}：${escapeHtml(snap.permissions.accessibility)}</p>
-      <div class="row">
-        <button type="button" id="perm-mic" class="primary">${ui("Allow microphone", "允许麦克风")}</button>
-        <button type="button" id="perm-ax">${ui("Allow Accessibility", "允许辅助功能")}</button>
-        <button type="button" id="open-mic">${ui("Microphone settings", "麦克风设置")}</button>
-        <button type="button" id="open-ax">${ui("Accessibility settings", "辅助功能设置")}</button>
-        <button type="button" id="open-input">${ui("Input Monitoring", "输入监视")}</button>
-      </div>
-    </section>
+    ${permissionSection(snap)}
     <section>
       <h2 id="sec-cloud">${ui("Cloud", "云端")}</h2>
       <p class="status">${ui("Cloud dictation sends the recording and the transcript to the provider you configure. The key stays on this computer.", "使用云端时会把录音和转写发到你配置的供应商。密钥只留在这台电脑上。")}</p>
@@ -641,11 +629,13 @@ function bind(): void {
   bindHotwordButtons();
   document.querySelector("#perm-mic")?.addEventListener("click", () => void permission("microphone"));
   document.querySelector("#perm-ax")?.addEventListener("click", () => void permission("accessibility"));
+  document.querySelector("#perm-input")?.addEventListener("click", () => void permission("input"));
   document.querySelector("#open-mic")?.addEventListener("click", () => void openPrivacy("microphone"));
   document.querySelector("#open-ax")?.addEventListener("click", () => void openPrivacy("accessibility"));
   document.querySelector("#open-input")?.addEventListener("click", () => void openPrivacy("input"));
   document.querySelector("#prompt-mic")?.addEventListener("click", () => void openPrivacy("microphone"));
   document.querySelector("#prompt-ax")?.addEventListener("click", () => void openPrivacy("accessibility"));
+  document.querySelector("#prompt-input")?.addEventListener("click", () => void openPrivacy("input"));
   document.querySelector("#refresh-mics")?.addEventListener("click", () => void listMics());
   document.querySelector("#probe-mic")?.addEventListener("click", () => void probe());
   document.querySelector("#record")?.addEventListener("click", () => void record());
@@ -920,7 +910,12 @@ async function resetModels(): Promise<void> {
 
 async function permission(kind: string): Promise<void> {
   if (preview) {
-    notice = kind === "microphone" ? "Preview cannot open the microphone." : "Preview cannot prompt for Accessibility.";
+    notice =
+      kind === "microphone"
+        ? "Preview cannot open the microphone."
+        : kind === "input"
+          ? "Preview cannot prompt for Input Monitoring."
+          : "Preview cannot prompt for Accessibility.";
     paint();
     return;
   }
@@ -1609,16 +1604,52 @@ function retentionOptions(selected: string): string {
     .join("");
 }
 
+function permissionSection(snap: Snapshot): string {
+  if (snap.permissions.platform !== "macos") {
+    return `<section>
+      <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
+      ${snap.permissions.prompt ? `<p class="banner warn" id="permission-prompt">${escapeHtml(snap.permissions.prompt)}</p><div class="row">${promptButtons(snap.permissions.promptAction)}</div>` : ""}
+      <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
+      <p class="status">${ui("Microphone", "麦克风")}：${escapeHtml(snap.permissions.microphone)} · ${ui("Accessibility", "辅助功能")}：${escapeHtml(snap.permissions.accessibility)}</p>
+      <div class="row">
+        <button type="button" id="perm-mic" class="primary">${ui("Allow microphone", "允许麦克风")}</button>
+        <button type="button" id="perm-ax">${ui("Allow Accessibility", "允许辅助功能")}</button>
+        <button type="button" id="open-mic">${ui("Microphone settings", "麦克风设置")}</button>
+        <button type="button" id="open-ax">${ui("Accessibility settings", "辅助功能设置")}</button>
+        <button type="button" id="open-input">${ui("Input Monitoring", "输入监视")}</button>
+      </div>
+    </section>`;
+  }
+  const row = (label: string, state: string, allowId: string, allowLabel: string, openId: string, openLabel: string) =>
+    `<p class="status">${escapeHtml(label)}：${escapeHtml(state)}</p><div class="row"><button type="button" id="${allowId}">${escapeHtml(allowLabel)}</button><button type="button" id="${openId}">${escapeHtml(openLabel)}</button></div>`;
+  return `<section>
+    <h2 id="sec-permissions">${ui("Permissions", "权限")}</h2>
+    ${snap.permissions.prompt ? `<p class="banner warn" id="permission-prompt">${escapeHtml(snap.permissions.prompt)}</p><div class="row">${promptButtons(snap.permissions.promptAction)}</div>` : ""}
+    <p class="status">${escapeHtml(snap.permissions.guidance)}</p>
+    <p class="status">${ui("After an update, macOS may need the old newtype entry removed and added again because this build is not Developer ID signed.", "更新之后，macOS 可能需要先删掉旧的 newtype 条目再重新添加，因为这个构建没有开发者签名。")}</p>
+    ${row(ui("Microphone", "麦克风"), snap.permissions.microphoneState, "perm-mic", ui("Allow microphone", "允许麦克风"), "open-mic", ui("Open Microphone settings", "打开麦克风设置"))}
+    ${row(ui("Accessibility", "辅助功能"), snap.permissions.accessibilityState, "perm-ax", ui("Allow Accessibility", "允许辅助功能"), "open-ax", ui("Open Accessibility settings", "打开辅助功能设置"))}
+    ${row(ui("Input Monitoring", "输入监视"), snap.permissions.inputMonitoringState, "perm-input", ui("Allow Input Monitoring", "允许输入监视"), "open-input", ui("Open Input Monitoring settings", "打开输入监视设置"))}
+  </section>`;
+}
+
 function promptButtons(action: string): string {
   const mic = `<button type="button" id="prompt-mic">${ui("Open Microphone settings", "打开麦克风设置")}</button>`;
   const ax = `<button type="button" id="prompt-ax">${ui("Open Accessibility settings", "打开辅助功能设置")}</button>`;
+  const input = `<button type="button" id="prompt-input">${ui("Open Input Monitoring settings", "打开输入监视设置")}</button>`;
   if (action === "microphone") {
     return mic;
+  }
+  if (action === "accessibility") {
+    return ax;
+  }
+  if (action === "input") {
+    return input;
   }
   if (action === "both") {
     return `${mic}${ax}`;
   }
-  return ax;
+  return `${mic}${ax}${input}`;
 }
 
 function radios(name: string, choices: Array<[string, string, string]>, selected: string): string {

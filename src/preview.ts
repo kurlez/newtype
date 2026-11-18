@@ -201,8 +201,9 @@ export const previewSnapshot: Snapshot = {
       "Allow Microphone and Accessibility. Some macOS versions also ask for Input Monitoring. System Settings → Privacy & Security.",
     microphoneState: "granted",
     accessibilityState: "required",
+    inputMonitoringState: "required",
     prompt:
-      "Accessibility is off. The hotkey and paste need it. After an update, macOS may forget this permission because the build is not Developer ID signed.",
+      "Allow Accessibility. After an update, remove the old newtype entry and add it again because this build is not Developer ID signed.",
     promptAction: "accessibility",
   },
   listener: "Listening for the right-hand Control key.",
