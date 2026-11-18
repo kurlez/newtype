@@ -1,9 +1,10 @@
 //! Indicator window that must not take keyboard focus while recording.
 //!
 //! On macOS the borderless chrome is chosen when the window is created.
-//! [`configure_indicator`] must not call `setStyleMask:` after the WKWebView
-//! is attached. On macOS 26 that reparents the content view and WebKit
-//! crashes while tearing down its window observer.
+//! After the WKWebView is attached, the only AppKit mutations are
+//! `setCollectionBehavior:` and `setLevel:`, and only when the current value
+//! differs. The window class is left alone: swapping its isa breaks AppKit's
+//! focus-controller storage on macOS 26 and aborts while ordering the window.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -23,24 +24,20 @@ const INDICATOR_COLLECTION_BEHAVIOR: usize = (1 << 0) | (1 << 4) | (1 << 6) | (1
 const INDICATOR_WINDOW_LEVEL: isize = 3;
 
 /// Live AppKit chrome that can be compared without mutating the window.
+/// The window class, first responder, and style mask are not part of this.
 #[cfg(any(test, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IndicatorChrome {
     collection_behavior: usize,
-    hides_on_deactivate: bool,
     level: isize,
-    nonactivating_class: bool,
 }
 
 /// Setters to apply. Empty means the window already matches and must be left alone.
-/// There is no style-mask field: `setStyleMask:` is never planned.
 #[cfg(any(test, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IndicatorChromePlan {
     collection_behavior: Option<usize>,
-    hides_on_deactivate: Option<bool>,
     level: Option<isize>,
-    install_nonactivating_class: bool,
 }
 
 #[cfg(any(test, target_os = "macos"))]
@@ -48,19 +45,14 @@ fn plan_indicator_chrome(state: IndicatorChrome) -> IndicatorChromePlan {
     IndicatorChromePlan {
         collection_behavior: (state.collection_behavior != INDICATOR_COLLECTION_BEHAVIOR)
             .then_some(INDICATOR_COLLECTION_BEHAVIOR),
-        hides_on_deactivate: state.hides_on_deactivate.then_some(false),
         level: (state.level != INDICATOR_WINDOW_LEVEL).then_some(INDICATOR_WINDOW_LEVEL),
-        install_nonactivating_class: !state.nonactivating_class,
     }
 }
 
 #[cfg(any(test, target_os = "macos"))]
 impl IndicatorChromePlan {
     fn is_noop(self) -> bool {
-        self.collection_behavior.is_none()
-            && self.hides_on_deactivate.is_none()
-            && self.level.is_none()
-            && !self.install_nonactivating_class
+        self.collection_behavior.is_none() && self.level.is_none()
     }
 }
 
@@ -79,15 +71,21 @@ pub fn show_without_activating(window: &WebviewWindow) {
     }
     #[cfg(target_os = "macos")]
     {
+        // `orderFrontRegardless` orders the window without makeKeyAndOrderFront.
+        // Tauri's `show()` makes the window key, and macOS 26 then asserts in
+        // the first-responder setup.
         if !is_main_thread() {
-            crate::diag::record("indicator show skipped: main thread unavailable");
+            crate::diag::record("window show skipped: main thread unavailable");
             return;
         }
-        if let Some(ns) = ns_window(window) {
-            msg_void(ns, c"orderFrontRegardless");
+        let Some(ns) = ns_window(window).filter(|ns| !ns.is_null()) else {
+            crate::diag::record("window show skipped: no ns window");
             return;
-        }
+        };
+        msg_void(ns, c"orderFrontRegardless");
+        return;
     }
+    #[cfg(not(target_os = "macos"))]
     let _ = window.show();
 }
 
@@ -116,10 +114,8 @@ fn configure_indicator_macos(window: &WebviewWindow) {
         }
         return;
     }
-    if let Err(err) = apply_macos_nonactivating(window) {
+    if let Err(err) = apply_macos_indicator(window) {
         crate::diag::record(&format!("indicator configure failed: {err}"));
-        let _ = window.set_focusable(false);
-        let _ = window.set_shadow(false);
     }
 }
 
@@ -197,147 +193,40 @@ pub(crate) fn is_main_thread() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_macos_nonactivating(window: &WebviewWindow) -> Result<(), String> {
+fn apply_macos_indicator(window: &WebviewWindow) -> Result<(), String> {
     if !is_main_thread() {
         return Err("AppKit configure skipped off the main thread".into());
     }
-    let Some(ns) = ns_window(window) else {
+    let Some(ns) = ns_window(window).filter(|ns| !ns.is_null()) else {
         return Err("indicator window has no ns window".into());
     };
-    if ns.is_null() {
-        return Err("indicator window handle is null".into());
-    }
-    // Read first. Set collection behavior, level, and the key-window subclass
-    // only when they differ. Never call setStyleMask: the webview is already
-    // attached, and macOS 26 reparents that view inside the style-mask setter.
-    let plan = plan_indicator_chrome(unsafe { read_indicator_chrome(ns) });
+    // Focus, shadow, and the window class come from the Tauri builder.
+    // Touching them here, or swapping the isa, aborts macOS 26 while the
+    // window is ordered in.
+    let plan = plan_indicator_chrome(read_indicator_chrome(ns));
     if plan.is_noop() {
         return Ok(());
     }
-    // Focus and shadow before the class swap. Both are also set on the
-    // window builder, so a later call that already matches does not touch them.
-    let _ = window.set_focusable(false);
-    let _ = window.set_shadow(false);
-    unsafe { apply_indicator_chrome(ns, plan) };
+    apply_indicator_chrome(ns, plan);
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn read_indicator_chrome(ns: *mut std::ffi::c_void) -> IndicatorChrome {
-    let class = object_get_class(ns);
+fn read_indicator_chrome(ns: *mut std::ffi::c_void) -> IndicatorChrome {
     IndicatorChrome {
         collection_behavior: msg_usize(ns, c"collectionBehavior"),
-        hides_on_deactivate: msg_u8(ns, c"hidesOnDeactivate") != 0,
         level: msg_isize(ns, c"level"),
-        nonactivating_class: class_is_nonactivating(class),
     }
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn apply_indicator_chrome(ns: *mut std::ffi::c_void, plan: IndicatorChromePlan) {
+fn apply_indicator_chrome(ns: *mut std::ffi::c_void, plan: IndicatorChromePlan) {
     if let Some(behavior) = plan.collection_behavior {
         msg_void_usize(ns, c"setCollectionBehavior:", behavior);
-    }
-    if let Some(hides) = plan.hides_on_deactivate {
-        msg_void_u8(ns, c"setHidesOnDeactivate:", u8::from(hides));
     }
     if let Some(level) = plan.level {
         msg_void_isize(ns, c"setLevel:", level);
     }
-    if plan.install_nonactivating_class {
-        install_nonactivating_class(ns);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn install_nonactivating_class(ns_window: *mut std::ffi::c_void) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn objc_getClass(name: *const i8) -> *mut std::ffi::c_void;
-        fn objc_allocateClassPair(
-            superclass: *mut std::ffi::c_void,
-            name: *const i8,
-            extra: usize,
-        ) -> *mut std::ffi::c_void;
-        fn objc_registerClassPair(cls: *mut std::ffi::c_void);
-        fn object_getClass(obj: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-        fn object_setClass(
-            obj: *mut std::ffi::c_void,
-            cls: *mut std::ffi::c_void,
-        ) -> *mut std::ffi::c_void;
-        fn class_addMethod(
-            cls: *mut std::ffi::c_void,
-            sel: *mut std::ffi::c_void,
-            imp: *const std::ffi::c_void,
-            types: *const i8,
-        ) -> u8;
-        fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
-    }
-    static READY: AtomicBool = AtomicBool::new(false);
-    unsafe {
-        let current = object_getClass(ns_window);
-        if class_is_nonactivating(current) {
-            return;
-        }
-        if !READY.swap(true, Ordering::SeqCst) {
-            let subclass =
-                objc_allocateClassPair(current, c"NewtypeNonActivatingPanel".as_ptr(), 0);
-            if !subclass.is_null() {
-                let key = sel_registerName(c"canBecomeKeyWindow".as_ptr());
-                let main = sel_registerName(c"canBecomeMainWindow".as_ptr());
-                class_addMethod(
-                    subclass,
-                    key,
-                    refuse_key as *const std::ffi::c_void,
-                    c"c@:".as_ptr(),
-                );
-                class_addMethod(
-                    subclass,
-                    main,
-                    refuse_key as *const std::ffi::c_void,
-                    c"c@:".as_ptr(),
-                );
-                objc_registerClassPair(subclass);
-            }
-        }
-        let subclass = objc_getClass(c"NewtypeNonActivatingPanel".as_ptr());
-        if !subclass.is_null() {
-            object_setClass(ns_window, subclass);
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn object_get_class(object: *mut std::ffi::c_void) -> *mut std::ffi::c_void {
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn object_getClass(obj: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-    }
-    unsafe { object_getClass(object) }
-}
-
-#[cfg(target_os = "macos")]
-fn class_is_nonactivating(cls: *mut std::ffi::c_void) -> bool {
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn class_getName(cls: *mut std::ffi::c_void) -> *const i8;
-    }
-    if cls.is_null() {
-        return false;
-    }
-    unsafe {
-        let name = class_getName(cls);
-        if name.is_null() {
-            return false;
-        }
-        std::ffi::CStr::from_ptr(name) == c"NewtypeNonActivatingPanel"
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn refuse_key(_this: *mut std::ffi::c_void, _cmd: *mut std::ffi::c_void) -> u8 {
-    0
 }
 
 #[cfg(target_os = "macos")]
@@ -365,21 +254,6 @@ fn msg_void_usize(receiver: *mut std::ffi::c_void, name: &std::ffi::CStr, arg: u
     unsafe {
         let sel = sel_registerName(name.as_ptr());
         let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) =
-            std::mem::transmute(objc_msgSend as *const ());
-        function(receiver, sel, arg);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn msg_void_u8(receiver: *mut std::ffi::c_void, name: &std::ffi::CStr, arg: u8) {
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
-        fn objc_msgSend();
-    }
-    unsafe {
-        let sel = sel_registerName(name.as_ptr());
-        let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, u8) =
             std::mem::transmute(objc_msgSend as *const ());
         function(receiver, sel, arg);
     }
@@ -427,21 +301,6 @@ fn msg_void_isize(receiver: *mut std::ffi::c_void, name: &std::ffi::CStr, arg: i
         let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, isize) =
             std::mem::transmute(objc_msgSend as *const ());
         function(receiver, sel, arg);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn msg_u8(receiver: *mut std::ffi::c_void, name: &std::ffi::CStr) -> u8 {
-    #[link(name = "objc", kind = "dylib")]
-    extern "C" {
-        fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
-        fn objc_msgSend();
-    }
-    unsafe {
-        let sel = sel_registerName(name.as_ptr());
-        let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> u8 =
-            std::mem::transmute(objc_msgSend as *const ());
-        function(receiver, sel)
     }
 }
 
@@ -616,9 +475,7 @@ mod tests {
     fn indicator_chrome_is_left_alone_when_it_already_matches() {
         let ready = IndicatorChrome {
             collection_behavior: INDICATOR_COLLECTION_BEHAVIOR,
-            hides_on_deactivate: false,
             level: INDICATOR_WINDOW_LEVEL,
-            nonactivating_class: true,
         };
         assert!(plan_indicator_chrome(ready).is_noop());
     }
@@ -627,19 +484,13 @@ mod tests {
     fn indicator_chrome_sets_only_the_fields_that_differ() {
         let plan = plan_indicator_chrome(IndicatorChrome {
             collection_behavior: INDICATOR_COLLECTION_BEHAVIOR,
-            hides_on_deactivate: true,
-            level: INDICATOR_WINDOW_LEVEL,
-            nonactivating_class: true,
+            level: 0,
         });
-        assert_eq!(plan.hides_on_deactivate, Some(false));
+        assert_eq!(plan.level, Some(INDICATOR_WINDOW_LEVEL));
         assert_eq!(plan.collection_behavior, None);
-        assert_eq!(plan.level, None);
-        assert!(!plan.install_nonactivating_class);
         assert!(plan_indicator_chrome(IndicatorChrome {
             collection_behavior: 0,
-            hides_on_deactivate: false,
-            level: 0,
-            nonactivating_class: false,
+            level: INDICATOR_WINDOW_LEVEL,
         })
         .collection_behavior
         .is_some());

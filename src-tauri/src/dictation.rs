@@ -2231,6 +2231,7 @@ fn show_floating(window: &tauri::WebviewWindow, reposition: bool) {
     // Already-visible floating updates only clamp the position. Chrome is
     // applied when the window is first shown or the layout changes, and
     // configure_indicator itself does nothing when the chrome already matches.
+    // On macOS the show is orderFrontRegardless, not makeKeyAndOrderFront.
     if reposition || !window.is_visible().unwrap_or(false) {
         place(window);
         crate::overlay::configure_indicator(window);
@@ -2441,8 +2442,8 @@ fn open_indicator(app: &AppHandle) {
     .resizable(false)
     .shadow(false)
     .initialization_script("window.__newtypeIndicator = true;");
-    // Style is fixed here, before the webview exists. macOS 26 crashes if
-    // setStyleMask runs after the WKWebView is attached.
+    // Style, focus, and shadow are fixed here, before the webview exists.
+    // macOS 26 aborts if the window class or first responder is changed later.
     #[cfg(target_os = "macos")]
     let builder = builder.visible_on_all_workspaces(true).focusable(false);
     let built = builder.build();
