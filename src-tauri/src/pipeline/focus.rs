@@ -492,8 +492,12 @@ mod windows {
                 return;
             }
             let newer_table = *(newer as *const *const usize);
+            // IUIAutomation2 follows IUIAutomation. Slots after IUnknown and IUIAutomation:
+            // 58 get_AutoSetFocus, 59 put_AutoSetFocus,
+            // 60 get_ConnectionTimeout, 61 put_ConnectionTimeout,
+            // 62 get_TransactionTimeout, 63 put_TransactionTimeout.
             let put_connection: unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32 =
-                std::mem::transmute(*newer_table.add(62));
+                std::mem::transmute(*newer_table.add(61));
             let put_transaction: unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32 =
                 std::mem::transmute(*newer_table.add(63));
             let _ = put_connection(newer, 200);
@@ -584,7 +588,7 @@ mod windows {
                 return 0;
             }
             let mut found = 0u64;
-            for _ in 0..12 {
+            for _ in 0..64 {
                 if current.is_null() {
                     break;
                 }
