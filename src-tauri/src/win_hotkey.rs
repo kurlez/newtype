@@ -37,6 +37,7 @@ static TX: OnceLock<SyncSender<HookEvent>> = OnceLock::new();
 static LAST_CALLBACK_MS: AtomicU64 = AtomicU64::new(0);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 static HOOK_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ALT_COMBO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static MODS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static RULE_COUNT: AtomicU32 = AtomicU32::new(0);
 static RULES: [AtomicU64; 8] = [
@@ -92,17 +93,9 @@ fn take_swallowed(vk: u32) -> bool {
 }
 
 fn note_modifier(event: &HookEvent) {
-    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
-        return;
-    }
-    let Some(bit) = hotkey::windows_modifier_bit(event.vk) else {
-        return;
-    };
-    if event.up {
-        MODS.fetch_and(!bit, Ordering::Relaxed);
-    } else {
-        MODS.fetch_or(bit, Ordering::Relaxed);
-    }
+    let current = MODS.load(Ordering::Relaxed);
+    let next = hotkey::fold_windows_modifier(current, event.vk, event.scan, event.flags, event.up);
+    MODS.store(next, Ordering::Relaxed);
 }
 
 fn chord_matches(mods: u32, vk: u32) -> bool {
@@ -296,7 +289,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         if let Some(event) = raw_event(wparam, lparam) {
             LAST_CALLBACK_MS.store(now_ms(), Ordering::Relaxed);
             note_modifier(&event);
-            let swallow = if event.up {
+            let mut swallow = if event.up {
                 take_swallowed(event.vk)
             } else {
                 let swallow = should_swallow_down(&event);
@@ -305,6 +298,17 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 }
                 swallow
             };
+            let alt_bits = hotkey::windows_modifier_bit(0xA4).unwrap_or(0)
+                | hotkey::windows_modifier_bit(0xA5).unwrap_or(0);
+            if !event.up && swallow && hotkey::windows_modifier_bit(event.vk).is_none() {
+                if MODS.load(Ordering::Relaxed) & alt_bits != 0 {
+                    ALT_COMBO.store(true, Ordering::Relaxed);
+                }
+            }
+            if event.up && hotkey::swallow_alt_keyup(ALT_COMBO.load(Ordering::Relaxed), event.vk) {
+                ALT_COMBO.store(false, Ordering::Relaxed);
+                swallow = true;
+            }
             if let Some(tx) = TX.get() {
                 if let Err(TrySendError::Full(_)) = tx.try_send(event) {
                     DROPPED.fetch_add(1, Ordering::Relaxed);
