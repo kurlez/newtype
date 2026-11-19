@@ -836,6 +836,17 @@ function formPatch(): Record<string, unknown> {
 
 async function save(): Promise<void> {
   readForm();
+  try {
+    const fresh = await call<Snapshot>("dictation_snapshot");
+    const local = snap.settings.hotwords;
+    const learned = fresh.settings.hotwords.filter(
+      (word) => fresh.settings.autoAdded.includes(word.canonical) && !local.some((row) => row.canonical === word.canonical),
+    );
+    snap.settings.hotwords = [...local, ...learned];
+    snap.settings.autoAdded = fresh.settings.autoAdded;
+  } catch {
+    // Keep the form copy when the snapshot cannot be read.
+  }
   await persist(formPatch());
 }
 

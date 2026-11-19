@@ -219,6 +219,9 @@ pub fn insert_with_target(
     }
     let own = std::process::id();
     let current = capture();
+    if target.is_none() && current.as_ref().is_some_and(|item| item.pid != own) {
+        crate::diag::record("focus capture-missing");
+    }
     match plan(target, current.as_ref(), own, return_to_field) {
         InsertPlan::CopyOnly => copy_only(text, target),
         InsertPlan::Restore => {
@@ -484,6 +487,9 @@ mod windows {
     }
 
     pub fn field_text(target: &FocusTarget) -> Option<String> {
+        if let Some(text) = uia_focused_text() {
+            return Some(text);
+        }
         unsafe {
             let control = target.control as usize as *mut std::ffi::c_void;
             if control.is_null() || IsWindow(control) == 0 {
@@ -509,6 +515,149 @@ mod windows {
             }
             let end = (count as usize).min(buffer.len());
             Some(String::from_utf16_lossy(&buffer[..end]))
+        }
+    }
+
+    /// Focused control via UI Automation ValuePattern. Password fields return nothing.
+    /// A failure falls through to the Edit/RichEdit reader.
+    fn uia_focused_text() -> Option<String> {
+        #[repr(C)]
+        struct Guid {
+            data1: u32,
+            data2: u16,
+            data3: u16,
+            data4: [u8; 8],
+        }
+        #[repr(C)]
+        struct Variant {
+            vt: u16,
+            reserved1: u16,
+            reserved2: u16,
+            reserved3: u16,
+            data: u64,
+        }
+        const CLSID_CUIAUTOMATION: Guid = Guid {
+            data1: 0xff48dba4,
+            data2: 0x60ef,
+            data3: 0x4201,
+            data4: [0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e],
+        };
+        const IID_IUIAUTOMATION: Guid = Guid {
+            data1: 0x30cbe57d,
+            data2: 0xd9d0,
+            data3: 0x452a,
+            data4: [0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee],
+        };
+        const UIA_VALUE_PATTERN: i32 = 10002;
+        const UIA_IS_PASSWORD: i32 = 30019;
+        const VT_BOOL: u16 = 11;
+
+        #[link(name = "ole32")]
+        extern "system" {
+            fn CoInitializeEx(reserved: *mut std::ffi::c_void, model: u32) -> i32;
+            fn CoCreateInstance(
+                clsid: *const Guid,
+                outer: *mut std::ffi::c_void,
+                context: u32,
+                iid: *const Guid,
+                out: *mut *mut std::ffi::c_void,
+            ) -> i32;
+            fn CoUninitialize();
+        }
+        #[link(name = "oleaut32")]
+        extern "system" {
+            fn SysStringLen(bstr: *const u16) -> u32;
+            fn SysFreeString(bstr: *const u16);
+        }
+
+        unsafe fn release(ptr: *mut std::ffi::c_void) {
+            if ptr.is_null() {
+                return;
+            }
+            let table = *(ptr as *const *const usize);
+            let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+                std::mem::transmute(*table.add(2));
+            release(ptr);
+        }
+
+        unsafe {
+            let started = CoInitializeEx(std::ptr::null_mut(), 2);
+            let mut automation = std::ptr::null_mut();
+            let hr = CoCreateInstance(
+                &CLSID_CUIAUTOMATION,
+                std::ptr::null_mut(),
+                1,
+                &IID_IUIAUTOMATION,
+                &mut automation,
+            );
+            if hr < 0 || automation.is_null() {
+                if started == 0 {
+                    CoUninitialize();
+                }
+                return None;
+            }
+            let table = *(automation as *const *const usize);
+            let get_focused: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*table.add(8));
+            let mut element = std::ptr::null_mut();
+            let hr = get_focused(automation, &mut element);
+            release(automation);
+            if hr < 0 || element.is_null() {
+                if started == 0 {
+                    CoUninitialize();
+                }
+                return None;
+            }
+            let element_table = *(element as *const *const usize);
+            let get_property: unsafe extern "system" fn(*mut std::ffi::c_void, i32, *mut Variant) -> i32 =
+                std::mem::transmute(*element_table.add(10));
+            let mut password = Variant {
+                vt: 0,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+                data: 0,
+            };
+            let hr = get_property(element, UIA_IS_PASSWORD, &mut password);
+            if hr >= 0 && password.vt == VT_BOOL && (password.data as u16) != 0 {
+                release(element);
+                if started == 0 {
+                    CoUninitialize();
+                }
+                return None;
+            }
+            let get_pattern: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                i32,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*element_table.add(16));
+            let mut pattern = std::ptr::null_mut();
+            let hr = get_pattern(element, UIA_VALUE_PATTERN, &mut pattern);
+            release(element);
+            if hr < 0 || pattern.is_null() {
+                if started == 0 {
+                    CoUninitialize();
+                }
+                return None;
+            }
+            let pattern_table = *(pattern as *const *const usize);
+            let current_value: unsafe extern "system" fn(*mut std::ffi::c_void, *mut *mut u16) -> i32 =
+                std::mem::transmute(*pattern_table.add(4));
+            let mut bstr = std::ptr::null_mut();
+            let hr = current_value(pattern, &mut bstr);
+            release(pattern);
+            if started == 0 {
+                CoUninitialize();
+            }
+            if hr < 0 || bstr.is_null() {
+                return None;
+            }
+            let len = SysStringLen(bstr) as usize;
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(bstr, len));
+            SysFreeString(bstr);
+            if text.is_empty() { None } else { Some(text) }
         }
     }
 
@@ -614,13 +763,11 @@ mod macos {
     }
 
     pub fn capture() -> Option<FocusTarget> {
-        unsafe {
-            let front = front_app()?;
-            let ax = focused_element(front.0);
-            let mut target = FocusTarget::from_parts(front.0 as u32, 0, 0, 0, front.1);
-            target.ax = ax as usize;
-            Some(target)
-        }
+        let pid = front_pid()?;
+        let ax = focused_element(pid as i32);
+        let mut target = FocusTarget::from_parts(pid, 0, 0, 0, format!("pid-{pid}"));
+        target.ax = ax as usize;
+        Some(target)
     }
 
     pub fn restore(target: &FocusTarget) {
@@ -737,35 +884,6 @@ mod macos {
         }
     }
 
-    fn front_app() -> Option<(i32, String)> {
-        unsafe {
-            let workspace = objc_class(c"NSWorkspace");
-            if workspace.is_null() {
-                return None;
-            }
-            let shared = msg0(workspace, c"sharedWorkspace");
-            if shared.is_null() {
-                return None;
-            }
-            let app = msg0(shared, c"frontmostApplication");
-            if app.is_null() {
-                return None;
-            }
-            let pid = msg_i32(app, c"processIdentifier");
-            if pid <= 0 {
-                return None;
-            }
-            let bundle = msg0(app, c"bundleIdentifier");
-            let name = if bundle.is_null() {
-                "unknown".to_string()
-            } else {
-                let text = ns_utf8(bundle);
-                if text.is_empty() { "unknown".to_string() } else { text }
-            };
-            Some((pid, name))
-        }
-    }
-
     fn focused_element(pid: i32) -> *mut std::ffi::c_void {
         unsafe {
             let app = AXUIElementCreateApplication(pid);
@@ -829,20 +947,6 @@ mod macos {
         }
     }
 
-    fn msg_i32(receiver: *mut std::ffi::c_void, name: &std::ffi::CStr) -> i32 {
-        #[link(name = "objc", kind = "dylib")]
-        extern "C" {
-            fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
-            fn objc_msgSend();
-        }
-        unsafe {
-            let sel = sel_registerName(name.as_ptr());
-            let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> i32 =
-                std::mem::transmute(objc_msgSend as *const ());
-            function(receiver, sel)
-        }
-    }
-
     fn msg_usize(
         receiver: *mut std::ffi::c_void,
         name: &std::ffi::CStr,
@@ -875,24 +979,6 @@ mod macos {
             let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, usize) =
                 std::mem::transmute(objc_msgSend as *const ());
             function(receiver, sel, arg);
-        }
-    }
-
-    fn ns_utf8(value: *mut std::ffi::c_void) -> String {
-        #[link(name = "objc", kind = "dylib")]
-        extern "C" {
-            fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
-            fn objc_msgSend();
-        }
-        unsafe {
-            let sel = sel_registerName(c"UTF8String".as_ptr());
-            let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> *const i8 =
-                std::mem::transmute(objc_msgSend as *const ());
-            let ptr = function(value, sel);
-            if ptr.is_null() {
-                return String::new();
-            }
-            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
         }
     }
 }

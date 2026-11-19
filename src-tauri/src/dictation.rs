@@ -1107,6 +1107,9 @@ fn begin_recording(
     if mic.is_some() {
         return;
     }
+    if mode == HotkeyMode::PasteLast {
+        return;
+    }
     WATCH_GEN.fetch_add(1, Ordering::Relaxed);
     emit_phase(
         app,
@@ -3822,6 +3825,7 @@ fn job_for(mode: HotkeyMode, effective: &dictate_config::Effective) -> Job {
             target: effective.target_language.clone(),
         },
         HotkeyMode::Command => Job::Command { selection: None },
+        // Paste last never records. begin_recording returns before this arm.
         HotkeyMode::PasteLast => Job::Polish(PolishLevel::Literal),
     }
 }
