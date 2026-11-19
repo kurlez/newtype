@@ -905,6 +905,13 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                 std::thread::Builder::new()
                     .name("newtype-paste-last".into())
                     .spawn(move || {
+                        struct ReleaseUia;
+                        impl Drop for ReleaseUia {
+                            fn drop(&mut self) {
+                                focus::release_uia_cache();
+                            }
+                        }
+                        let _release_uia = ReleaseUia;
                         let start = std::time::Instant::now();
                         while start.elapsed() < std::time::Duration::from_secs(1)
                             && !paste_modifiers_up()
@@ -2394,6 +2401,7 @@ fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget
                 }
             }
             let _release_uia = ReleaseUia;
+            let mut target = target;
             let started = std::time::Instant::now();
             let mut noted = std::collections::HashSet::new();
             let mut previous = String::new();
@@ -2408,7 +2416,7 @@ fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget
                         break;
                     }
                 }
-                let Some(edited) = focus::field_text(&target) else {
+                let Some(edited) = focus::watch_field(&mut target) else {
                     continue;
                 };
                 if edited != previous {
@@ -2433,7 +2441,7 @@ fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget
         .ok();
 }
 
-fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64) {
+fn learn_corrections(app: &AppHandle, pairs: &[crate::pipeline::corrections::TermChange], dictation: u64) {
     let state = app.state::<Dictation>();
     let mut added = 0u32;
     {
@@ -2446,7 +2454,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
             let ready: Vec<_> = settings
                 .correction_suggestions
                 .iter()
-                .filter(|item| item.state == "pending" && item.seen >= 2)
+                .filter(|item| item.state == "pending" && item.seen >= 2 && !item.manual_only)
                 .cloned()
                 .collect();
             for item in ready {

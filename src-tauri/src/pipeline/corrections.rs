@@ -13,6 +13,16 @@ pub struct Suggestion {
     /// Last dictation id that counted this pair. Zero means none.
     #[serde(default)]
     pub last_dictation: u64,
+    /// A same-pinyin name swap. It stays pending for a manual Accept.
+    #[serde(default)]
+    pub manual_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TermChange {
+    pub heard: String,
+    pub corrected: String,
+    pub manual_only: bool,
 }
 
 pub fn is_secure_role(role: &str) -> bool {
@@ -22,21 +32,23 @@ pub fn is_secure_role(role: &str) -> bool {
 
 /// Term replacements only. A rewrite, a deletion, or a restyle returns nothing.
 /// `edited` may be a whole field that contains the inserted span plus other text.
-pub fn term_replacements(inserted: &str, edited: &str) -> Vec<(String, String)> {
+pub fn term_replacements(inserted: &str, edited: &str) -> Vec<TermChange> {
     let Some((before, after)) = locate(inserted, edited) else {
         return Vec::new();
     };
-    let mut pairs = Vec::new();
     let left = units(&before);
     let right = units(&after);
     let Some(span) = changed_span(&left, &right) else {
         return Vec::new();
     };
-    if !accept_pair(&span.heard, &span.corrected, &span.core_heard, &span.core_corrected) {
+    let Some(manual_only) = accept_pair(&span.heard, &span.corrected, &span.core_heard, &span.core_corrected) else {
         return Vec::new();
-    }
-    pairs.push((span.heard, span.corrected));
-    pairs
+    };
+    vec![TermChange {
+        heard: span.heard,
+        corrected: span.corrected,
+        manual_only,
+    }]
 }
 
 fn locate(inserted: &str, field: &str) -> Option<(String, String)> {
@@ -205,14 +217,15 @@ fn join_units(tokens: &[String]) -> String {
     out
 }
 
-fn accept_pair(heard: &str, corrected: &str, core_heard: &str, core_corrected: &str) -> bool {
+/// `Some(true)` is a same-pinyin name kept for manual Accept. `None` is dropped.
+fn accept_pair(heard: &str, corrected: &str, core_heard: &str, core_corrected: &str) -> Option<bool> {
     let heard_plain = plain(heard);
     let corrected_plain = plain(corrected);
     if heard_plain.is_empty() || corrected_plain.is_empty() || heard_plain == corrected_plain {
-        return false;
+        return None;
     }
     if stoplisted(&heard_plain) || stoplisted(&corrected_plain) || is_number(&heard_plain) || is_number(&corrected_plain) {
-        return false;
+        return None;
     }
     let heard_cjk = heard_plain.chars().all(is_cjk);
     let corrected_cjk = corrected_plain.chars().all(is_cjk);
@@ -220,42 +233,45 @@ fn accept_pair(heard: &str, corrected: &str, core_heard: &str, core_corrected: &
         let heard_len = heard_plain.chars().count();
         let corrected_len = corrected_plain.chars().count();
         if heard_len < 2 || corrected_len < 2 || heard_len > 6 || corrected_len > 6 {
-            return false;
+            return None;
         }
         if cjk_alone(&heard_plain) || cjk_alone(&corrected_plain) {
-            return false;
+            return None;
         }
         if one_cjk_char(core_heard) && one_cjk_char(core_corrected) {
             let stopped = core_heard.chars().any(|ch| CJK_STOP.contains(ch))
                 || core_corrected.chars().any(|ch| CJK_STOP.contains(ch));
+            if stopped {
+                return None;
+            }
             let homophone = pinyin_key(core_heard) == pinyin_key(core_corrected)
                 && !pinyin_key(core_heard).is_empty()
                 && differ_only_in_one_char(&heard_plain, &corrected_plain);
-            if stopped || homophone {
-                return false;
+            if homophone {
+                return Some(true);
             }
         }
         if heard_len.abs_diff(corrected_len) > 1 {
-            return false;
+            return None;
         }
         if pinyin_key(&heard_plain) == pinyin_key(&corrected_plain) && !pinyin_key(&heard_plain).is_empty() {
-            return true;
+            return Some(false);
         }
-        return levenshtein(&heard_plain, &corrected_plain) <= 2;
+        return (levenshtein(&heard_plain, &corrected_plain) <= 2).then_some(false);
     }
     if !looks_like_term(corrected) && common_english_pair(&heard_plain, &corrected_plain) {
-        return false;
+        return None;
     }
     let heard_tokens = heard_plain.split_whitespace().count();
     let corrected_tokens = corrected_plain.split_whitespace().count();
     if heard_tokens > 2 || corrected_tokens > 2 {
-        return false;
+        return None;
     }
     let longer = heard_plain.chars().count().max(corrected_plain.chars().count());
     if longer == 0 {
-        return false;
+        return None;
     }
-    (levenshtein(&heard_plain, &corrected_plain) as f32) / (longer as f32) <= 0.5
+    ((levenshtein(&heard_plain, &corrected_plain) as f32) / (longer as f32) <= 0.5).then_some(false)
 }
 
 fn plain(text: &str) -> String {
@@ -461,14 +477,17 @@ fn levenshtein(left: &str, right: &str) -> usize {
 
 pub fn note_seen(
     suggestions: &mut Vec<Suggestion>,
-    pairs: &[(String, String)],
+    pairs: &[TermChange],
     dictation: u64,
 ) -> usize {
     let mut fresh = 0;
-    for (heard, corrected) in pairs {
+    for change in pairs {
         if let Some(existing) = suggestions.iter_mut().find(|item| {
-            item.heard == *heard && item.corrected == *corrected && item.state == "pending"
+            item.heard == change.heard && item.corrected == change.corrected && item.state == "pending"
         }) {
+            if change.manual_only {
+                existing.manual_only = true;
+            }
             if existing.last_dictation != dictation {
                 existing.seen = existing.seen.saturating_add(1);
                 existing.last_dictation = dictation;
@@ -476,7 +495,7 @@ pub fn note_seen(
             continue;
         }
         if suggestions.iter().any(|item| {
-            item.heard == *heard && item.corrected == *corrected && item.state != "pending"
+            item.heard == change.heard && item.corrected == change.corrected && item.state != "pending"
         }) {
             continue;
         }
@@ -484,11 +503,12 @@ pub fn note_seen(
             continue;
         }
         suggestions.push(Suggestion {
-            heard: heard.clone(),
-            corrected: corrected.clone(),
+            heard: change.heard.clone(),
+            corrected: change.corrected.clone(),
             seen: 1,
             state: "pending".into(),
             last_dictation: dictation,
+            manual_only: change.manual_only,
         });
         fresh += 1;
     }
@@ -499,10 +519,15 @@ pub fn note_seen(
 mod tests {
     use super::*;
 
+    fn words(changes: &[TermChange]) -> Vec<(String, String)> {
+        changes.iter().map(|change| (change.heard.clone(), change.corrected.clone())).collect()
+    }
+
     #[test]
     fn one_synthetic_token_is_a_term_and_a_rewrite_is_not() {
         let pairs = term_replacements("zzqx went home", "zzqy went home");
-        assert_eq!(pairs, vec![("zzqx".into(), "zzqy".into())]);
+        assert_eq!(words(&pairs), vec![("zzqx".into(), "zzqy".into())]);
+        assert!(!pairs[0].manual_only);
         assert!(term_replacements("zzqx went home", "a completely different sentence").is_empty());
         assert!(term_replacements("zzqx went home", "zzqx").is_empty());
         assert!(term_replacements("a b c d", "w x y z").is_empty());
@@ -514,7 +539,7 @@ mod tests {
     #[test]
     fn a_cjk_one_character_edit_is_a_term() {
         assert_eq!(
-            term_replacements("甲乙丙", "甲丁丙"),
+            words(&term_replacements("甲乙丙", "甲丁丙")),
             vec![("甲乙".into(), "甲丁".into())]
         );
     }
@@ -537,7 +562,7 @@ mod tests {
         assert!(term_replacements("我的书", "我得书").is_empty());
         assert!(term_replacements("Their", "There").is_empty());
         assert_eq!(
-            term_replacements("甲乙", "甲丁"),
+            words(&term_replacements("甲乙", "甲丁")),
             vec![("甲乙".into(), "甲丁".into())]
         );
     }
@@ -545,9 +570,21 @@ mod tests {
     #[test]
     fn a_two_character_cjk_term_is_accepted() {
         assert_eq!(
-            term_replacements("甲乙", "甲丁"),
+            words(&term_replacements("甲乙", "甲丁")),
             vec![("甲乙".into(), "甲丁".into())]
         );
+    }
+
+    #[test]
+    fn a_same_pinyin_name_stays_pending_and_a_stop_character_is_dropped() {
+        let name = term_replacements("文锋", "文峰");
+        assert_eq!(words(&name), vec![("文锋".into(), "文峰".into())]);
+        assert!(name[0].manual_only);
+        let mut suggestions = Vec::new();
+        assert_eq!(note_seen(&mut suggestions, &name, 1), 1);
+        assert_eq!(suggestions[0].state, "pending");
+        assert!(suggestions[0].manual_only);
+        assert!(term_replacements("他说", "她说").is_empty());
     }
 
     #[test]
@@ -563,7 +600,7 @@ mod tests {
     #[test]
     fn a_field_with_surrounding_text_still_finds_the_term() {
         assert_eq!(
-            term_replacements("zzqx went home", "prefix zzqy went home suffix"),
+            words(&term_replacements("zzqx went home", "prefix zzqy went home suffix")),
             vec![("zzqx".into(), "zzqy".into())]
         );
     }
@@ -582,7 +619,11 @@ mod tests {
     #[test]
     fn the_same_synthetic_pair_counts_without_storing_a_log_line() {
         let mut suggestions = Vec::new();
-        let pairs = vec![("qqx".into(), "qqy".into())];
+        let pairs = vec![TermChange {
+            heard: "qqx".into(),
+            corrected: "qqy".into(),
+            manual_only: false,
+        }];
         assert_eq!(note_seen(&mut suggestions, &pairs, 1), 1);
         assert_eq!(note_seen(&mut suggestions, &pairs, 1), 0);
         assert_eq!(suggestions[0].seen, 1);

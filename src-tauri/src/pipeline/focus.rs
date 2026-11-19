@@ -23,6 +23,17 @@ pub fn front_pid() -> Option<u32> {
     }
 }
 
+pub fn watch_field(target: &mut FocusTarget) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows::watch_field(target);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        field_text(target)
+    }
+}
+
 pub fn field_text(target: &FocusTarget) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -397,27 +408,6 @@ mod windows {
         }
     }
 
-    fn focused_runtime_id() -> Vec<i32> {
-        unsafe {
-            let automation = automation_pointer();
-            if automation.is_null() {
-                return Vec::new();
-            }
-            let table = *(automation as *const *const usize);
-            let get_focused: unsafe extern "system" fn(
-                *mut std::ffi::c_void,
-                *mut *mut std::ffi::c_void,
-            ) -> i32 = std::mem::transmute(*table.add(8));
-            let mut element = std::ptr::null_mut();
-            if get_focused(automation, &mut element) < 0 || element.is_null() {
-                return Vec::new();
-            }
-            let id = element_runtime_id(element);
-            com_release(element);
-            id
-        }
-    }
-
     fn automation_pointer() -> *mut std::ffi::c_void {
         #[repr(C)]
         struct Guid {
@@ -470,8 +460,45 @@ mod windows {
             if hr < 0 || created.is_null() {
                 return std::ptr::null_mut();
             }
+            limit_uia_timeouts(created);
             AUTOMATION.with(|slot| slot.set(created));
             created
+        }
+    }
+
+    fn limit_uia_timeouts(automation: *mut std::ffi::c_void) {
+        #[repr(C)]
+        struct Guid {
+            data1: u32,
+            data2: u16,
+            data3: u16,
+            data4: [u8; 8],
+        }
+        const IID_IUIAUTOMATION2: Guid = Guid {
+            data1: 0x34723aff,
+            data2: 0x0c9d,
+            data3: 0x49d0,
+            data4: [0x98, 0x96, 0x7a, 0xb5, 0x2d, 0xf8, 0xb7, 0x75],
+        };
+        unsafe {
+            let table = *(automation as *const *const usize);
+            let query: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *const Guid,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*table.add(0));
+            let mut newer = std::ptr::null_mut();
+            if query(automation, &IID_IUIAUTOMATION2, &mut newer) < 0 || newer.is_null() {
+                return;
+            }
+            let newer_table = *(newer as *const *const usize);
+            let put_connection: unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32 =
+                std::mem::transmute(*newer_table.add(62));
+            let put_transaction: unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32 =
+                std::mem::transmute(*newer_table.add(63));
+            let _ = put_connection(newer, 200);
+            let _ = put_transaction(newer, 200);
+            com_release(newer);
         }
     }
 
@@ -649,15 +676,13 @@ mod windows {
                 hwnd
             };
             let app = process_name(pid).or_else(|| class_name(hwnd));
-            let mut target = FocusTarget::from_parts(
+            Some(FocusTarget::from_parts(
                 pid,
                 hwnd as usize as u64,
                 focused as usize as u64,
                 thread,
                 app.unwrap_or_else(|| "unknown".to_string()),
-            );
-            target.runtime_id = focused_runtime_id();
-            Some(target)
+            ))
         }
     }
 
@@ -739,10 +764,14 @@ mod windows {
         }
     }
 
-    pub fn field_text(target: &FocusTarget) -> Option<String> {
+    pub fn watch_field(target: &mut FocusTarget) -> Option<String> {
         if let Some(text) = uia_focused_text(target) {
             return Some(text);
         }
+        field_text(target)
+    }
+
+    pub fn field_text(target: &FocusTarget) -> Option<String> {
         unsafe {
             let control = target.control as usize as *mut std::ffi::c_void;
             if control.is_null() || IsWindow(control) == 0 {
@@ -773,7 +802,7 @@ mod windows {
 
     /// Focused control via UI Automation ValuePattern. Password fields return nothing.
     /// A failure falls through to the Edit/RichEdit reader.
-    fn uia_focused_text(target: &FocusTarget) -> Option<String> {
+    fn uia_focused_text(target: &mut FocusTarget) -> Option<String> {
         #[repr(C)]
         struct Variant {
             vt: u16,
@@ -826,17 +855,18 @@ mod windows {
                 return None;
             }
             let runtime = element_runtime_id(element);
-            let same_element = !target.runtime_id.is_empty() && runtime == target.runtime_id;
-            if !target.runtime_id.is_empty() && !same_element {
-                com_release(element);
-                return None;
-            }
-            if target.runtime_id.is_empty() && (target.control != 0 || target.window != 0) {
+            if target.runtime_id.is_empty() {
                 let owner = owning_window(automation, element);
-                if owner == 0 || (owner != target.control && owner != target.window) {
+                if target.control == 0 || owner != target.control {
                     com_release(element);
                     return None;
                 }
+                if !runtime.is_empty() {
+                    target.runtime_id = runtime;
+                }
+            } else if runtime != target.runtime_id {
+                com_release(element);
+                return None;
             }
             let get_pattern: unsafe extern "system" fn(
                 *mut std::ffi::c_void,
