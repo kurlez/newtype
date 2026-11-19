@@ -400,8 +400,8 @@ const COMMON_ENGLISH: &[&str] = &[
     "hundred", "husband", "idea", "image", "imagine", "important", "include", "increase", "indeed",
     "industry", "information", "inside", "instead", "interest", "international", "interview", "issue",
     "item", "job", "join", "keep", "key", "kid", "kill", "kind", "king", "kitchen", "know",
-    "knowledge", "land", "language", "large", "late", "later", "laugh", "law", "lay", "lead",
-    "leader", "learn", "leave", "left", "leg", "legal", "less", "letter", "level", "lie", "life",
+    "knowledge", "land", "language", "large", "late", "later", "laugh", "law", "lay", "learn",
+    "leave", "left", "leg", "legal", "less", "letter", "level", "lie", "life",
     "light", "likely", "line", "list", "listen", "live", "local", "long", "look", "lose", "loss",
     "lot", "love", "low", "machine", "main", "major", "man", "manage", "manager", "market", "matter",
     "maybe", "mean", "measure", "media", "medical", "meet", "meeting", "member", "memory", "mention",
@@ -577,8 +577,8 @@ mod tests {
 
     #[test]
     fn a_same_pinyin_name_stays_pending_and_a_stop_character_is_dropped() {
-        let name = term_replacements("文锋", "文峰");
-        assert_eq!(words(&name), vec![("文锋".into(), "文峰".into())]);
+        let name = term_replacements("甲锋", "甲峰");
+        assert_eq!(words(&name), vec![("甲锋".into(), "甲峰".into())]);
         assert!(name[0].manual_only);
         let mut suggestions = Vec::new();
         assert_eq!(note_seen(&mut suggestions, &name, 1), 1);
