@@ -44,6 +44,8 @@ enum Control {
     Toggle,
     Cancel,
     AutoStop,
+    /// Drop the microphone without transcribing. The caller already showed why.
+    Abort,
 }
 
 struct HotkeyShare {
@@ -275,6 +277,23 @@ impl Dictation {
             apply_route_mode(&state, true);
         }
         spawn_probe(app.clone());
+        let warm_name = app
+            .state::<Dictation>()
+            .settings
+            .lock()
+            .expect("settings")
+            .microphone
+            .clone();
+        std::thread::Builder::new()
+            .name("newtype-mic-warm".into())
+            .spawn(move || {
+                if let Err(err) = audio::warm(&warm_name) {
+                    crate::diag::record(&format!("microphone warm failed: {err}"));
+                } else {
+                    crate::diag::record("microphone warm");
+                }
+            })
+            .ok();
         let state = app.state::<Dictation>();
         let rx = state.inbox.lock().expect("inbox").take();
         let control = state.control.clone();
@@ -619,6 +638,9 @@ fn spawn_listener(
         .spawn(move || {
             let mut engine = HotkeyEngine::default();
             let suppress_hook_until = AtomicU64::new(0);
+            let status_app = app.clone();
+            #[allow(unused_mut)]
+            let mut hook_noted = false;
             let (mut seen, mut capturing) = {
                 let share = hotkeys.lock().expect("hotkeys");
                 engine.set_bindings(share.bindings.clone());
@@ -629,8 +651,34 @@ fn spawn_listener(
             };
             #[cfg(windows)]
             publish_swallow(&hotkeys.lock().expect("hotkeys").bindings);
-            let hook_app = app.clone();
-            let on_edge = move |edge: KeyEdge| -> bool {
+            let on_edge = move |feed: crate::key_feed::Feed| -> bool {
+                let now = now_ms();
+                let edge = match feed {
+                    crate::key_feed::Feed::Tick(at) => {
+                        #[cfg(windows)]
+                        if !hook_noted && !crate::win_hotkey::hook_ready() {
+                            hook_noted = true;
+                            let message = crate::locale::text(
+                                "The hotkey hook is not installed. newtype will keep trying.",
+                                "快捷键钩子没有装上。newtype 会继续试。",
+                            );
+                            emit_phase(&status_app, "error", "", message, 0, 0.0, "");
+                            schedule_hide(&status_app, 4000);
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = hook_noted;
+                            let _ = &status_app;
+                        }
+                        let outcome =
+                            engine.consume_timed(hotkey::KeyEdge::Up(hotkey::KeyId::Other), at);
+                        for event in outcome.events {
+                            let _ = control.send(Control::Engine(event));
+                        }
+                        return false;
+                    }
+                    crate::key_feed::Feed::Key(edge) => edge,
+                };
                 let want = hotkey::os_capture();
                 if want != capturing {
                     capturing = want;
@@ -638,7 +686,7 @@ fn spawn_listener(
                 }
                 if !crate::key_feed::from_webview() && !capturing {
                     let until = suppress_hook_until.load(Ordering::Relaxed);
-                    if now_ms() < until {
+                    if now < until {
                         return false;
                     }
                 }
@@ -656,7 +704,7 @@ fn spawn_listener(
                         engine.set_capture(capturing);
                     }
                 }
-                let outcome = engine.consume(edge);
+                let outcome = engine.consume_timed(edge, now);
                 let capture_ended = outcome.events.iter().any(|event| {
                     matches!(
                         event,
@@ -669,7 +717,7 @@ fn spawn_listener(
                     let mut share = hotkeys.lock().expect("hotkeys");
                     share.capture = false;
                     if crate::key_feed::from_webview() {
-                        suppress_hook_until.store(now_ms().saturating_add(400), Ordering::Relaxed);
+                        suppress_hook_until.store(now.saturating_add(400), Ordering::Relaxed);
                     }
                 }
                 let starting = outcome
@@ -677,10 +725,10 @@ fn spawn_listener(
                     .iter()
                     .any(|event| matches!(event, EngineEvent::Pressed(_)));
                 if starting {
-                    let phase = hook_app.state::<Dictation>().phase.lock().expect("phase").clone();
-                    if phase != "recording" && phase != "processing" {
-                        focus::remember(&hook_app.state::<Dictation>().focus_target, false);
-                    }
+                    crate::diag::mark_key_down();
+                }
+                for engine_event in &outcome.events {
+                    let _ = control.send(Control::Engine(engine_event.clone()));
                 }
                 for engine_event in &outcome.events {
                     match engine_event {
@@ -690,10 +738,8 @@ fn spawn_listener(
                         EngineEvent::CaptureCancelled => {
                             crate::diag::record("capture cancel");
                         }
-                        _ => {}
+                        _ => crate::diag::record(&format!("hotkey {engine_event:?}")),
                     }
-                    crate::diag::record(&format!("hotkey {engine_event:?}"));
-                    let _ = control.send(Control::Engine(engine_event.clone()));
                 }
                 outcome.suppress || capturing
             };
@@ -727,14 +773,13 @@ fn spawn_listener(
                         ),
                     );
                 } else {
-                    set_listener(
-                        &app,
-                        &listener,
-                        crate::locale::text(
-                            "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
-                            "快捷键监听在等待输入监视或辅助功能。它会再试。",
-                        ),
+                    let message = crate::locale::text(
+                        "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
+                        "快捷键监听在等待输入监视或辅助功能。它会再试。",
                     );
+                    set_listener(&app, &listener, message);
+                    emit_phase(&app, "error", "", message, 0, 0.0, "");
+                    schedule_hide(&app, 4000);
                 }
             });
             #[cfg(not(any(windows, target_os = "macos")))]
@@ -928,6 +973,13 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                     finish_recording(&app, &mut mic, &mut started, &mut busy, &route, false);
                 }
             }
+            Control::Abort => {
+                mic.take();
+                started = None;
+                talk.active = None;
+                busy = false;
+                bump(&app);
+            }
         }
     }
 }
@@ -956,7 +1008,24 @@ fn apply(
 ) {
     match effect {
         TalkEffect::Start(mode) => {
-            begin_recording(app, control, talk, mic, route, started, mode);
+            if *busy {
+                talk.active = None;
+                emit_phase(
+                    app,
+                    "busy",
+                    route,
+                    crate::locale::text(
+                        "Still working on the last dictation.",
+                        "上一条口授还在处理。",
+                    ),
+                    0,
+                    0.0,
+                    "",
+                );
+                schedule_hide(app, 1600);
+            } else {
+                begin_recording(app, control, talk, mic, route, started, mode);
+            }
         }
         TalkEffect::Stop => {
             finish_recording(app, mic, started, busy, route, false);
@@ -1000,6 +1069,16 @@ fn begin_recording(
     if mic.is_some() {
         return;
     }
+    emit_phase(
+        app,
+        "starting",
+        route,
+        crate::locale::text("Starting…", "正在启动…"),
+        0,
+        0.0,
+        "",
+    );
+    crate::diag::record("timing starting");
     let state = app.state::<Dictation>();
     focus::remember(&state.focus_target, true);
     focus::log_saved(&state.focus_target);
@@ -1149,15 +1228,14 @@ fn begin_recording(
             *mic = Some(session);
             *started = Some(started_at);
             let generation = bump(app);
-            emit_phase(app, "recording", route, &recording_line, 0, 0.0, "");
-            show_indicator(app);
             let app_loop = app.clone();
             let control = control.clone();
             let route_loop = route.clone();
             let recording_loop = recording_line.to_string();
             tauri::async_runtime::spawn(async move {
+                let mut listening = false;
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     if app_loop
                         .state::<Dictation>()
                         .generation
@@ -1167,6 +1245,39 @@ fn begin_recording(
                         break;
                     }
                     let elapsed = started_at.elapsed().as_millis() as u64;
+                    if !listening {
+                        if handle.heard() {
+                            listening = true;
+                            crate::diag::mark_stage("recording-started");
+                            play_start_cue(&app_loop);
+                            emit_phase(
+                                &app_loop,
+                                "recording",
+                                &route_loop,
+                                &recording_loop,
+                                elapsed,
+                                handle.level(),
+                                "",
+                            );
+                        } else if elapsed >= 2_000 {
+                            emit_phase(
+                                &app_loop,
+                                "error",
+                                &route_loop,
+                                crate::locale::text(
+                                    "The microphone opened, but no audio arrived.",
+                                    "麦克风已打开，但没有收到声音。",
+                                ),
+                                0,
+                                0.0,
+                                "",
+                            );
+                            let _ = control.send(Control::Abort);
+                            schedule_hide(&app_loop, 3600);
+                            break;
+                        }
+                        continue;
+                    }
                     emit_phase(
                         &app_loop,
                         "recording",
@@ -1216,6 +1327,7 @@ fn finish_recording(
     let _elapsed = started.take();
     bump(app);
     *busy = true;
+    crate::diag::mark_stage("stop");
     emit_phase(
         app,
         "processing",
@@ -2046,11 +2158,40 @@ fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
         .lock()
         .expect("focus")
         .clone();
-    match focus::insert_with_target(text, target.as_ref()) {
+    let delivered = match focus::insert_with_target(text, target.as_ref()) {
         InsertOutcome::Pasted => Delivered::Pasted,
         InsertOutcome::Copied => Delivered::Copied(focus::notice().to_string()),
         InsertOutcome::Failed(err) => Delivered::Failed(err),
+    };
+    crate::diag::mark_stage("text-inserted");
+    delivered
+}
+
+fn play_start_cue(app: &AppHandle) {
+    let play = || {
+        #[cfg(target_os = "macos")]
+        unsafe {
+            #[link(name = "AppKit", kind = "framework")]
+            extern "C" {
+                fn NSBeep();
+            }
+            NSBeep();
+        }
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBeep(0);
+        }
+    };
+    #[cfg(target_os = "macos")]
+    if !crate::overlay::is_main_thread() {
+        let _ = app.run_on_main_thread(play);
+        return;
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+    play();
 }
 
 fn bump(app: &AppHandle) -> u64 {
@@ -2072,7 +2213,7 @@ fn emit_phase(
     if let Ok(mut slot) = app.state::<Dictation>().phase.lock() {
         *slot = phase.to_string();
     }
-    hotkey::set_session_keys(phase == "recording");
+    hotkey::set_session_keys(matches!(phase, "recording" | "starting"));
     if phase != "recording" {
         crate::diag::record(&format!("phase {phase}: {message}"));
     }
@@ -3279,7 +3420,12 @@ pub fn capture_key(app: &AppHandle, code: &str, down: bool, alt: bool) {
 pub fn is_busy(app: &AppHandle) -> bool {
     app.try_state::<Dictation>()
         .and_then(|state| state.phase.lock().ok().map(|phase| phase.clone()))
-        .is_some_and(|phase| phase == "recording" || phase == "processing")
+        .is_some_and(|phase| {
+            matches!(
+                phase.as_str(),
+                "recording" | "starting" | "processing" | "busy"
+            )
+        })
 }
 
 pub fn remember_focus(app: &AppHandle) {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The hotkey path no longer does focus or microphone work before the key is queued. Windows keeps the low-level hook callback to a channel send. macOS re-enables a disabled event tap without extra work in the callback. The microphone stays open between dictations. A press shows Starting immediately, and Listening plus the start sound wait until samples arrive. A hold shorter than 0.3s is cancelled. Escape still cancels. A key that never goes up is cleared after 10 seconds. A missing hook, a missing permission, or a silent microphone is shown on the overlay.
 - On macOS 26 the app no longer crashes at launch while opening the floating indicator. The indicator window is configured when it is created, and its style mask is not changed after the web view is attached.
 - On macOS 26 the floating indicator is shown without becoming the key window, and its window class is left unchanged. Swapping that class aborted AppKit while the window was ordered in.
 - On macOS 26 the hotkey listener no longer looks up the key name on the listener thread. That lookup aborted inside the text input system on the first key. The listener reads the hardware keycode instead.

@@ -255,7 +255,12 @@ pub struct HotkeyEngine {
     captured: Chord,
     /// Non-modifier keys swallowed on the way down. Their key-up is swallowed too.
     suppressed: Chord,
+    /// When each held key went down. A missing key-up is cleared after [`STUCK_KEY_MS`].
+    down_at: Vec<(KeyId, u64)>,
 }
+
+pub const STUCK_KEY_MS: u64 = 10_000;
+pub const MIN_HOLD_MS: u64 = 300;
 
 impl Default for HotkeyEngine {
     fn default() -> Self {
@@ -267,6 +272,7 @@ impl Default for HotkeyEngine {
             capturing: false,
             captured: Chord::new(),
             suppressed: Chord::new(),
+            down_at: Vec::new(),
         }
     }
 }
@@ -283,6 +289,7 @@ impl HotkeyEngine {
         self.down.clear();
         self.captured.clear();
         self.suppressed.clear();
+        self.down_at.clear();
         self.active = None;
         self.extra_sent = false;
         self.capturing = capturing;
@@ -296,6 +303,47 @@ impl HotkeyEngine {
 
     pub fn on_edge(&mut self, edge: KeyEdge) -> Vec<EngineEvent> {
         self.consume(edge).events
+    }
+
+    /// Release keys the OS says are up. A missed key-up otherwise stays in
+    /// `down`, and the next press of that key is ignored.
+    pub fn release_physically_up(&mut self, keys: &[KeyId]) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        for key in keys {
+            self.down_at.retain(|(held, _)| held != key);
+            if !self.down.contains(key) {
+                continue;
+            }
+            events.extend(self.consume(KeyEdge::Up(*key)).events);
+        }
+        events
+    }
+
+    /// Apply one edge, and first release any key that has been down for 10s.
+    pub fn consume_timed(&mut self, edge: KeyEdge, now_ms: u64) -> EdgeOutcome {
+        let stale: Vec<KeyId> = self
+            .down_at
+            .iter()
+            .filter(|(_, at)| now_ms.saturating_sub(*at) >= STUCK_KEY_MS)
+            .map(|(key, _)| *key)
+            .collect();
+        let mut events = self.release_physically_up(&stale);
+        let outcome = self.consume(edge);
+        match edge {
+            KeyEdge::Down(key) => {
+                if self.down.contains(&key) && !self.down_at.iter().any(|(held, _)| *held == key) {
+                    self.down_at.push((key, now_ms));
+                }
+            }
+            KeyEdge::Up(key) => {
+                self.down_at.retain(|(held, _)| *held != key);
+            }
+        }
+        events.extend(outcome.events);
+        EdgeOutcome {
+            events,
+            suppress: outcome.suppress,
+        }
     }
 
     /// Capture mode never matches a saved hotkey. A matched non-modifier is swallowed.
@@ -469,7 +517,15 @@ impl TalkController {
         match event {
             EngineEvent::Pressed(mode) => self.on_pressed(*mode, now_ms),
             EngineEvent::Released(mode) => {
-                if self.talk_mode == TalkMode::Hold && self.active == Some(*mode) {
+                if self.active != Some(*mode) {
+                    return TalkEffect::Ignore;
+                }
+                let age = now_ms.saturating_sub(self.started_ms);
+                if age < MIN_HOLD_MS {
+                    self.active = None;
+                    return TalkEffect::Cancel;
+                }
+                if self.talk_mode == TalkMode::Hold {
                     self.active = None;
                     TalkEffect::Stop
                 } else {
@@ -1130,6 +1186,74 @@ const MAC_FLAG_RIGHT_CONTROL: u64 = 0x0000_2000;
 const MAC_FLAG_FN: u64 = 0x0080_0000;
 const MAC_FLAG_CAPS_LOCK: u64 = 0x0001_0000;
 
+/// Modifiers whose device-dependent bit is clear.
+///
+/// A generic flag with no side bit is ambiguous, so neither side is released.
+/// The caller turns the result into key-up edges. This does not read text input.
+pub fn mac_modifiers_physically_up(flags: u64) -> Vec<KeyId> {
+    let mut up = Vec::new();
+    release_pair(
+        flags,
+        0x0002_0000,
+        MAC_FLAG_LEFT_SHIFT,
+        MAC_FLAG_RIGHT_SHIFT,
+        KeyId::ShiftLeft,
+        KeyId::ShiftRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0004_0000,
+        MAC_FLAG_LEFT_CONTROL,
+        MAC_FLAG_RIGHT_CONTROL,
+        KeyId::ControlLeft,
+        KeyId::ControlRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0008_0000,
+        MAC_FLAG_LEFT_OPTION,
+        MAC_FLAG_RIGHT_OPTION,
+        KeyId::AltLeft,
+        KeyId::AltRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0010_0000,
+        MAC_FLAG_LEFT_COMMAND,
+        MAC_FLAG_RIGHT_COMMAND,
+        KeyId::MetaLeft,
+        KeyId::MetaRight,
+        &mut up,
+    );
+    if flags & MAC_FLAG_FN == 0 {
+        up.push(KeyId::Fn);
+    }
+    up
+}
+
+fn release_pair(
+    flags: u64,
+    generic: u64,
+    left_bit: u64,
+    right_bit: u64,
+    left_key: KeyId,
+    right_key: KeyId,
+    up: &mut Vec<KeyId>,
+) {
+    let generic_on = flags & generic != 0;
+    let left = flags & left_bit != 0;
+    let right = flags & right_bit != 0;
+    if !left && (right || !generic_on) {
+        up.push(left_key);
+    }
+    if !right && (left || !generic_on) {
+        up.push(right_key);
+    }
+}
+
 /// Press or release for a macOS `flagsChanged` event. `None` when `code` is
 /// not a modifier key.
 pub fn mac_flags_changed(code: u16, flags: u64) -> Option<KeyEdge> {
@@ -1257,6 +1381,54 @@ mod tests {
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
+    }
+
+    #[test]
+    fn a_missed_key_up_starts_responding_again_after_resync() {
+        let mut held = engine(OsKind::Windows);
+        let down = KeyEdge::Down(KeyId::ControlRight);
+        assert_eq!(
+            held.consume(down).events,
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        assert!(held.consume(down).events.is_empty());
+        assert_eq!(
+            held.release_physically_up(&[KeyId::ControlRight]),
+            vec![EngineEvent::Released(HotkeyMode::Dictate)]
+        );
+        assert_eq!(
+            held.consume(down).events,
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        assert!(held
+            .release_physically_up(&[KeyId::ControlLeft])
+            .is_empty());
+        let mut stuck = engine(OsKind::Mac);
+        stuck.consume_timed(KeyEdge::Down(KeyId::ControlRight), 1_000);
+        let expired = stuck.consume_timed(KeyEdge::Up(KeyId::Other), 1_000 + STUCK_KEY_MS);
+        assert!(expired
+            .events
+            .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
+        assert!(stuck.consume_timed(KeyEdge::Down(KeyId::ControlRight), 20_000).events.contains(
+            &EngineEvent::Pressed(HotkeyMode::Dictate)
+        ));
+    }
+
+    #[test]
+    fn mac_flag_bits_release_only_the_side_that_is_up() {
+        let right_only = MAC_FLAG_RIGHT_CONTROL | 0x0004_0000;
+        let up = mac_modifiers_physically_up(right_only);
+        assert!(up.contains(&KeyId::ControlLeft));
+        assert!(!up.contains(&KeyId::ControlRight));
+        let ambiguous = mac_modifiers_physically_up(0x0004_0000);
+        assert!(!ambiguous.contains(&KeyId::ControlLeft));
+        assert!(!ambiguous.contains(&KeyId::ControlRight));
+        let clear = mac_modifiers_physically_up(0);
+        assert!(clear.contains(&KeyId::ControlRight));
+        assert!(clear.contains(&KeyId::ShiftLeft));
+        assert!(clear.contains(&KeyId::Fn));
+        let fn_held = mac_modifiers_physically_up(MAC_FLAG_FN);
+        assert!(!fn_held.contains(&KeyId::Fn));
     }
 
     #[test]
@@ -1500,10 +1672,19 @@ mod tests {
         );
         assert_eq!(
             toggle.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 40),
+            TalkEffect::Cancel
+        );
+        assert!(toggle.active.is_none());
+        assert_eq!(
+            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_000),
+            TalkEffect::Start(HotkeyMode::Dictate)
+        );
+        assert_eq!(
+            toggle.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 1_400),
             TalkEffect::Ignore
         );
         assert_eq!(
-            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 80),
+            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_800),
             TalkEffect::Stop
         );
 
@@ -1513,7 +1694,15 @@ mod tests {
             TalkEffect::Start(HotkeyMode::Dictate)
         );
         assert_eq!(
-            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 400),
+            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 100),
+            TalkEffect::Cancel
+        );
+        assert_eq!(
+            hold.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 200),
+            TalkEffect::Start(HotkeyMode::Dictate)
+        );
+        assert_eq!(
+            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 600),
             TalkEffect::Stop
         );
 

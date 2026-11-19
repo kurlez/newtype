@@ -196,6 +196,10 @@ function label(phase: string, elapsedMs: number): string {
   switch (phase) {
     case "recording":
       return clock;
+    case "starting":
+      return t("starting");
+    case "busy":
+      return t("busy");
     case "processing":
       return t("processing");
     case "inserted":

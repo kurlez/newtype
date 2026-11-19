@@ -5,6 +5,8 @@
 //! macOS 26 asserts that text-input calls run on the main queue.
 
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +21,13 @@ const FLAGS_CHANGED: u32 = 12;
 const KEYCODE_FIELD: u32 = 9;
 
 static TAP: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
+static EVENTS: OnceLock<SyncSender<TapMsg>> = OnceLock::new();
+
+enum TapMsg {
+    Edge(KeyEdge),
+    Reenabled,
+    Tick,
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -38,6 +47,7 @@ extern "C" {
     fn CGEventTapEnable(tap: *mut std::ffi::c_void, enable: u8);
     fn CGEventGetIntegerValueField(event: *mut std::ffi::c_void, field: u32) -> i64;
     fn CGEventGetFlags(event: *mut std::ffi::c_void) -> u64;
+    fn CGEventSourceFlagsState(state: i32) -> u64;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -61,6 +71,7 @@ extern "C" {
 /// disable is turned back on inside the callback. This function does not
 /// return while the process is running.
 pub fn listen(mut report: impl FnMut(bool)) {
+    start_side_threads();
     loop {
         match run_tap(&mut report) {
             Ok(()) => {
@@ -74,6 +85,59 @@ pub fn listen(mut report: impl FnMut(bool)) {
         }
         thread::sleep(RETRY);
     }
+}
+
+fn start_side_threads() {
+    if EVENTS.get().is_some() {
+        return;
+    }
+    let (tx, rx) = sync_channel::<TapMsg>(512);
+    if EVENTS.set(tx.clone()).is_err() {
+        return;
+    }
+    thread::Builder::new()
+        .name("newtype-keys".into())
+        .spawn(move || dispatch(rx))
+        .ok();
+    thread::Builder::new()
+        .name("newtype-key-sync".into())
+        .spawn(move || loop {
+            thread::sleep(Duration::from_millis(200));
+            let _ = tx.try_send(TapMsg::Tick);
+        })
+        .ok();
+}
+
+fn dispatch(rx: Receiver<TapMsg>) {
+    while let Ok(message) = rx.recv() {
+        match message {
+            TapMsg::Edge(edge) => {
+                let _ = crate::key_feed::push(edge, false);
+            }
+            TapMsg::Reenabled => crate::diag::record("hotkey event tap re-enabled"),
+            TapMsg::Tick => {
+                let flags = unsafe { CGEventSourceFlagsState(1) };
+                for key in hotkey::mac_modifiers_physically_up(flags) {
+                    let _ = crate::key_feed::push(KeyEdge::Up(key), false);
+                }
+                crate::key_feed::tick(now_ms());
+            }
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn enqueue(message: TapMsg) {
+    let Some(tx) = EVENTS.get() else {
+        return;
+    };
+    let _ = tx.try_send(message);
 }
 
 fn run_tap(report: &mut impl FnMut(bool)) -> Result<(), &'static str> {
@@ -126,12 +190,12 @@ unsafe extern "C" fn tap_callback(
         let tap = TAP.load(Ordering::Acquire);
         if !tap.is_null() {
             unsafe { CGEventTapEnable(tap, 1) };
-            crate::diag::record("hotkey event tap re-enabled");
+            enqueue(TapMsg::Reenabled);
         }
         return event;
     }
     if let Some(edge) = edge_from_raw(event_type, event) {
-        let _ = crate::key_feed::push(edge, false);
+        enqueue(TapMsg::Edge(edge));
     }
     event
 }

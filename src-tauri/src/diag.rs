@@ -27,6 +27,36 @@ pub fn path() -> Option<String> {
     guard.as_ref().map(|log| log.path.display().to_string())
 }
 
+static TIMING_ORIGIN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn mark_key_down() {
+    let now = unix_ms();
+    TIMING_ORIGIN_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+    record("timing key-down");
+}
+
+pub fn mark_stage(stage: &str) {
+    record(&timing_line(
+        stage,
+        TIMING_ORIGIN_MS.load(std::sync::atomic::Ordering::Relaxed),
+        unix_ms(),
+    ));
+}
+
+pub fn timing_line(stage: &str, origin_ms: u64, now_ms: u64) -> String {
+    if origin_ms == 0 {
+        return format!("timing {stage}");
+    }
+    format!("timing {stage} +{}ms", now_ms.saturating_sub(origin_ms))
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub fn record(message: &str) {
     let path = {
         let guard = LOG.lock().expect("log");
@@ -67,12 +97,8 @@ fn trim(path: &Path) -> std::io::Result<()> {
     file.write_all(&bytes[start..])
 }
 
-fn stamp() -> String {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    format!("{millis}")
+    fn stamp() -> String {
+    format!("{}", unix_ms())
 }
 
 pub fn scrub(message: &str) -> String {
@@ -145,6 +171,23 @@ fn starts_with_ignore_ascii(bytes: &[u8], index: usize, prefix: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timing_lines_name_the_stage_and_not_the_dictation() {
+        assert_eq!(timing_line("key-down", 0, 50), "timing key-down");
+        assert_eq!(
+            timing_line("recording-started", 1_000, 1_040),
+            "timing recording-started +40ms"
+        );
+        assert_eq!(timing_line("stop", 1_000, 1_900), "timing stop +900ms");
+        assert_eq!(
+            timing_line("text-inserted", 1_000, 2_200),
+            "timing text-inserted +1200ms"
+        );
+        let line = timing_line("text-inserted", 10, 30);
+        assert!(!line.contains("alpha"));
+        assert!(!line.contains("beta"));
+    }
 
     #[test]
     fn scrub_removes_key_shaped_tokens() {
