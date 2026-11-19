@@ -39,6 +39,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             }
             "quit" => app.exit(0),
             "dictate" => crate::dictation::toggle(app),
+            "paste-last" => crate::dictation::paste_last(app),
             _ => {}
         }
         });
@@ -138,6 +139,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         false,
         None::<&str>,
     )?;
+    let paste_last = MenuItem::with_id(
+        app,
+        "paste-last",
+        crate::locale::text("Paste last transcript", "粘贴上一条"),
+        true,
+        None::<&str>,
+    )?;
     let dictate = MenuItem::with_id(
         app,
         "dictate",
@@ -182,13 +190,13 @@ fn menu(app: &AppHandle, state: &StateDto) -> tauri::Result<Menu<tauri::Wry>> {
         Menu::with_items(
             app,
             &[
-                &history, &last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
+                &history, &last, &paste_last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &apply, &sep_b, &quit,
             ],
         )
     } else {
         Menu::with_items(
             app,
-            &[&history, &last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
+            &[&history, &last, &paste_last, &open, &version, &commit, &route, &fallback, &listener, &log, &dictate, &sep_a, &check, &sep_b, &quit],
         )
     }
 }

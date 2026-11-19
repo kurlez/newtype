@@ -26,8 +26,11 @@ pub fn insert_text(text: &str) -> Result<(), String> {
     thread::sleep(Duration::from_millis(30));
     paste_shortcut()?;
     thread::sleep(Duration::from_millis(140));
-    if let Some(previous) = previous {
-        let _ = clipboard_set(&previous);
+    // Leave a newer clipboard value alone if the user copied during the paste.
+    if clipboard_get().as_deref() == Some(text) {
+        if let Some(previous) = previous {
+            let _ = clipboard_set(&previous);
+        }
     }
     Ok(())
 }

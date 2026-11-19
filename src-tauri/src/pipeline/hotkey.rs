@@ -259,6 +259,7 @@ pub enum HotkeyMode {
     Dictate,
     Translate,
     Command,
+    PasteLast,
 }
 
 impl HotkeyMode {
@@ -268,6 +269,7 @@ impl HotkeyMode {
             Self::Dictate => "dictate",
             Self::Translate => "translate",
             Self::Command => "command",
+            Self::PasteLast => "paste",
         }
     }
 }
@@ -651,7 +653,7 @@ impl TalkController {
     }
 }
 
-pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
+pub fn default_chord(mode: HotkeyMode, os: OsKind) -> Chord {
     // macOS matches Windows. Right Option is also used by Typeless when a PC
     // keyboard (Right Alt) is attached to a Mac, so the factory key is Right Control.
     let mut chord = Chord::new();
@@ -663,6 +665,19 @@ pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
         }
         HotkeyMode::Command => {
             chord.insert(KeyId::Enter);
+        }
+        HotkeyMode::PasteLast => {
+            chord.clear();
+            if os == OsKind::Mac {
+                chord.insert(KeyId::ControlLeft);
+                chord.insert(KeyId::MetaLeft);
+                chord.insert(KeyId::Letter(b'V'));
+            } else {
+                chord.insert(KeyId::AltLeft);
+                chord.insert(KeyId::ShiftLeft);
+                chord.insert(KeyId::Letter(b'Z'));
+            }
+            return chord;
         }
     }
     chord
@@ -790,6 +805,7 @@ fn mode_name(mode: HotkeyMode) -> &'static str {
         HotkeyMode::Dictate => "Dictate",
         HotkeyMode::Translate => "Translate",
         HotkeyMode::Command => "Command",
+        HotkeyMode::PasteLast => "Paste last",
     }
 }
 

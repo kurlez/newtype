@@ -55,6 +55,12 @@ pub struct DictationSettings {
     pub dictate_hotkey: String,
     pub translate_hotkey: String,
     pub command_hotkey: String,
+    /// Empty uses Ctrl+Cmd+V on macOS and Alt+Shift+Z on Windows.
+    #[serde(default)]
+    pub paste_last_hotkey: String,
+    /// Put the transcript back in the field that was focused at the hotkey.
+    #[serde(default = "default_window_translucent")]
+    pub return_to_field: bool,
     pub thinking: String,
     pub microphone: String,
     pub local_mirror: String,
@@ -150,6 +156,8 @@ impl Default for DictationSettings {
             dictate_hotkey: String::new(),
             translate_hotkey: String::new(),
             command_hotkey: String::new(),
+            paste_last_hotkey: String::new(),
+            return_to_field: true,
             thinking: "auto".into(),
             microphone: String::new(),
             local_mirror: "auto".into(),
@@ -203,6 +211,7 @@ pub struct Effective {
     pub warnings: Vec<String>,
     pub hotwords: Vec<Hotword>,
     pub microphone: String,
+    pub return_to_field: bool,
     pub target_language: String,
     pub history_retention: Retention,
 }
@@ -315,6 +324,12 @@ pub fn merge_ui_settings(
     }
     if let Some(value) = json_str(obj, "commandHotkey") {
         assign_hotkey_field(&mut next.command_hotkey, value, clear_hotkeys);
+    }
+    if let Some(value) = json_str(obj, "pasteLastHotkey") {
+        assign_hotkey_field(&mut next.paste_last_hotkey, value, clear_hotkeys);
+    }
+    if let Some(value) = obj.get("returnToField").and_then(|value| value.as_bool()) {
+        next.return_to_field = value;
     }
     assign_text(obj, "asrProvider", &mut next.asr_provider, true);
     assign_text(obj, "llmProvider", &mut next.llm_provider, true);
@@ -485,10 +500,12 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     let dictate = hotkey::effective_chord(&settings.dictate_hotkey, HotkeyMode::Dictate, os)?;
     let translate = hotkey::effective_chord(&settings.translate_hotkey, HotkeyMode::Translate, os)?;
     let command = hotkey::effective_chord(&settings.command_hotkey, HotkeyMode::Command, os)?;
+    let paste_last = hotkey::effective_chord(&settings.paste_last_hotkey, HotkeyMode::PasteLast, os)?;
     let bindings = vec![
         (HotkeyMode::Dictate, dictate),
         (HotkeyMode::Translate, translate),
         (HotkeyMode::Command, command),
+        (HotkeyMode::PasteLast, paste_last),
     ];
     if let Some(error) = binding_error(&bindings) {
         return Err(error);
@@ -533,6 +550,7 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
         warnings,
         hotwords: settings.hotwords.clone(),
         microphone: settings.microphone.clone(),
+        return_to_field: settings.return_to_field,
         target_language: task::normalize_target(&settings.target_language),
         history_retention: Retention::parse(&settings.history_retention),
     })

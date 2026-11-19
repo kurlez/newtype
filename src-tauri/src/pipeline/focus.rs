@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use super::insert;
 
-pub const FOCUS_NOTICE: &str = "Couldn't return to the original window — text copied";
-pub const FOCUS_NOTICE_ZH: &str = "无法回到原来的窗口，文本已复制";
-
 pub fn notice() -> &'static str {
-    crate::locale::text(FOCUS_NOTICE, FOCUS_NOTICE_ZH)
+    if cfg!(target_os = "macos") {
+        crate::locale::text("Copied. Press \u{2318}V to paste.", "已复制，按 \u{2318}V 粘贴")
+    } else {
+        crate::locale::text("Copied. Press Ctrl+V to paste.", "已复制，按 Ctrl+V 粘贴")
+    }
 }
 
 #[derive(Debug)]
@@ -92,12 +93,25 @@ pub fn foreground_matches(target: &FocusTarget, current: &FocusTarget) -> bool {
     (target.pid != 0 && target.pid == current.pid) || (target.window != 0 && target.window == current.window)
 }
 
-pub fn plan(target: Option<&FocusTarget>, current: Option<&FocusTarget>, own_pid: u32) -> InsertPlan {
-    let Some(target) = target else {
-        return match current {
-            Some(current) if own_pid != 0 && current.pid == own_pid => InsertPlan::CopyOnly,
-            _ => InsertPlan::Paste,
+pub fn plan(
+    target: Option<&FocusTarget>,
+    current: Option<&FocusTarget>,
+    own_pid: u32,
+    return_to_field: bool,
+) -> InsertPlan {
+    let current_is_ours = current.is_some_and(|current| own_pid != 0 && current.pid == own_pid);
+    if current_is_ours {
+        return InsertPlan::CopyOnly;
+    }
+    if !return_to_field {
+        return if current.is_some() {
+            InsertPlan::Paste
+        } else {
+            InsertPlan::CopyOnly
         };
+    }
+    let Some(target) = target else {
+        return InsertPlan::CopyOnly;
     };
     if own_pid != 0 && target.pid == own_pid {
         return InsertPlan::CopyOnly;
@@ -160,13 +174,17 @@ pub enum InsertOutcome {
     Failed(String),
 }
 
-pub fn insert_with_target(text: &str, target: Option<&FocusTarget>) -> InsertOutcome {
+pub fn insert_with_target(
+    text: &str,
+    target: Option<&FocusTarget>,
+    return_to_field: bool,
+) -> InsertOutcome {
     if text.is_empty() {
         return InsertOutcome::Pasted;
     }
     let own = std::process::id();
     let current = capture();
-    match plan(target, current.as_ref(), own) {
+    match plan(target, current.as_ref(), own, return_to_field) {
         InsertPlan::CopyOnly => copy_only(text, target),
         InsertPlan::Restore => {
             let Some(target) = target else {
@@ -175,24 +193,42 @@ pub fn insert_with_target(text: &str, target: Option<&FocusTarget>) -> InsertOut
             if !restore_and_wait(target) {
                 return copy_only(text, Some(target));
             }
-            paste(text)
+            paste(text, Some(target))
         }
         InsertPlan::Paste => {
-            if current.as_ref().is_some_and(|current| current.pid == own) {
-                return copy_only(text, target);
-            }
             if let Some(target) = target {
                 focus_control(target);
             }
-            paste(text)
+            paste(text, target)
         }
     }
 }
 
-fn paste(text: &str) -> InsertOutcome {
+fn paste(text: &str, target: Option<&FocusTarget>) -> InsertOutcome {
+    if let Some(target) = target {
+        if write_accessible(target, text) {
+            return InsertOutcome::Pasted;
+        }
+    }
     match insert::insert_text(text) {
         Ok(()) => InsertOutcome::Pasted,
         Err(err) => InsertOutcome::Failed(err),
+    }
+}
+
+fn write_accessible(target: &FocusTarget, text: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::set_selected_text(target, text);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::replace_selection(target, text);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (target, text);
+        false
     }
 }
 
@@ -356,9 +392,33 @@ mod windows {
                 window
             };
             if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-                SetFocus(hwnd);
-            }
+            SetFocus(hwnd);
         }
+    }
+
+    pub fn replace_selection(target: &FocusTarget, text: &str) -> bool {
+        unsafe {
+            let control = target.control as usize as *mut std::ffi::c_void;
+            if control.is_null() || IsWindow(control) == 0 {
+                return false;
+            }
+            let class = class_name(control).unwrap_or_default();
+            let editable = class.eq_ignore_ascii_case("Edit")
+                || class.to_ascii_lowercase().contains("richedit");
+            if !editable {
+                return false;
+            }
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            const EM_REPLACESEL: u32 = 0x00C2;
+            windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                control,
+                EM_REPLACESEL,
+                1,
+                wide.as_ptr() as isize,
+            );
+            true
+        }
+    }
     }
 
     fn process_name(pid: u32) -> Option<String> {
@@ -463,11 +523,50 @@ mod macos {
         if target.ax == 0 {
             return;
         }
-        let attribute = CFString::new("AXFocused");
-        let focused = CFBoolean::true_value();
+        raise_window(target.ax as *mut std::ffi::c_void);
+        set_bool(target.ax as *mut std::ffi::c_void, "AXFocused");
+    }
+
+    pub fn set_selected_text(target: &FocusTarget, text: &str) -> bool {
+        if target.ax == 0 || text.is_empty() {
+            return false;
+        }
+        let attribute = CFString::new("AXSelectedText");
+        let value = CFString::new(text);
         unsafe {
             AXUIElementSetAttributeValue(
                 target.ax as *mut std::ffi::c_void,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                value.as_concrete_TypeRef() as *const std::ffi::c_void,
+            ) == 0
+        }
+    }
+
+    fn raise_window(element: *mut std::ffi::c_void) {
+        if element.is_null() {
+            return;
+        }
+        let attribute = CFString::new("AXWindow");
+        unsafe {
+            let mut value = std::ptr::null_mut();
+            let status = AXUIElementCopyAttributeValue(
+                element,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                &mut value,
+            );
+            if status == 0 && !value.is_null() {
+                set_bool(value, "AXMain");
+                CFRelease(value);
+            }
+        }
+    }
+
+    fn set_bool(element: *mut std::ffi::c_void, name: &str) {
+        let attribute = CFString::new(name);
+        let focused = CFBoolean::true_value();
+        unsafe {
+            AXUIElementSetAttributeValue(
+                element,
                 attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
                 focused.as_concrete_TypeRef() as *const std::ffi::c_void,
             );
@@ -654,7 +753,7 @@ mod tests {
         let saved = target(40, 0x10, 0x11);
         let current = target(40, 0x10, 0x11);
         assert!(foreground_matches(&saved, &current));
-        assert_eq!(plan(Some(&saved), Some(&current), 7), InsertPlan::Paste);
+        assert_eq!(plan(Some(&saved), Some(&current), 7, true), InsertPlan::Paste);
     }
 
     #[test]
@@ -662,23 +761,24 @@ mod tests {
         let saved = target(40, 0x10, 0x11);
         let current = target(41, 0x20, 0x21);
         assert!(!foreground_matches(&saved, &current));
-        assert_eq!(plan(Some(&saved), Some(&current), 7), InsertPlan::Restore);
+        assert_eq!(plan(Some(&saved), Some(&current), 7, true), InsertPlan::Restore);
     }
 
     #[test]
     fn the_same_window_with_a_different_control_needs_a_restore() {
         let saved = target(40, 0x10, 0x11);
         let current = target(40, 0x10, 0x99);
-        assert_eq!(plan(Some(&saved), Some(&current), 7), InsertPlan::Restore);
+        assert_eq!(plan(Some(&saved), Some(&current), 7, true), InsertPlan::Restore);
     }
 
     #[test]
     fn our_own_window_is_not_a_paste_target() {
         let saved = target(7, 0x10, 0x11);
         let current = target(8, 0x20, 0x21);
-        assert_eq!(plan(Some(&saved), Some(&current), 7), InsertPlan::CopyOnly);
-        assert_eq!(plan(None, Some(&target(7, 1, 1)), 7), InsertPlan::CopyOnly);
-        assert_eq!(plan(None, Some(&target(8, 1, 1)), 7), InsertPlan::Paste);
+        assert_eq!(plan(Some(&saved), Some(&current), 7, true), InsertPlan::CopyOnly);
+        assert_eq!(plan(None, Some(&target(7, 1, 1)), 7, true), InsertPlan::CopyOnly);
+        assert_eq!(plan(None, Some(&target(8, 1, 1)), 7, true), InsertPlan::CopyOnly);
+        assert_eq!(plan(None, Some(&target(8, 1, 1)), 7, false), InsertPlan::Paste);
     }
 
     #[test]

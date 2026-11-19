@@ -444,6 +444,8 @@ function paint(): void {
       <p class="status hotkey-hint">${ui("The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A shortcut clash is a warning, and Set still keeps the chord.", "默认组合是右 Ctrl。如果键盘没有右 Ctrl，点击捕获，按一个存在的键（右 Alt 可以），再点击设置。设置会立刻保存并使用。取消或 Esc 保留原来的组合。和其他应用的快捷键冲突只是警告，设置仍会保留这个组合。")}</p>
       ${radios("talk", [["toggle", ui("Toggle", "切换"), ui("Press to start, press again to stop.", "按一次开始，再按一次停止。")], ["hold", ui("Hold to talk", "按住说话"), ui("Release to stop.", "松开即停止。")]], settings.talkMode)}
       <label class="choice"><input type="checkbox" id="sounds" ${settings.sounds !== false ? "checked" : ""} /><span>${ui("Start sound", "开始提示音")}<small>${ui("A short tone when the microphone starts delivering audio.", "麦克风开始收到声音时播放一声短提示。")}</small></span></label>
+      <label class="check"><input id="return-to-field" type="checkbox" ${settings.returnToField ? "checked" : ""} /> ${ui("Return to the original input field", "回到原来的输入框")}</label>
+      <p class="hint">${ui("Paste last transcript uses Ctrl+Command+V on macOS and Alt+Shift+Z on Windows. Leave the hotkey blank to keep that default.", "粘贴上一条在 macOS 上是 Ctrl+Command+V，在 Windows 上是 Alt+Shift+Z。快捷键留空就用这个默认。")}</p>
       <div id="hotkey-editor">${hotkeyEditorInner()}</div>
     </section>
     <section>
@@ -675,6 +677,10 @@ function readForm(): void {
   if (place) {
     settings.indicatorPlace = place.value || settings.indicatorPlace || "taskbar";
   }
+  const returnField = document.querySelector<HTMLInputElement>("#return-to-field");
+  if (returnField) {
+    settings.returnToField = returnField.checked;
+  }
   const groqFallback = document.querySelector<HTMLInputElement>("#groq-openai-fallback");
   if (groqFallback) {
     settings.groqRateLimitFallback = groqFallback.checked;
@@ -773,6 +779,8 @@ function formPatch(): Record<string, unknown> {
     indicatorPlace: settings.indicatorPlace,
     groqRateLimitFallback: settings.groqRateLimitFallback,
     sounds: settings.sounds,
+    returnToField: settings.returnToField,
+    pasteLastHotkey: settings.pasteLastHotkey,
     uiLanguage: settings.uiLanguage,
     providers: settings.providers,
     hotwords: settings.hotwords,

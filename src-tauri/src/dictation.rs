@@ -900,6 +900,9 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                     },
                 );
             }
+            Control::Engine(EngineEvent::Pressed(HotkeyMode::PasteLast)) => {
+                paste_last(&app);
+            }
             Control::Engine(event) => {
                 let effect = talk.on_event(&event, now_ms());
                 apply(
@@ -2173,6 +2176,42 @@ enum Delivered {
     Failed(String),
 }
 
+fn return_to_field(app: &AppHandle) -> bool {
+    app.state::<Dictation>()
+        .settings
+        .lock()
+        .expect("settings")
+        .return_to_field
+}
+
+pub fn paste_last(app: &AppHandle) {
+    let text = app
+        .state::<Dictation>()
+        .history
+        .lock()
+        .expect("history")
+        .iter()
+        .rev()
+        .find(|entry| !entry.text.trim().is_empty())
+        .map(|entry| entry.text.clone())
+        .unwrap_or_default();
+    if text.is_empty() {
+        emit_phase(
+            app,
+            "error",
+            "",
+            crate::locale::text("There is no transcript to paste yet.", "还没有可以粘贴的转写。"),
+            0,
+            0.0,
+            "",
+        );
+        schedule_hide(app, 2200);
+        return;
+    }
+    focus::remember(&app.state::<Dictation>().focus_target, false);
+    let _ = deliver_text(app, &text);
+}
+
 fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
     let target = app
         .state::<Dictation>()
@@ -2180,7 +2219,7 @@ fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
         .lock()
         .expect("focus")
         .clone();
-    let delivered = match focus::insert_with_target(text, target.as_ref()) {
+    let delivered = match focus::insert_with_target(text, target.as_ref(), return_to_field(app)) {
         InsertOutcome::Pasted => Delivered::Pasted,
         InsertOutcome::Copied => Delivered::Copied(focus::notice().to_string()),
         InsertOutcome::Failed(err) => Delivered::Failed(err),
@@ -3479,6 +3518,7 @@ fn job_for(mode: HotkeyMode, effective: &dictate_config::Effective) -> Job {
             target: effective.target_language.clone(),
         },
         HotkeyMode::Command => Job::Command { selection: None },
+        HotkeyMode::PasteLast => Job::Polish(effective.polish),
     }
 }
 
@@ -3555,7 +3595,7 @@ pub fn reinsert_history(app: &AppHandle, id: &str) -> Result<(), String> {
         .lock()
         .expect("focus")
         .clone();
-    match focus::insert_with_target(&text, target.as_ref()) {
+    match focus::insert_with_target(&text, target.as_ref(), return_to_field(app)) {
         InsertOutcome::Pasted => Ok(()),
         InsertOutcome::Copied => Err(focus::notice().to_string()),
         InsertOutcome::Failed(err) => Err(err),

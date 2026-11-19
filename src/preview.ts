@@ -10,6 +10,8 @@ export const previewSnapshot: Snapshot = {
     dictateHotkey: "",
     translateHotkey: "",
     commandHotkey: "",
+    pasteLastHotkey: "",
+    returnToField: true,
     thinking: "auto",
     microphone: "",
     localMirror: "auto",

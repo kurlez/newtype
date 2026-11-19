@@ -24,6 +24,8 @@ export interface DictationSettings {
   dictateHotkey: string;
   translateHotkey: string;
   commandHotkey: string;
+  pasteLastHotkey: string;
+  returnToField: boolean;
   thinking: string;
   microphone: string;
   localMirror: string;
