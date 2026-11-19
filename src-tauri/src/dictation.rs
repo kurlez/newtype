@@ -2179,7 +2179,11 @@ fn play_start_cue(app: &AppHandle) {
         }
         #[cfg(windows)]
         unsafe {
-            windows_sys::Win32::UI::WindowsAndMessaging::MessageBeep(0);
+            #[link(name = "user32")]
+            extern "system" {
+                fn MessageBeep(kind: u32) -> i32;
+            }
+            MessageBeep(0);
         }
     };
     #[cfg(target_os = "macos")]
