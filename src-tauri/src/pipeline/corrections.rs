@@ -29,14 +29,13 @@ pub fn term_replacements(inserted: &str, edited: &str) -> Vec<(String, String)> 
     let mut pairs = Vec::new();
     let left = units(&before);
     let right = units(&after);
-    let (heard, corrected) = match changed_span(&left, &right) {
-        Some(pair) => pair,
-        None => return Vec::new(),
+    let Some(span) = changed_span(&left, &right) else {
+        return Vec::new();
     };
-    if !accept_pair(&heard, &corrected) {
+    if !accept_pair(&span.heard, &span.corrected, &span.core_heard, &span.core_corrected) {
         return Vec::new();
     }
-    pairs.push((heard, corrected));
+    pairs.push((span.heard, span.corrected));
     pairs
 }
 
@@ -111,7 +110,14 @@ fn lcs_len(left: &[String], right: &[String]) -> usize {
     row[right.len()]
 }
 
-fn changed_span(before: &[String], after: &[String]) -> Option<(String, String)> {
+struct TermSpan {
+    heard: String,
+    corrected: String,
+    core_heard: String,
+    core_corrected: String,
+}
+
+fn changed_span(before: &[String], after: &[String]) -> Option<TermSpan> {
     let mut prefix = 0usize;
     while prefix < before.len() && prefix < after.len() && before[prefix] == after[prefix] {
         prefix += 1;
@@ -130,6 +136,8 @@ fn changed_span(before: &[String], after: &[String]) -> Option<(String, String)>
     if heard_start >= heard_end || corrected_start >= corrected_end {
         return None;
     }
+    let core_heard = join_units(&before[heard_start..heard_end]);
+    let core_corrected = join_units(&after[corrected_start..corrected_end]);
     let cjk_side = |tokens: &[String]| tokens.iter().all(|token| token.chars().all(is_cjk));
     let chars = |tokens: &[String]| tokens.iter().map(|token| token.chars().count()).sum::<usize>();
     if cjk_side(&before[heard_start..heard_end]) && cjk_side(&after[corrected_start..corrected_end]) {
@@ -150,7 +158,12 @@ fn changed_span(before: &[String], after: &[String]) -> Option<(String, String)>
     if heard.is_empty() || corrected.is_empty() {
         return None;
     }
-    Some((heard, corrected))
+    Some(TermSpan {
+        heard,
+        corrected,
+        core_heard,
+        core_corrected,
+    })
 }
 
 fn units(text: &str) -> Vec<String> {
@@ -192,7 +205,7 @@ fn join_units(tokens: &[String]) -> String {
     out
 }
 
-fn accept_pair(heard: &str, corrected: &str) -> bool {
+fn accept_pair(heard: &str, corrected: &str, core_heard: &str, core_corrected: &str) -> bool {
     let heard_plain = plain(heard);
     let corrected_plain = plain(corrected);
     if heard_plain.is_empty() || corrected_plain.is_empty() || heard_plain == corrected_plain {
@@ -211,6 +224,16 @@ fn accept_pair(heard: &str, corrected: &str) -> bool {
         }
         if cjk_alone(&heard_plain) || cjk_alone(&corrected_plain) {
             return false;
+        }
+        if one_cjk_char(core_heard) && one_cjk_char(core_corrected) {
+            let stopped = core_heard.chars().any(|ch| CJK_STOP.contains(ch))
+                || core_corrected.chars().any(|ch| CJK_STOP.contains(ch));
+            let homophone = pinyin_key(core_heard) == pinyin_key(core_corrected)
+                && !pinyin_key(core_heard).is_empty()
+                && differ_only_in_one_char(&heard_plain, &corrected_plain);
+            if stopped || homophone {
+                return false;
+            }
         }
         if heard_len.abs_diff(corrected_len) > 1 {
             return false;
@@ -286,11 +309,23 @@ fn cjk_alone(text: &str) -> bool {
 
 const CJK_STOP: &str = "的得地他她它在再做作那哪了是和不为有我你这着过把被让给从以而也就都还很把么吗呢吧啊呀哦嗯与或及其则又并但因所以如果然后已经没有什么一个这个那个他们她们它们自己可以因为所以如果";
 
+fn one_cjk_char(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!((chars.next(), chars.next()), (Some(ch), None) if is_cjk(ch))
+}
+
+fn differ_only_in_one_char(left: &str, right: &str) -> bool {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    left.len() == right.len()
+        && !left.is_empty()
+        && left.iter().zip(right.iter()).filter(|(a, b)| a != b).count() == 1
+}
+
 fn looks_like_term(text: &str) -> bool {
-    let has_upper = text.chars().any(|ch| ch.is_uppercase());
-    let has_lower = text.chars().any(|ch| ch.is_lowercase());
     let has_digit = text.chars().any(|ch| ch.is_ascii_digit());
-    has_digit || has_upper || (has_upper && has_lower)
+    let upper_after_first = text.chars().skip(1).any(|ch| ch.is_uppercase());
+    has_digit || upper_after_first
 }
 
 fn common_english_pair(heard: &str, corrected: &str) -> bool {
@@ -489,6 +524,22 @@ mod tests {
         assert!(term_replacements("他", "她").is_empty());
         assert!(term_replacements("的", "得").is_empty());
         assert!(term_replacements("their", "there").is_empty());
+        assert!(term_replacements("他说好", "她说好").is_empty());
+        assert!(term_replacements("做的好", "做得好").is_empty());
+        assert!(term_replacements("我的书", "我得书").is_empty());
+        assert!(term_replacements("Their", "There").is_empty());
+    }
+
+    #[test]
+    fn a_widened_function_character_is_rejected_and_a_two_character_term_is_kept() {
+        assert!(term_replacements("他说好", "她说好").is_empty());
+        assert!(term_replacements("做的好", "做得好").is_empty());
+        assert!(term_replacements("我的书", "我得书").is_empty());
+        assert!(term_replacements("Their", "There").is_empty());
+        assert_eq!(
+            term_replacements("甲乙", "甲丁"),
+            vec![("甲乙".into(), "甲丁".into())]
+        );
     }
 
     #[test]

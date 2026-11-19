@@ -2387,6 +2387,13 @@ fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget
     std::thread::Builder::new()
         .name("newtype-correction".into())
         .spawn(move || {
+            struct ReleaseUia;
+            impl Drop for ReleaseUia {
+                fn drop(&mut self) {
+                    focus::release_uia_cache();
+                }
+            }
+            let _release_uia = ReleaseUia;
             let started = std::time::Instant::now();
             let mut noted = std::collections::HashSet::new();
             let mut previous = String::new();
@@ -2447,9 +2454,11 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
                     continue;
                 }
                 let mut created = false;
+                let mut alias_added = false;
                 if let Some(word) = settings.hotwords.iter_mut().find(|word| word.canonical == item.corrected) {
                     if !word.aliases.iter().any(|alias| alias == &item.heard) {
                         word.aliases.push(item.heard.clone());
+                        alias_added = true;
                         added += 1;
                     }
                 } else {
@@ -2459,6 +2468,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
                         pattern: String::new(),
                     });
                     created = true;
+                    alias_added = true;
                     added += 1;
                 }
                 if !settings.auto_added.iter().any(|term| term == &item.corrected) {
@@ -2470,7 +2480,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
                     slot.state = "added".into();
                 }
                 if let Ok(mut last) = LAST_CORRECTION.lock() {
-                    *last = Some((item.heard, item.corrected, created));
+                    *last = Some((item.heard, item.corrected, created, alias_added));
                 }
             }
         }
@@ -2481,13 +2491,21 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
     }
     crate::diag::record(&format!("corrections added {added}"));
     if added > 0 {
-        let message = crate::locale::pick(
-            format!("Added {added} correction(s) · Undo"),
-            format!("已加入 {added} 个纠正 · 撤销"),
-        );
-        emit_phase(app, "inserted", "", &message, 0, 0.0, "undo");
-        show_indicator(app);
-        schedule_hide(app, 4000);
+        let phase = app
+            .state::<Dictation>()
+            .phase
+            .lock()
+            .map(|phase| phase.clone())
+            .unwrap_or_default();
+        if !matches!(phase.as_str(), "starting" | "recording" | "processing") {
+            let message = crate::locale::pick(
+                format!("Added {added} correction(s) · Undo"),
+                format!("已加入 {added} 个纠正 · 撤销"),
+            );
+            emit_phase(app, "inserted", "", &message, 0, 0.0, "undo");
+            show_indicator(app);
+            schedule_hide(app, 4000);
+        }
         let _ = app.emit(
             "dictation://correction",
             serde_json::json!({ "added": added, "undo": true }),
@@ -2495,7 +2513,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
     }
 }
 
-static LAST_CORRECTION: std::sync::Mutex<Option<(String, String, bool)>> = std::sync::Mutex::new(None);
+static LAST_CORRECTION: std::sync::Mutex<Option<(String, String, bool, bool)>> = std::sync::Mutex::new(None);
 
 pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: &str) -> Result<(), String> {
     let state = app.state::<Dictation>();
@@ -2528,13 +2546,15 @@ pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: 
         }
         "undo" => {
             let pair = LAST_CORRECTION.lock().expect("undo").take();
-            if let Some((heard, corrected, created)) = pair {
-                if created {
+            if let Some((heard, corrected, created, alias_added)) = pair {
+                if alias_added {
                     for word in &mut settings.hotwords {
                         if word.canonical == corrected {
                             word.aliases.retain(|alias| alias != &heard);
                         }
                     }
+                }
+                if created {
                     settings.hotwords.retain(|word| {
                         !(word.canonical == corrected && word.aliases.is_empty() && word.pattern.is_empty())
                     });

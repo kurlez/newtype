@@ -56,6 +56,8 @@ pub struct FocusTarget {
     pub app: String,
     /// macOS: retained AXUIElement. Zero everywhere else.
     ax: usize,
+    /// Windows UI Automation runtime id of the focused element. Empty elsewhere.
+    pub runtime_id: Vec<i32>,
 }
 
 impl FocusTarget {
@@ -67,6 +69,7 @@ impl FocusTarget {
             thread_id,
             app: safe_app(&app.into()),
             ax: 0,
+            runtime_id: Vec::new(),
         }
     }
 
@@ -88,8 +91,14 @@ impl Clone for FocusTarget {
             thread_id: self.thread_id,
             app: self.app.clone(),
             ax: self.ax,
+            runtime_id: self.runtime_id.clone(),
         }
     }
+}
+
+pub fn release_uia_cache() {
+    #[cfg(target_os = "windows")]
+    windows::release_uia_cache();
 }
 
 impl Drop for FocusTarget {
@@ -368,6 +377,248 @@ mod windows {
         GUITHREADINFO, ASFW_ANY, SW_SHOW,
     };
 
+    thread_local! {
+        static AUTOMATION: std::cell::Cell<*mut std::ffi::c_void> =
+            const { std::cell::Cell::new(std::ptr::null_mut()) };
+        static COM_OWNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn release_uia_cache() {
+        #[link(name = "ole32")]
+        extern "system" {
+            fn CoUninitialize();
+        }
+        let pointer = AUTOMATION.with(|slot| slot.replace(std::ptr::null_mut()));
+        if !pointer.is_null() {
+            unsafe { com_release(pointer) };
+        }
+        if COM_OWNED.with(|slot| slot.replace(false)) {
+            unsafe { CoUninitialize() };
+        }
+    }
+
+    fn focused_runtime_id() -> Vec<i32> {
+        unsafe {
+            let automation = automation_pointer();
+            if automation.is_null() {
+                return Vec::new();
+            }
+            let table = *(automation as *const *const usize);
+            let get_focused: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*table.add(8));
+            let mut element = std::ptr::null_mut();
+            if get_focused(automation, &mut element) < 0 || element.is_null() {
+                return Vec::new();
+            }
+            let id = element_runtime_id(element);
+            com_release(element);
+            id
+        }
+    }
+
+    fn automation_pointer() -> *mut std::ffi::c_void {
+        #[repr(C)]
+        struct Guid {
+            data1: u32,
+            data2: u16,
+            data3: u16,
+            data4: [u8; 8],
+        }
+        const CLSID_CUIAUTOMATION: Guid = Guid {
+            data1: 0xff48dba4,
+            data2: 0x60ef,
+            data3: 0x4201,
+            data4: [0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e],
+        };
+        const IID_IUIAUTOMATION: Guid = Guid {
+            data1: 0x30cbe57d,
+            data2: 0xd9d0,
+            data3: 0x452a,
+            data4: [0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee],
+        };
+        #[link(name = "ole32")]
+        extern "system" {
+            fn CoInitializeEx(reserved: *mut std::ffi::c_void, model: u32) -> i32;
+            fn CoCreateInstance(
+                clsid: *const Guid,
+                outer: *mut std::ffi::c_void,
+                context: u32,
+                iid: *const Guid,
+                out: *mut *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        let existing = AUTOMATION.with(|slot| slot.get());
+        if !existing.is_null() {
+            return existing;
+        }
+        unsafe {
+            // COINIT_MULTITHREADED. S_OK means this thread must call CoUninitialize.
+            let started = CoInitializeEx(std::ptr::null_mut(), 0);
+            if started == 0 {
+                COM_OWNED.with(|slot| slot.set(true));
+            }
+            let mut created = std::ptr::null_mut();
+            let hr = CoCreateInstance(
+                &CLSID_CUIAUTOMATION,
+                std::ptr::null_mut(),
+                1,
+                &IID_IUIAUTOMATION,
+                &mut created,
+            );
+            if hr < 0 || created.is_null() {
+                return std::ptr::null_mut();
+            }
+            AUTOMATION.with(|slot| slot.set(created));
+            created
+        }
+    }
+
+    unsafe fn com_release(ptr: *mut std::ffi::c_void) {
+        if ptr.is_null() {
+            return;
+        }
+        let table = *(ptr as *const *const usize);
+        let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+            std::mem::transmute(*table.add(2));
+        release(ptr);
+    }
+
+    fn element_runtime_id(element: *mut std::ffi::c_void) -> Vec<i32> {
+        if element.is_null() {
+            return Vec::new();
+        }
+        #[link(name = "oleaut32")]
+        extern "system" {
+            fn SafeArrayGetLBound(array: *mut std::ffi::c_void, dim: u32, bound: *mut i32) -> i32;
+            fn SafeArrayGetUBound(array: *mut std::ffi::c_void, dim: u32, bound: *mut i32) -> i32;
+            fn SafeArrayAccessData(array: *mut std::ffi::c_void, data: *mut *mut std::ffi::c_void) -> i32;
+            fn SafeArrayUnaccessData(array: *mut std::ffi::c_void) -> i32;
+            fn SafeArrayDestroy(array: *mut std::ffi::c_void) -> i32;
+        }
+        unsafe {
+            let table = *(element as *const *const usize);
+            let get_runtime: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*table.add(4));
+            let mut array = std::ptr::null_mut();
+            if get_runtime(element, &mut array) < 0 || array.is_null() {
+                return Vec::new();
+            }
+            let mut lower = 0i32;
+            let mut upper = -1i32;
+            if SafeArrayGetLBound(array, 1, &mut lower) < 0 || SafeArrayGetUBound(array, 1, &mut upper) < 0 || upper < lower {
+                SafeArrayDestroy(array);
+                return Vec::new();
+            }
+            let mut data = std::ptr::null_mut();
+            if SafeArrayAccessData(array, &mut data) < 0 || data.is_null() {
+                SafeArrayDestroy(array);
+                return Vec::new();
+            }
+            let count = (upper - lower + 1) as usize;
+            let values = std::slice::from_raw_parts(data as *const i32, count).to_vec();
+            SafeArrayUnaccessData(array);
+            SafeArrayDestroy(array);
+            values
+        }
+    }
+
+    fn owning_window(automation: *mut std::ffi::c_void, element: *mut std::ffi::c_void) -> u64 {
+        if automation.is_null() || element.is_null() {
+            return 0;
+        }
+        unsafe {
+            if let Some(hwnd) = native_window(element) {
+                if hwnd != 0 {
+                    return hwnd;
+                }
+            }
+            let table = *(automation as *const *const usize);
+            let raw_walker: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*table.add(16));
+            let mut walker = std::ptr::null_mut();
+            if raw_walker(automation, &mut walker) < 0 || walker.is_null() {
+                return 0;
+            }
+            let walker_table = *(walker as *const *const usize);
+            let parent_of: unsafe extern "system" fn(
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *mut *mut std::ffi::c_void,
+            ) -> i32 = std::mem::transmute(*walker_table.add(3));
+            let mut current = std::ptr::null_mut();
+            if parent_of(walker, element, &mut current) < 0 {
+                com_release(walker);
+                return 0;
+            }
+            let mut found = 0u64;
+            for _ in 0..12 {
+                if current.is_null() {
+                    break;
+                }
+                if let Some(hwnd) = native_window(current) {
+                    if hwnd != 0 {
+                        found = hwnd;
+                        com_release(current);
+                        break;
+                    }
+                }
+                let mut parent = std::ptr::null_mut();
+                let hr = parent_of(walker, current, &mut parent);
+                com_release(current);
+                if hr < 0 {
+                    break;
+                }
+                current = parent;
+            }
+            if !current.is_null() && found == 0 {
+                com_release(current);
+            }
+            com_release(walker);
+            found
+        }
+    }
+
+    fn native_window(element: *mut std::ffi::c_void) -> Option<u64> {
+        #[repr(C)]
+        struct Variant {
+            vt: u16,
+            reserved1: u16,
+            reserved2: u16,
+            reserved3: u16,
+            data: [u64; 2],
+        }
+        #[link(name = "oleaut32")]
+        extern "system" {
+            fn VariantClear(variant: *mut Variant);
+        }
+        unsafe {
+            let table = *(element as *const *const usize);
+            let get_property: unsafe extern "system" fn(*mut std::ffi::c_void, i32, *mut Variant) -> i32 =
+                std::mem::transmute(*table.add(10));
+            let mut handle = Variant {
+                vt: 0,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+                data: [0, 0],
+            };
+            let hr = get_property(element, 30020, &mut handle);
+            let hwnd = if hr >= 0 && (handle.vt == 3 || handle.vt == 22) {
+                Some(handle.data[0] as u32 as u64)
+            } else {
+                None
+            };
+            VariantClear(&mut handle);
+            hwnd
+        }
+    }
+
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
     pub fn front_pid() -> Option<u32> {
@@ -398,13 +649,15 @@ mod windows {
                 hwnd
             };
             let app = process_name(pid).or_else(|| class_name(hwnd));
-            Some(FocusTarget::from_parts(
+            let mut target = FocusTarget::from_parts(
                 pid,
                 hwnd as usize as u64,
                 focused as usize as u64,
                 thread,
                 app.unwrap_or_else(|| "unknown".to_string()),
-            ))
+            );
+            target.runtime_id = focused_runtime_id();
+            Some(target)
         }
     }
 
@@ -522,14 +775,6 @@ mod windows {
     /// A failure falls through to the Edit/RichEdit reader.
     fn uia_focused_text(target: &FocusTarget) -> Option<String> {
         #[repr(C)]
-        struct Guid {
-            data1: u32,
-            data2: u16,
-            data3: u16,
-            data4: [u8; 8],
-        }
-        // Same layout as the windows crate VARIANT: 8-byte header plus a 16-byte value.
-        #[repr(C)]
         struct Variant {
             vt: u16,
             reserved1: u16,
@@ -537,33 +782,10 @@ mod windows {
             reserved3: u16,
             data: [u64; 2],
         }
-        const CLSID_CUIAUTOMATION: Guid = Guid {
-            data1: 0xff48dba4,
-            data2: 0x60ef,
-            data3: 0x4201,
-            data4: [0xaa, 0x87, 0x54, 0x10, 0x3e, 0xef, 0x59, 0x4e],
-        };
-        const IID_IUIAUTOMATION: Guid = Guid {
-            data1: 0x30cbe57d,
-            data2: 0xd9d0,
-            data3: 0x452a,
-            data4: [0xab, 0x13, 0x7a, 0xc5, 0xac, 0x48, 0x25, 0xee],
-        };
         const UIA_VALUE_PATTERN: i32 = 10002;
         const UIA_IS_PASSWORD: i32 = 30019;
         const VT_BOOL: u16 = 11;
 
-        #[link(name = "ole32")]
-        extern "system" {
-            fn CoInitializeEx(reserved: *mut std::ffi::c_void, model: u32) -> i32;
-            fn CoCreateInstance(
-                clsid: *const Guid,
-                outer: *mut std::ffi::c_void,
-                context: u32,
-                iid: *const Guid,
-                out: *mut *mut std::ffi::c_void,
-            ) -> i32;
-        }
         #[link(name = "oleaut32")]
         extern "system" {
             fn SysStringLen(bstr: *const u16) -> u32;
@@ -571,52 +793,8 @@ mod windows {
             fn VariantClear(variant: *mut Variant);
         }
 
-        fn empty_variant() -> Variant {
-            Variant {
-                vt: 0,
-                reserved1: 0,
-                reserved2: 0,
-                reserved3: 0,
-                data: [0, 0],
-            }
-        }
-
-        unsafe fn release(ptr: *mut std::ffi::c_void) {
-            if ptr.is_null() {
-                return;
-            }
-            let table = *(ptr as *const *const usize);
-            let release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
-                std::mem::transmute(*table.add(2));
-            release(ptr);
-        }
-
-        thread_local! {
-            static AUTOMATION: std::cell::Cell<*mut std::ffi::c_void> =
-                const { std::cell::Cell::new(std::ptr::null_mut()) };
-        }
-
         unsafe {
-            let automation = AUTOMATION.with(|slot| {
-                let existing = slot.get();
-                if !existing.is_null() {
-                    return existing;
-                }
-                let _ = CoInitializeEx(std::ptr::null_mut(), 2);
-                let mut created = std::ptr::null_mut();
-                let hr = CoCreateInstance(
-                    &CLSID_CUIAUTOMATION,
-                    std::ptr::null_mut(),
-                    1,
-                    &IID_IUIAUTOMATION,
-                    &mut created,
-                );
-                if hr < 0 || created.is_null() {
-                    return std::ptr::null_mut();
-                }
-                slot.set(created);
-                created
-            });
+            let automation = automation_pointer();
             if automation.is_null() {
                 return None;
             }
@@ -633,31 +811,32 @@ mod windows {
             let element_table = *(element as *const *const usize);
             let get_property: unsafe extern "system" fn(*mut std::ffi::c_void, i32, *mut Variant) -> i32 =
                 std::mem::transmute(*element_table.add(10));
-            let mut password = empty_variant();
+            let mut password = Variant {
+                vt: 0,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+                data: [0, 0],
+            };
             let hr = get_property(element, UIA_IS_PASSWORD, &mut password);
             let is_password = hr >= 0 && password.vt == VT_BOOL && (password.data[0] as u16) != 0;
             VariantClear(&mut password);
             if is_password {
-                release(element);
+                com_release(element);
                 return None;
             }
-            let mut handle = empty_variant();
-            let hr = get_property(element, 30020, &mut handle);
-            let hwnd = if hr >= 0 && handle.vt == 3 {
-                handle.data[0] as u32 as u64
-            } else {
-                0
-            };
-            VariantClear(&mut handle);
-            let mut runtime = empty_variant();
-            let _ = get_property(element, 30000, &mut runtime);
-            let runtime_id = runtime.data[0];
-            VariantClear(&mut runtime);
-            let same_window = target.control == 0 || (hwnd != 0 && hwnd == target.control);
-            let same_runtime = target.control == 0 || (hwnd == 0 && runtime_id != 0 && runtime_id == target.control);
-            if !same_window && !same_runtime {
-                release(element);
+            let runtime = element_runtime_id(element);
+            let same_element = !target.runtime_id.is_empty() && runtime == target.runtime_id;
+            if !target.runtime_id.is_empty() && !same_element {
+                com_release(element);
                 return None;
+            }
+            if target.runtime_id.is_empty() && (target.control != 0 || target.window != 0) {
+                let owner = owning_window(automation, element);
+                if owner == 0 || (owner != target.control && owner != target.window) {
+                    com_release(element);
+                    return None;
+                }
             }
             let get_pattern: unsafe extern "system" fn(
                 *mut std::ffi::c_void,
@@ -666,7 +845,7 @@ mod windows {
             ) -> i32 = std::mem::transmute(*element_table.add(16));
             let mut pattern = std::ptr::null_mut();
             let hr = get_pattern(element, UIA_VALUE_PATTERN, &mut pattern);
-            release(element);
+            com_release(element);
             if hr < 0 || pattern.is_null() {
                 return None;
             }
@@ -675,7 +854,7 @@ mod windows {
                 std::mem::transmute(*pattern_table.add(4));
             let mut bstr = std::ptr::null_mut();
             let hr = current_value(pattern, &mut bstr);
-            release(pattern);
+            com_release(pattern);
             if hr < 0 || bstr.is_null() {
                 return None;
             }

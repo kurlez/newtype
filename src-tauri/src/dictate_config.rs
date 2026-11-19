@@ -387,19 +387,6 @@ pub fn merge_ui_settings(
     if let Some(words) = obj.get("hotwords") {
         next.hotwords = serde_json::from_value(words.clone())
             .map_err(|err| format!("Could not read the dictionary in this save: {err}"))?;
-        let kept: Vec<String> = next.hotwords.iter().map(|word| word.canonical.clone()).collect();
-        let removed_now: Vec<String> = next
-            .auto_added
-            .iter()
-            .filter(|term| !kept.iter().any(|canonical| canonical == *term))
-            .cloned()
-            .collect();
-        next.auto_added.retain(|term| kept.iter().any(|canonical| canonical == term));
-        for term in removed_now {
-            if !next.auto_removed.iter().any(|existing| existing == &term) {
-                next.auto_removed.push(term);
-            }
-        }
     }
     if let Some(removed) = obj.get("removedAutoAdded").and_then(|value| value.as_array()) {
         for term in removed.iter().filter_map(|value| value.as_str()) {
