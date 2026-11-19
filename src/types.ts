@@ -50,6 +50,7 @@ export interface DictationSettings {
   indicatorPlace: string;
   groqRateLimitFallback: boolean;
   sounds: boolean;
+  hideIndicatorFullscreen: boolean;
   uiLanguage: string;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];
