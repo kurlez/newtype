@@ -487,7 +487,7 @@ mod windows {
     }
 
     pub fn field_text(target: &FocusTarget) -> Option<String> {
-        if let Some(text) = uia_focused_text() {
+        if let Some(text) = uia_focused_text(target) {
             return Some(text);
         }
         unsafe {
@@ -520,7 +520,7 @@ mod windows {
 
     /// Focused control via UI Automation ValuePattern. Password fields return nothing.
     /// A failure falls through to the Edit/RichEdit reader.
-    fn uia_focused_text() -> Option<String> {
+    fn uia_focused_text(target: &FocusTarget) -> Option<String> {
         #[repr(C)]
         struct Guid {
             data1: u32,
@@ -528,13 +528,14 @@ mod windows {
             data3: u16,
             data4: [u8; 8],
         }
+        // Same layout as the windows crate VARIANT: 8-byte header plus a 16-byte value.
         #[repr(C)]
         struct Variant {
             vt: u16,
             reserved1: u16,
             reserved2: u16,
             reserved3: u16,
-            data: u64,
+            data: [u64; 2],
         }
         const CLSID_CUIAUTOMATION: Guid = Guid {
             data1: 0xff48dba4,
@@ -562,12 +563,22 @@ mod windows {
                 iid: *const Guid,
                 out: *mut *mut std::ffi::c_void,
             ) -> i32;
-            fn CoUninitialize();
         }
         #[link(name = "oleaut32")]
         extern "system" {
             fn SysStringLen(bstr: *const u16) -> u32;
             fn SysFreeString(bstr: *const u16);
+            fn VariantClear(variant: *mut Variant);
+        }
+
+        fn empty_variant() -> Variant {
+            Variant {
+                vt: 0,
+                reserved1: 0,
+                reserved2: 0,
+                reserved3: 0,
+                data: [0, 0],
+            }
         }
 
         unsafe fn release(ptr: *mut std::ffi::c_void) {
@@ -580,20 +591,33 @@ mod windows {
             release(ptr);
         }
 
+        thread_local! {
+            static AUTOMATION: std::cell::Cell<*mut std::ffi::c_void> =
+                const { std::cell::Cell::new(std::ptr::null_mut()) };
+        }
+
         unsafe {
-            let started = CoInitializeEx(std::ptr::null_mut(), 2);
-            let mut automation = std::ptr::null_mut();
-            let hr = CoCreateInstance(
-                &CLSID_CUIAUTOMATION,
-                std::ptr::null_mut(),
-                1,
-                &IID_IUIAUTOMATION,
-                &mut automation,
-            );
-            if hr < 0 || automation.is_null() {
-                if started == 0 {
-                    CoUninitialize();
+            let automation = AUTOMATION.with(|slot| {
+                let existing = slot.get();
+                if !existing.is_null() {
+                    return existing;
                 }
+                let _ = CoInitializeEx(std::ptr::null_mut(), 2);
+                let mut created = std::ptr::null_mut();
+                let hr = CoCreateInstance(
+                    &CLSID_CUIAUTOMATION,
+                    std::ptr::null_mut(),
+                    1,
+                    &IID_IUIAUTOMATION,
+                    &mut created,
+                );
+                if hr < 0 || created.is_null() {
+                    return std::ptr::null_mut();
+                }
+                slot.set(created);
+                created
+            });
+            if automation.is_null() {
                 return None;
             }
             let table = *(automation as *const *const usize);
@@ -603,29 +627,36 @@ mod windows {
             ) -> i32 = std::mem::transmute(*table.add(8));
             let mut element = std::ptr::null_mut();
             let hr = get_focused(automation, &mut element);
-            release(automation);
             if hr < 0 || element.is_null() {
-                if started == 0 {
-                    CoUninitialize();
-                }
                 return None;
             }
             let element_table = *(element as *const *const usize);
             let get_property: unsafe extern "system" fn(*mut std::ffi::c_void, i32, *mut Variant) -> i32 =
                 std::mem::transmute(*element_table.add(10));
-            let mut password = Variant {
-                vt: 0,
-                reserved1: 0,
-                reserved2: 0,
-                reserved3: 0,
-                data: 0,
-            };
+            let mut password = empty_variant();
             let hr = get_property(element, UIA_IS_PASSWORD, &mut password);
-            if hr >= 0 && password.vt == VT_BOOL && (password.data as u16) != 0 {
+            let is_password = hr >= 0 && password.vt == VT_BOOL && (password.data[0] as u16) != 0;
+            VariantClear(&mut password);
+            if is_password {
                 release(element);
-                if started == 0 {
-                    CoUninitialize();
-                }
+                return None;
+            }
+            let mut handle = empty_variant();
+            let hr = get_property(element, 30020, &mut handle);
+            let hwnd = if hr >= 0 && handle.vt == 3 {
+                handle.data[0] as u32 as u64
+            } else {
+                0
+            };
+            VariantClear(&mut handle);
+            let mut runtime = empty_variant();
+            let _ = get_property(element, 30000, &mut runtime);
+            let runtime_id = runtime.data[0];
+            VariantClear(&mut runtime);
+            let same_window = target.control == 0 || (hwnd != 0 && hwnd == target.control);
+            let same_runtime = target.control == 0 || (hwnd == 0 && runtime_id != 0 && runtime_id == target.control);
+            if !same_window && !same_runtime {
+                release(element);
                 return None;
             }
             let get_pattern: unsafe extern "system" fn(
@@ -637,9 +668,6 @@ mod windows {
             let hr = get_pattern(element, UIA_VALUE_PATTERN, &mut pattern);
             release(element);
             if hr < 0 || pattern.is_null() {
-                if started == 0 {
-                    CoUninitialize();
-                }
                 return None;
             }
             let pattern_table = *(pattern as *const *const usize);
@@ -648,9 +676,6 @@ mod windows {
             let mut bstr = std::ptr::null_mut();
             let hr = current_value(pattern, &mut bstr);
             release(pattern);
-            if started == 0 {
-                CoUninitialize();
-            }
             if hr < 0 || bstr.is_null() {
                 return None;
             }
@@ -762,10 +787,83 @@ mod macos {
         }
     }
 
+    fn app_identity(pid: u32) -> String {
+        if crate::overlay::is_main_thread() {
+            if let Some(bundle) = bundle_identifier(pid) {
+                return bundle;
+            }
+        }
+        process_path_name(pid).unwrap_or_else(|| format!("pid-{pid}"))
+    }
+
+    fn bundle_identifier(pid: u32) -> Option<String> {
+        unsafe {
+            let running = objc_class(c"NSRunningApplication");
+            if running.is_null() {
+                return None;
+            }
+            let app = msg_usize(
+                running,
+                c"runningApplicationWithProcessIdentifier:",
+                pid as usize,
+            );
+            if app.is_null() {
+                return None;
+            }
+            let bundle = msg0(app, c"bundleIdentifier");
+            if bundle.is_null() {
+                return None;
+            }
+            let text = ns_utf8(bundle);
+            if text.is_empty() { None } else { Some(text) }
+        }
+    }
+
+    fn process_path_name(pid: u32) -> Option<String> {
+        #[link(name = "proc", kind = "dylib")]
+        extern "C" {
+            fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
+        }
+        unsafe {
+            let mut buffer = [0u8; 1024];
+            let length = proc_pidpath(pid as i32, buffer.as_mut_ptr(), buffer.len() as u32);
+            if length <= 0 {
+                return None;
+            }
+            let end = (length as usize).min(buffer.len());
+            let path = String::from_utf8_lossy(&buffer[..end]).trim_end_matches('\0').to_string();
+            if let Some(app) = path.split('/').find(|part| part.ends_with(".app")) {
+                let name = app.trim_end_matches(".app");
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+            path.rsplit('/').next().filter(|name| !name.is_empty()).map(|name| name.to_string())
+        }
+    }
+
+    fn ns_utf8(value: *mut std::ffi::c_void) -> String {
+        #[link(name = "objc", kind = "dylib")]
+        extern "C" {
+            fn sel_registerName(name: *const i8) -> *mut std::ffi::c_void;
+            fn objc_msgSend();
+        }
+        unsafe {
+            let sel = sel_registerName(c"UTF8String".as_ptr());
+            let function: unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void) -> *const i8 =
+                std::mem::transmute(objc_msgSend as *const ());
+            let ptr = function(value, sel);
+            if ptr.is_null() {
+                return String::new();
+            }
+            std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    }
+
     pub fn capture() -> Option<FocusTarget> {
         let pid = front_pid()?;
         let ax = focused_element(pid as i32);
-        let mut target = FocusTarget::from_parts(pid, 0, 0, 0, format!("pid-{pid}"));
+        let mut target = FocusTarget::from_parts(pid, 0, 0, 0, app_identity(pid));
         target.ax = ax as usize;
         Some(target)
     }

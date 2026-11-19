@@ -352,6 +352,7 @@ function refreshChrome(): void {
 }
 
 function paint(): void {
+  rememberPaintedLearned();
   const host = document.querySelector("#dictate");
   if (!host) {
     return;
@@ -834,20 +835,31 @@ function formPatch(): Record<string, unknown> {
   };
 }
 
+let paintedAutoAdded: string[] = [];
+
+function rememberPaintedLearned(): void {
+  paintedAutoAdded = [...(snap.settings.autoAdded || [])];
+}
+
 async function save(): Promise<void> {
   readForm();
+  const baseline = [...paintedAutoAdded];
+  let removed = baseline.filter((term) => !snap.settings.hotwords.some((row) => row.canonical === term));
   try {
     const fresh = await call<Snapshot>("dictation_snapshot");
     const local = snap.settings.hotwords;
-    const learned = fresh.settings.hotwords.filter(
-      (word) => fresh.settings.autoAdded.includes(word.canonical) && !local.some((row) => row.canonical === word.canonical),
+    const learnedSince = fresh.settings.hotwords.filter(
+      (word) =>
+        fresh.settings.autoAdded.includes(word.canonical) &&
+        !baseline.includes(word.canonical) &&
+        !local.some((row) => row.canonical === word.canonical),
     );
-    snap.settings.hotwords = [...local, ...learned];
-    snap.settings.autoAdded = fresh.settings.autoAdded;
+    snap.settings.hotwords = [...local, ...learnedSince];
+    removed = baseline.filter((term) => !snap.settings.hotwords.some((row) => row.canonical === term));
   } catch {
     // Keep the form copy when the snapshot cannot be read.
   }
-  await persist(formPatch());
+  await persist({ ...formPatch(), removedAutoAdded: removed });
 }
 
 async function persist(patch: Record<string, unknown>): Promise<void> {

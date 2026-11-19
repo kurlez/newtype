@@ -14,6 +14,7 @@ export const previewSnapshot: Snapshot = {
     returnToField: true,
     autoAddCorrections: true,
     autoAdded: [],
+    autoRemoved: [],
     correctionSuggestions: [],
     thinking: "auto",
     microphone: "",

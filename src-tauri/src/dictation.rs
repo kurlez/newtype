@@ -2429,9 +2429,9 @@ fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget
 fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64) {
     let state = app.state::<Dictation>();
     let mut added = 0u32;
-    let _save = SETTINGS_SAVE.lock().expect("settings save");
     {
         let mut settings = state.settings.lock().expect("settings");
+        let _save = SETTINGS_SAVE.lock().expect("settings save");
         let before = settings.correction_suggestions.clone();
         crate::pipeline::corrections::note_seen(&mut settings.correction_suggestions, pairs, dictation);
         let changed = settings.correction_suggestions != before;
@@ -2443,15 +2443,22 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
                 .cloned()
                 .collect();
             for item in ready {
-                let already = settings.hotwords.iter().any(|word| {
-                    word.canonical == item.corrected && word.aliases.iter().any(|alias| alias == &item.heard)
-                });
-                if !already {
+                if settings.auto_removed.iter().any(|term| term == &item.corrected) {
+                    continue;
+                }
+                let mut created = false;
+                if let Some(word) = settings.hotwords.iter_mut().find(|word| word.canonical == item.corrected) {
+                    if !word.aliases.iter().any(|alias| alias == &item.heard) {
+                        word.aliases.push(item.heard.clone());
+                        added += 1;
+                    }
+                } else {
                     settings.hotwords.push(crate::pipeline::hotwords::Hotword {
                         canonical: item.corrected.clone(),
                         aliases: vec![item.heard.clone()],
                         pattern: String::new(),
                     });
+                    created = true;
                     added += 1;
                 }
                 if !settings.auto_added.iter().any(|term| term == &item.corrected) {
@@ -2463,7 +2470,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
                     slot.state = "added".into();
                 }
                 if let Ok(mut last) = LAST_CORRECTION.lock() {
-                    *last = Some((item.heard, item.corrected, !already));
+                    *last = Some((item.heard, item.corrected, created));
                 }
             }
         }
@@ -2474,9 +2481,16 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64
     }
     crate::diag::record(&format!("corrections added {added}"));
     if added > 0 {
+        let message = crate::locale::pick(
+            format!("Added {added} correction(s) · Undo"),
+            format!("已加入 {added} 个纠正 · 撤销"),
+        );
+        emit_phase(app, "inserted", "", &message, 0, 0.0, "undo");
+        show_indicator(app);
+        schedule_hide(app, 4000);
         let _ = app.emit(
             "dictation://correction",
-            serde_json::json!({ "added": added }),
+            serde_json::json!({ "added": added, "undo": true }),
         );
     }
 }
@@ -2515,12 +2529,12 @@ pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: 
         "undo" => {
             let pair = LAST_CORRECTION.lock().expect("undo").take();
             if let Some((heard, corrected, created)) = pair {
-                for word in &mut settings.hotwords {
-                    if word.canonical == corrected {
-                        word.aliases.retain(|alias| alias != &heard);
-                    }
-                }
                 if created {
+                    for word in &mut settings.hotwords {
+                        if word.canonical == corrected {
+                            word.aliases.retain(|alias| alias != &heard);
+                        }
+                    }
                     settings.hotwords.retain(|word| {
                         !(word.canonical == corrected && word.aliases.is_empty() && word.pattern.is_empty())
                     });

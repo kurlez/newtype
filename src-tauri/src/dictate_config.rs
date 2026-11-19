@@ -67,6 +67,9 @@ pub struct DictationSettings {
     /// Canonical spellings that were learned rather than typed.
     #[serde(default)]
     pub auto_added: Vec<String>,
+    /// Learned spellings the user deleted. They are not added again.
+    #[serde(default)]
+    pub auto_removed: Vec<String>,
     #[serde(default)]
     pub correction_suggestions: Vec<crate::pipeline::corrections::Suggestion>,
     pub thinking: String,
@@ -168,6 +171,7 @@ impl Default for DictationSettings {
             return_to_field: true,
             auto_add_corrections: true,
             auto_added: Vec::new(),
+            auto_removed: Vec::new(),
             correction_suggestions: Vec::new(),
             thinking: "auto".into(),
             microphone: String::new(),
@@ -383,6 +387,27 @@ pub fn merge_ui_settings(
     if let Some(words) = obj.get("hotwords") {
         next.hotwords = serde_json::from_value(words.clone())
             .map_err(|err| format!("Could not read the dictionary in this save: {err}"))?;
+        let kept: Vec<String> = next.hotwords.iter().map(|word| word.canonical.clone()).collect();
+        let removed_now: Vec<String> = next
+            .auto_added
+            .iter()
+            .filter(|term| !kept.iter().any(|canonical| canonical == *term))
+            .cloned()
+            .collect();
+        next.auto_added.retain(|term| kept.iter().any(|canonical| canonical == term));
+        for term in removed_now {
+            if !next.auto_removed.iter().any(|existing| existing == &term) {
+                next.auto_removed.push(term);
+            }
+        }
+    }
+    if let Some(removed) = obj.get("removedAutoAdded").and_then(|value| value.as_array()) {
+        for term in removed.iter().filter_map(|value| value.as_str()) {
+            next.auto_added.retain(|existing| existing != term);
+            if !next.auto_removed.iter().any(|existing| existing == term) {
+                next.auto_removed.push(term.to_string());
+            }
+        }
     }
     if let Some(providers) = obj.get("providers").and_then(|value| value.as_object()) {
         merge_provider_patch(&mut next, providers)?;

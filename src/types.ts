@@ -35,6 +35,7 @@ export interface DictationSettings {
   returnToField: boolean;
   autoAddCorrections: boolean;
   autoAdded: string[];
+  autoRemoved: string[];
   correctionSuggestions: CorrectionSuggestion[];
   thinking: string;
   microphone: string;
