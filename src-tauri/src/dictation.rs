@@ -277,23 +277,6 @@ impl Dictation {
             apply_route_mode(&state, true);
         }
         spawn_probe(app.clone());
-        let warm_name = app
-            .state::<Dictation>()
-            .settings
-            .lock()
-            .expect("settings")
-            .microphone
-            .clone();
-        std::thread::Builder::new()
-            .name("newtype-mic-warm".into())
-            .spawn(move || {
-                if let Err(err) = audio::warm(&warm_name) {
-                    crate::diag::record(&format!("microphone warm failed: {err}"));
-                } else {
-                    crate::diag::record("microphone warm");
-                }
-            })
-            .ok();
         let state = app.state::<Dictation>();
         let rx = state.inbox.lock().expect("inbox").take();
         let control = state.control.clone();
@@ -654,26 +637,34 @@ fn spawn_listener(
             let on_edge = move |feed: crate::key_feed::Feed| -> bool {
                 let now = now_ms();
                 let edge = match feed {
-                    crate::key_feed::Feed::Tick(at) => {
+                    crate::key_feed::Feed::Resync(keys) => {
+                        if !capturing {
+                            for event in engine.release_physically_up(&keys) {
+                                let _ = control.send(Control::Engine(event));
+                            }
+                        }
+                        return false;
+                    }
+                    crate::key_feed::Feed::Tick(_at) => {
                         #[cfg(windows)]
-                        if !hook_noted && !crate::win_hotkey::hook_ready() {
-                            hook_noted = true;
-                            let message = crate::locale::text(
-                                "The hotkey hook is not installed. newtype will keep trying.",
-                                "快捷键钩子没有装上。newtype 会继续试。",
-                            );
-                            emit_phase(&status_app, "error", "", message, 0, 0.0, "");
-                            schedule_hide(&status_app, 4000);
+                        {
+                            let ready = crate::win_hotkey::hook_ready();
+                            if ready {
+                                hook_noted = false;
+                            } else if !hook_noted {
+                                hook_noted = true;
+                                let message = crate::locale::text(
+                                    "The hotkey hook is not installed. newtype will keep trying.",
+                                    "快捷键钩子没有装上。newtype 会继续试。",
+                                );
+                                emit_phase(&status_app, "error", "", message, 0, 0.0, "");
+                                show_indicator(&status_app);
+                            }
                         }
                         #[cfg(not(windows))]
                         {
                             let _ = hook_noted;
                             let _ = &status_app;
-                        }
-                        let outcome =
-                            engine.consume_timed(hotkey::KeyEdge::Up(hotkey::KeyId::Other), at);
-                        for event in outcome.events {
-                            let _ = control.send(Control::Engine(event));
                         }
                         return false;
                     }
@@ -762,26 +753,33 @@ fn spawn_listener(
                 }
             }
             #[cfg(target_os = "macos")]
-            crate::mac_hotkey::listen(|listening| {
-                if listening {
-                    set_listener(
-                        &app,
-                        &listener,
-                        crate::locale::text(
-                            "Listening for the right-hand Control key.",
-                            "正在监听右侧 Ctrl 键。",
-                        ),
-                    );
-                } else {
-                    let message = crate::locale::text(
-                        "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
-                        "快捷键监听在等待输入监视或辅助功能。它会再试。",
-                    );
-                    set_listener(&app, &listener, message);
-                    emit_phase(&app, "error", "", message, 0, 0.0, "");
-                    schedule_hide(&app, 4000);
-                }
-            });
+            {
+                let mut last_perm_overlay = 0u64;
+                crate::mac_hotkey::listen(|listening| {
+                    if listening {
+                        set_listener(
+                            &app,
+                            &listener,
+                            crate::locale::text(
+                                "Listening for the right-hand Control key.",
+                                "正在监听右侧 Ctrl 键。",
+                            ),
+                        );
+                    } else {
+                        let message = crate::locale::text(
+                            "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
+                            "快捷键监听在等待输入监视或辅助功能。它会再试。",
+                        );
+                        set_listener(&app, &listener, message);
+                        let now = now_ms();
+                        if now.saturating_sub(last_perm_overlay) >= 30_000 {
+                            last_perm_overlay = now;
+                            emit_phase(&app, "error", "", message, 0, 0.0, "");
+                            show_indicator(&app);
+                        }
+                    }
+                });
+            }
             #[cfg(not(any(windows, target_os = "macos")))]
             let listen_result = rdev::listen(move |event| {
                 let edge = match event.event_type {
@@ -816,7 +814,9 @@ fn spawn_listener(
 
 #[cfg(windows)]
 fn publish_swallow(bindings: &[(HotkeyMode, hotkey::Chord)]) {
-    hotkey::set_match_chords(bindings.iter().map(|(_, chord)| chord.clone()).collect());
+    let chords: Vec<hotkey::Chord> = bindings.iter().map(|(_, chord)| chord.clone()).collect();
+    hotkey::set_match_chords(chords.clone());
+    crate::win_hotkey::publish_chords(&chords);
 }
 
 fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {
@@ -1010,19 +1010,34 @@ fn apply(
         TalkEffect::Start(mode) => {
             if *busy {
                 talk.active = None;
-                emit_phase(
-                    app,
-                    "busy",
-                    route,
-                    crate::locale::text(
-                        "Still working on the last dictation.",
-                        "上一条口授还在处理。",
-                    ),
-                    0,
-                    0.0,
-                    "",
+                let hint = crate::locale::text(
+                    "Still working on the last dictation.",
+                    "上一条口授还在处理。",
                 );
-                schedule_hide(app, 1600);
+                emit_phase(app, "busy", route, hint, 0, 0.0, "");
+                show_indicator(app);
+                let restore = app.clone();
+                let route_back = route.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    let phase = restore
+                        .state::<Dictation>()
+                        .phase
+                        .lock()
+                        .map(|phase| phase.clone())
+                        .unwrap_or_default();
+                    if phase == "busy" {
+                        emit_phase(
+                            &restore,
+                            "processing",
+                            &route_back,
+                            crate::locale::text("Transcribing…", "转写中…"),
+                            0,
+                            0.0,
+                            "",
+                        );
+                    }
+                });
             } else {
                 begin_recording(app, control, talk, mic, route, started, mode);
             }
@@ -1273,6 +1288,7 @@ fn begin_recording(
                                 "",
                             );
                             let _ = control.send(Control::Abort);
+                            audio::reset();
                             schedule_hide(&app_loop, 3600);
                             break;
                         }
@@ -2167,35 +2183,30 @@ fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
     delivered
 }
 
+fn sounds_enabled(app: &AppHandle) -> bool {
+    app.state::<Dictation>()
+        .settings
+        .lock()
+        .map(|settings| settings.sounds)
+        .unwrap_or(true)
+}
+
 fn play_start_cue(app: &AppHandle) {
-    let play = || {
-        #[cfg(target_os = "macos")]
-        unsafe {
-            #[link(name = "AppKit", kind = "framework")]
-            extern "C" {
-                fn NSBeep();
-            }
-            NSBeep();
-        }
-        #[cfg(windows)]
-        unsafe {
-            #[link(name = "user32")]
-            extern "system" {
-                fn MessageBeep(kind: u32) -> i32;
-            }
-            MessageBeep(0);
+    if !sounds_enabled(app) {
+        return;
+    }
+    let queued = app.clone();
+    let play = move || {
+        if sounds_enabled(&queued) {
+            audio::play_start_tone();
         }
     };
     #[cfg(target_os = "macos")]
-    if !crate::overlay::is_main_thread() {
-        let _ = app.run_on_main_thread(play);
+    if crate::overlay::is_main_thread() {
+        play();
         return;
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-    }
-    play();
+    let _ = app.run_on_main_thread(play);
 }
 
 fn bump(app: &AppHandle) -> u64 {
@@ -2239,6 +2250,9 @@ fn emit_phase(
         },
     );
     show_indicator(app);
+    if matches!(phase, "starting" | "error" | "busy") {
+        show_indicator(app);
+    }
     if phase != "recording" {
         crate::tray::refresh_menu(app);
     }
@@ -2399,7 +2413,14 @@ fn show_floating(window: &tauri::WebviewWindow, reposition: bool) {
     // applied when the window is first shown or the layout changes, and
     // configure_indicator itself does nothing when the chrome already matches.
     // On macOS the show is orderFrontRegardless, not makeKeyAndOrderFront.
-    if reposition || !window.is_visible().unwrap_or(false) {
+    // Starting and errors force a show so a hidden overlay comes back.
+    let phase = window
+        .app_handle()
+        .try_state::<Dictation>()
+        .and_then(|state| state.phase.lock().ok().map(|phase| phase.clone()))
+        .unwrap_or_default();
+    let force = matches!(phase.as_str(), "starting" | "error" | "busy");
+    if reposition || force || !window.is_visible().unwrap_or(false) {
         place(window);
         crate::overlay::configure_indicator(window);
         crate::overlay::show_without_activating(window);

@@ -78,11 +78,18 @@ pub struct DictationSettings {
     /// `taskbar` (Windows default), `floating`, or `hidden`.
     #[serde(default = "default_indicator_place")]
     pub indicator_place: String,
+    /// Play the short start tone when the microphone begins delivering samples.
+    #[serde(default = "default_true")]
+    pub sounds: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
 
 fn default_window_translucent() -> bool {
+    true
+}
+
+pub fn default_true() -> bool {
     true
 }
 
@@ -156,6 +163,7 @@ impl Default for DictationSettings {
             groq_rate_limit_fallback: true,
             ui_language: "auto".into(),
             indicator_place: default_indicator_place(),
+            sounds: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -324,6 +332,9 @@ pub fn merge_ui_settings(
     assign_text(obj, "indicatorPlace", &mut next.indicator_place, true);
     if let Some(value) = obj.get("windowTranslucent").and_then(|value| value.as_bool()) {
         next.window_translucent = value;
+    }
+    if let Some(value) = obj.get("sounds").and_then(|value| value.as_bool()) {
+        next.sounds = value;
     }
     if let Some(value) = obj
         .get("groqRateLimitFallback")

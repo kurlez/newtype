@@ -36,6 +36,7 @@ export interface DictationSettings {
   windowTranslucent: boolean;
   indicatorPlace: string;
   groqRateLimitFallback: boolean;
+  sounds: boolean;
   uiLanguage: string;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];

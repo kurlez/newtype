@@ -117,9 +117,7 @@ fn dispatch(rx: Receiver<TapMsg>) {
             TapMsg::Reenabled => crate::diag::record("hotkey event tap re-enabled"),
             TapMsg::Tick => {
                 let flags = unsafe { CGEventSourceFlagsState(1) };
-                for key in hotkey::mac_modifiers_physically_up(flags) {
-                    let _ = crate::key_feed::push(KeyEdge::Up(key), false);
-                }
+                crate::key_feed::resync(hotkey::mac_modifiers_physically_up(flags));
                 crate::key_feed::tick(now_ms());
             }
         }

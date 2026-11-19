@@ -37,9 +37,98 @@ static TX: OnceLock<SyncSender<HookEvent>> = OnceLock::new();
 static LAST_CALLBACK_MS: AtomicU64 = AtomicU64::new(0);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
 static HOOK_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MODS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RULE_COUNT: AtomicU32 = AtomicU32::new(0);
+static RULES: [AtomicU64; 8] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+static SWALLOW: [AtomicU32; 8] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
 
 pub fn hook_ready() -> bool {
     HOOK_READY.load(Ordering::Relaxed)
+}
+
+pub fn publish_chords(chords: &[hotkey::Chord]) {
+    let rules = hotkey::swallow_rules(chords);
+    for (index, rule) in rules.iter().take(RULES.len()).enumerate() {
+        let packed = (u64::from(rule.mods) << 32) | u64::from(rule.vk);
+        RULES[index].store(packed, Ordering::Relaxed);
+    }
+    RULE_COUNT.store(rules.len().min(RULES.len()) as u32, Ordering::Release);
+}
+
+fn mark_swallowed(vk: u32) {
+    if vk >= 256 {
+        return;
+    }
+    let slot = &SWALLOW[(vk / 32) as usize];
+    slot.fetch_or(1u32 << (vk % 32), Ordering::Relaxed);
+}
+
+fn take_swallowed(vk: u32) -> bool {
+    if vk >= 256 {
+        return false;
+    }
+    let slot = &SWALLOW[(vk / 32) as usize];
+    let bit = 1u32 << (vk % 32);
+    let previous = slot.fetch_and(!bit, Ordering::Relaxed);
+    previous & bit != 0
+}
+
+fn note_modifier(event: &HookEvent) {
+    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
+        return;
+    }
+    let Some(bit) = hotkey::windows_modifier_bit(event.vk) else {
+        return;
+    };
+    if event.up {
+        MODS.fetch_and(!bit, Ordering::Relaxed);
+    } else {
+        MODS.fetch_or(bit, Ordering::Relaxed);
+    }
+}
+
+fn chord_matches(mods: u32, vk: u32) -> bool {
+    let count = RULE_COUNT.load(Ordering::Acquire) as usize;
+    for rule in RULES.iter().take(count) {
+        let packed = rule.load(Ordering::Relaxed);
+        let rule_vk = packed as u32;
+        let rule_mods = (packed >> 32) as u32;
+        if rule_vk == vk && rule_mods == mods {
+            return true;
+        }
+    }
+    false
+}
+
+fn should_swallow_down(event: &HookEvent) -> bool {
+    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
+        return hotkey::os_capture() || hotkey::altgr_bound();
+    }
+    if hotkey::os_capture() {
+        return true;
+    }
+    if hotkey::session_keys() && matches!(event.vk, 0x0D | 0x1B) {
+        return true;
+    }
+    chord_matches(MODS.load(Ordering::Relaxed), event.vk)
 }
 
 #[derive(Clone, Copy)]
@@ -66,7 +155,7 @@ pub fn run() -> Result<(), String> {
 
 fn deliver(event: HookEvent) {
     if event.vk == 0 && event.scan == 0 && !event.up {
-        sync_released_modifiers();
+        crate::key_feed::resync(modifiers_physically_up());
         crate::key_feed::tick(now_ms());
         return;
     }
@@ -79,16 +168,20 @@ fn deliver(event: HookEvent) {
     let _ = crate::key_feed::push(edge, false);
 }
 
-fn sync_released_modifiers() {
+fn modifiers_physically_up() -> Vec<hotkey::KeyId> {
+    let mut up = Vec::new();
     for vk in MODIFIER_VKS {
         let down = unsafe { GetAsyncKeyState(vk) } < 0;
         if down {
             continue;
         }
         if let Some(edge) = hotkey::edge_from_windows(vk as u32, 0, LLKHF_UP, true) {
-            let _ = crate::key_feed::push(edge, false);
+            if let hotkey::KeyEdge::Up(key) = edge {
+                up.push(key);
+            }
         }
     }
+    up
 }
 
 fn hook_thread() {
@@ -194,15 +287,22 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         if let Some(event) = raw_event(wparam, lparam) {
             LAST_CALLBACK_MS.store(now_ms(), Ordering::Relaxed);
+            note_modifier(&event);
+            let swallow = if event.up {
+                take_swallowed(event.vk)
+            } else {
+                let swallow = should_swallow_down(&event);
+                if swallow {
+                    mark_swallowed(event.vk);
+                }
+                swallow
+            };
             if let Some(tx) = TX.get() {
                 if let Err(TrySendError::Full(_)) = tx.try_send(event) {
                     DROPPED.fetch_add(1, Ordering::Relaxed);
                 }
             }
-            if !event.up
-                && (hotkey::os_capture()
-                    || (hotkey::session_keys() && matches!(event.vk, 0x0D | 0x1B)))
-            {
+            if swallow {
                 return 1;
             }
         }

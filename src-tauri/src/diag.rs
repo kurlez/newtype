@@ -97,7 +97,7 @@ fn trim(path: &Path) -> std::io::Result<()> {
     file.write_all(&bytes[start..])
 }
 
-    fn stamp() -> String {
+fn stamp() -> String {
     format!("{}", unix_ms())
 }
 

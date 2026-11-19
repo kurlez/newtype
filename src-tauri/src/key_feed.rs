@@ -3,11 +3,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use crate::pipeline::hotkey::KeyEdge;
+use crate::pipeline::hotkey::{KeyEdge, KeyId};
 
 pub enum Feed {
     Key(KeyEdge),
-    /// Periodic resync. The hook and the event tap must not do this work.
+    /// Keys the OS says are up. The listener releases only these.
+    #[allow(dead_code)]
+    Resync(Vec<KeyId>),
+    /// Periodic status. Not used to invent key-ups.
     #[allow(dead_code)]
     Tick(u64),
 }
@@ -32,9 +35,18 @@ pub fn push(edge: KeyEdge, from_webview: bool) -> bool {
 
 #[allow(dead_code)]
 pub fn tick(now_ms: u64) {
+    dispatch(Feed::Tick(now_ms));
+}
+
+#[allow(dead_code)]
+pub fn resync(keys: Vec<KeyId>) {
+    dispatch(Feed::Resync(keys));
+}
+
+fn dispatch(feed: Feed) {
     let mut slot = CALLBACK.lock().expect("key feed");
     if let Some(callback) = slot.as_mut() {
-        let _ = callback(Feed::Tick(now_ms));
+        let _ = callback(feed);
     }
 }
 

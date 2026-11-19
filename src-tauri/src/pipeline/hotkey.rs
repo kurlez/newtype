@@ -110,6 +110,61 @@ pub fn virtual_key(key: KeyId) -> Option<u32> {
     })
 }
 
+/// Windows modifier bits tracked by the hook from its own events.
+pub fn windows_modifier_bit(vk: u32) -> Option<u32> {
+    Some(match vk {
+        0xA0 => 1 << 0,
+        0xA1 => 1 << 1,
+        0xA2 => 1 << 2,
+        0xA3 => 1 << 3,
+        0xA4 => 1 << 4,
+        0xA5 => 1 << 5,
+        0x5B => 1 << 6,
+        0x5C => 1 << 7,
+        _ => return None,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwallowRule {
+    pub mods: u32,
+    pub vk: u32,
+}
+
+/// The single non-modifier key of a chord, with the modifier mask it needs.
+pub fn swallow_rules(chords: &[Chord]) -> Vec<SwallowRule> {
+    let mut rules = Vec::new();
+    for chord in chords {
+        let mut mods = 0u32;
+        let mut trigger = None;
+        let mut extra = false;
+        for key in chord {
+            let Some(vk) = virtual_key(*key) else {
+                continue;
+            };
+            if let Some(bit) = windows_modifier_bit(vk) {
+                mods |= bit;
+            } else if !is_modifier(*key) {
+                if trigger.is_some() {
+                    extra = true;
+                }
+                trigger = Some(vk);
+            }
+        }
+        if extra {
+            continue;
+        }
+        if let Some(vk) = trigger {
+            rules.push(SwallowRule { mods, vk });
+        }
+    }
+    rules
+}
+
+pub fn swallow_trigger(rules: &[SwallowRule], mods: u32, vk: u32) -> bool {
+    rules.iter().any(|rule| rule.vk == vk && rule.mods == mods)
+}
+
 /// Decides that Windows has dropped the low-level hook.
 ///
 /// A watched key is physically down, or was pressed, and the hook has not
@@ -255,11 +310,10 @@ pub struct HotkeyEngine {
     captured: Chord,
     /// Non-modifier keys swallowed on the way down. Their key-up is swallowed too.
     suppressed: Chord,
-    /// When each held key went down. A missing key-up is cleared after [`STUCK_KEY_MS`].
+    /// When each held key last went down. A repeat down refreshes the time.
     down_at: Vec<(KeyId, u64)>,
 }
 
-pub const STUCK_KEY_MS: u64 = 10_000;
 pub const MIN_HOLD_MS: u64 = 300;
 
 impl Default for HotkeyEngine {
@@ -319,31 +373,25 @@ impl HotkeyEngine {
         events
     }
 
-    /// Apply one edge, and first release any key that has been down for 10s.
+    /// Apply one edge. A key that is still down is not released by age.
+    /// A repeat down refreshes `down_at`.
     pub fn consume_timed(&mut self, edge: KeyEdge, now_ms: u64) -> EdgeOutcome {
-        let stale: Vec<KeyId> = self
-            .down_at
-            .iter()
-            .filter(|(_, at)| now_ms.saturating_sub(*at) >= STUCK_KEY_MS)
-            .map(|(key, _)| *key)
-            .collect();
-        let mut events = self.release_physically_up(&stale);
         let outcome = self.consume(edge);
         match edge {
             KeyEdge::Down(key) => {
-                if self.down.contains(&key) && !self.down_at.iter().any(|(held, _)| *held == key) {
-                    self.down_at.push((key, now_ms));
+                if self.down.contains(&key) {
+                    if let Some(slot) = self.down_at.iter_mut().find(|(held, _)| *held == key) {
+                        slot.1 = now_ms;
+                    } else {
+                        self.down_at.push((key, now_ms));
+                    }
                 }
             }
             KeyEdge::Up(key) => {
                 self.down_at.retain(|(held, _)| *held != key);
             }
         }
-        events.extend(outcome.events);
-        EdgeOutcome {
-            events,
-            suppress: outcome.suppress,
-        }
+        outcome
     }
 
     /// Capture mode never matches a saved hotkey. A matched non-modifier is swallowed.
@@ -517,19 +565,15 @@ impl TalkController {
         match event {
             EngineEvent::Pressed(mode) => self.on_pressed(*mode, now_ms),
             EngineEvent::Released(mode) => {
-                if self.active != Some(*mode) {
+                if self.active != Some(*mode) || self.talk_mode != TalkMode::Hold {
                     return TalkEffect::Ignore;
                 }
                 let age = now_ms.saturating_sub(self.started_ms);
+                self.active = None;
                 if age < MIN_HOLD_MS {
-                    self.active = None;
-                    return TalkEffect::Cancel;
-                }
-                if self.talk_mode == TalkMode::Hold {
-                    self.active = None;
-                    TalkEffect::Stop
+                    TalkEffect::Cancel
                 } else {
-                    TalkEffect::Ignore
+                    TalkEffect::Stop
                 }
             }
             EngineEvent::ExtraKeys => {
@@ -1403,15 +1447,35 @@ mod tests {
         assert!(held
             .release_physically_up(&[KeyId::ControlLeft])
             .is_empty());
-        let mut stuck = engine(OsKind::Mac);
-        stuck.consume_timed(KeyEdge::Down(KeyId::ControlRight), 1_000);
-        let expired = stuck.consume_timed(KeyEdge::Up(KeyId::Other), 1_000 + STUCK_KEY_MS);
-        assert!(expired
+    }
+
+    #[test]
+    fn a_non_modifier_chord_is_swallowed_only_when_its_modifiers_match() {
+        let chord = parse_chord("Right Ctrl+Z").unwrap();
+        let rules = swallow_rules(&[chord]);
+        let right_ctrl = windows_modifier_bit(0xA3).unwrap();
+        let letter = virtual_key(KeyId::Letter(b'Z')).unwrap();
+        assert!(swallow_trigger(&rules, right_ctrl, letter));
+        assert!(!swallow_trigger(&rules, 0, letter));
+        assert!(swallow_rules(&[default_chord(HotkeyMode::Dictate, OsKind::Windows)]).is_empty());
+    }
+
+    #[test]
+    fn a_held_key_is_not_released_while_it_stays_down() {
+        let mut held = engine(OsKind::Mac);
+        let down = KeyEdge::Down(KeyId::ControlRight);
+        assert!(held
+            .consume_timed(down, 1_000)
             .events
+            .contains(&EngineEvent::Pressed(HotkeyMode::Dictate)));
+        let still = held.consume_timed(down, 1_000 + 11_000);
+        assert!(still
+            .events
+            .iter()
+            .all(|event| !matches!(event, EngineEvent::Released(_))));
+        assert!(held
+            .release_physically_up(&[KeyId::ControlRight])
             .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
-        assert!(stuck.consume_timed(KeyEdge::Down(KeyId::ControlRight), 20_000).events.contains(
-            &EngineEvent::Pressed(HotkeyMode::Dictate)
-        ));
     }
 
     #[test]
@@ -1672,19 +1736,10 @@ mod tests {
         );
         assert_eq!(
             toggle.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 40),
-            TalkEffect::Cancel
-        );
-        assert!(toggle.active.is_none());
-        assert_eq!(
-            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_000),
-            TalkEffect::Start(HotkeyMode::Dictate)
-        );
-        assert_eq!(
-            toggle.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 1_400),
             TalkEffect::Ignore
         );
         assert_eq!(
-            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 1_800),
+            toggle.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 80),
             TalkEffect::Stop
         );
 

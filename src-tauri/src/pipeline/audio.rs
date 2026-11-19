@@ -36,6 +36,8 @@ struct SharedAudio {
     capturing: AtomicBool,
     /// Set when a capturing callback has stored samples.
     heard: AtomicBool,
+    /// The device reported an error. The next open starts a new stream.
+    dead: AtomicBool,
 }
 
 struct WarmInput {
@@ -47,9 +49,12 @@ struct WarmInput {
 }
 
 enum MicCmd {
-    Arm(String),
-    Begin(std::sync::mpsc::Sender<Result<Arc<SharedAudio>, String>>),
+    Begin(String, std::sync::mpsc::Sender<Result<Arc<SharedAudio>, String>>),
+    Idle,
+    Reset,
 }
+
+const IDLE_KEEP: std::time::Duration = std::time::Duration::from_secs(30);
 
 static MIC_TX: std::sync::OnceLock<std::sync::mpsc::Sender<MicCmd>> = std::sync::OnceLock::new();
 static LIVE: AtomicBool = AtomicBool::new(false);
@@ -108,58 +113,82 @@ fn ensure_mic_thread() -> Result<&'static std::sync::mpsc::Sender<MicCmd>, Strin
 
 fn mic_thread(rx: std::sync::mpsc::Receiver<MicCmd>) {
     let mut warm: Option<WarmInput> = None;
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            MicCmd::Arm(name) => {
-                if warm.as_ref().is_some_and(|open| open.name == name) || LIVE.load(Ordering::SeqCst) {
-                    continue;
-                }
-                match open_input(&name) {
-                    Ok(opened) => warm = Some(opened),
-                    Err(err) => crate::diag::record(&format!("microphone warm failed: {err}")),
+    let mut idle_since: Option<std::time::Instant> = None;
+    loop {
+        let cmd = rx.recv_timeout(std::time::Duration::from_secs(1));
+        if !LIVE.load(Ordering::SeqCst) {
+            if let Some(since) = idle_since {
+                if since.elapsed() >= IDLE_KEEP {
+                    warm = None;
+                    idle_since = None;
                 }
             }
-            MicCmd::Begin(reply) => {
-                let opened = match warm.as_ref() {
-                    Some(opened) => opened,
-                    None => match open_input("") {
-                        Ok(opened) => {
-                            warm = Some(opened);
-                            warm.as_ref().expect("microphone just opened")
-                        }
+        }
+        match cmd {
+            Ok(MicCmd::Reset) => {
+                warm = None;
+                idle_since = None;
+                LIVE.store(false, Ordering::SeqCst);
+            }
+            Ok(MicCmd::Idle) => {
+                if !LIVE.load(Ordering::SeqCst) {
+                    idle_since = Some(std::time::Instant::now());
+                }
+            }
+            Ok(MicCmd::Begin(name, reply)) => {
+                let wanted = resolved_input_name(&name);
+                let reopen = match warm.as_ref() {
+                    Some(open) => open.shared.dead.load(Ordering::SeqCst) || open.name != wanted,
+                    None => true,
+                };
+                if reopen {
+                    match open_input(&name) {
+                        Ok(opened) => warm = Some(opened),
                         Err(err) => {
                             let _ = reply.send(Err(err));
                             continue;
                         }
-                    },
+                    }
+                }
+                let Some(opened) = warm.as_ref() else {
+                    let _ = reply.send(Err("No microphone was found.".into()));
+                    continue;
                 };
                 {
                     let mut samples = opened.shared.samples.lock().expect("audio buffer");
                     samples.clear();
                 }
+                opened.shared.dead.store(false, Ordering::SeqCst);
                 opened.shared.capped.store(false, Ordering::SeqCst);
                 opened.shared.heard.store(false, Ordering::SeqCst);
                 opened.shared.capturing.store(true, Ordering::SeqCst);
                 LIVE.store(true, Ordering::SeqCst);
+                idle_since = None;
                 let _ = reply.send(Ok(Arc::clone(&opened.shared)));
             }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }
 
-/// Open the default input once and leave it playing. Later recordings reuse it.
-pub fn warm(preferred_name: &str) -> Result<(), String> {
-    let tx = ensure_mic_thread()?;
-    tx.send(MicCmd::Arm(preferred_name.trim().to_string()))
-        .map_err(|_| "Microphone thread stopped.".to_string())
+pub fn reset() {
+    if let Ok(tx) = ensure_mic_thread() {
+        let _ = tx.send(MicCmd::Reset);
+    }
+}
+
+fn note_idle() {
+    if let Ok(tx) = ensure_mic_thread() {
+        let _ = tx.send(MicCmd::Idle);
+    }
 }
 
 impl MicSession {
     pub fn start(preferred_name: &str) -> Result<Self, String> {
         let tx = ensure_mic_thread()?;
-        let _ = tx.send(MicCmd::Arm(preferred_name.trim().to_string()));
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        tx.send(MicCmd::Begin(reply_tx))
+        tx.send(MicCmd::Begin(preferred_name.trim().to_string(), reply_tx))
             .map_err(|_| "Microphone thread stopped.".to_string())?;
         let shared = reply_rx
             .recv()
@@ -184,6 +213,7 @@ impl MicSession {
     fn finish(&self) -> AudioClip {
         self.shared.capturing.store(false, Ordering::SeqCst);
         LIVE.store(false, Ordering::SeqCst);
+        note_idle();
         let samples = std::mem::take(&mut *self.shared.samples.lock().expect("audio buffer"));
         AudioClip {
             samples,
@@ -195,7 +225,9 @@ impl MicSession {
 impl Drop for MicSession {
     fn drop(&mut self) {
         self.shared.capturing.store(false, Ordering::SeqCst);
-        LIVE.store(false, Ordering::SeqCst);
+        if LIVE.swap(false, Ordering::SeqCst) {
+            note_idle();
+        }
     }
 }
 
@@ -222,13 +254,14 @@ fn open_input(preferred_name: &str) -> Result<WarmInput, String> {
         capped: AtomicBool::new(false),
         capturing: AtomicBool::new(false),
         heard: AtomicBool::new(false),
+        dead: AtomicBool::new(false),
     });
     let stream = build_stream(&device, &supported, channels, Arc::clone(&shared))?;
     stream
         .play()
         .map_err(|err| format!("Could not start the microphone: {err}"))?;
     Ok(WarmInput {
-        name: preferred_name.trim().to_string(),
+        name: resolved_input_name(preferred_name),
         stream,
         shared,
     })
@@ -244,15 +277,17 @@ fn build_stream(
     let stream = match supported.sample_format() {
         cpal::SampleFormat::F32 => {
             let shared = Arc::clone(&shared);
+            let errors = Arc::clone(&shared);
             device.build_input_stream(
                 &config,
                 move |data: &[f32], _| push_frames(data, channels, &shared),
-                log_mic_error,
+                move |_error| mark_stream_dead(&errors),
                 None,
             )
         }
         cpal::SampleFormat::I16 => {
             let shared = Arc::clone(&shared);
+            let errors = Arc::clone(&shared);
             device.build_input_stream(
                 &config,
                 move |data: &[i16], _| {
@@ -262,12 +297,13 @@ fn build_stream(
                         .collect();
                     push_frames(&converted, channels, &shared);
                 },
-                log_mic_error,
+                move |_error| mark_stream_dead(&errors),
                 None,
             )
         }
         cpal::SampleFormat::U16 => {
             let shared = Arc::clone(&shared);
+            let errors = Arc::clone(&shared);
             device.build_input_stream(
                 &config,
                 move |data: &[u16], _| {
@@ -277,7 +313,7 @@ fn build_stream(
                         .collect();
                     push_frames(&converted, channels, &shared);
                 },
-                log_mic_error,
+                move |_error| mark_stream_dead(&errors),
                 None,
             )
         }
@@ -288,8 +324,70 @@ fn build_stream(
     stream.map_err(|err| format!("Could not start the microphone: {err}"))
 }
 
-fn log_mic_error(error: cpal::StreamError) {
-    eprintln!("newtype microphone error: {error}");
+fn mark_stream_dead(shared: &SharedAudio) {
+    shared.dead.store(true, Ordering::SeqCst);
+    crate::diag::record("microphone stream stopped");
+}
+
+fn resolved_input_name(preferred_name: &str) -> String {
+    let host = cpal::default_host();
+    if preferred_name.trim().is_empty() {
+        return host
+            .default_input_device()
+            .and_then(|device| device.name().ok())
+            .unwrap_or_default();
+    }
+    preferred_name.trim().to_string()
+}
+
+pub fn start_tone_samples(sample_rate: u32, millis: u32) -> Vec<f32> {
+    let count = (sample_rate as u64 * u64::from(millis) / 1000) as usize;
+    (0..count)
+        .map(|index| {
+            let phase = index as f32 * 880.0 * std::f32::consts::TAU / sample_rate as f32;
+            (phase.sin() * 0.2).clamp(-1.0, 1.0)
+        })
+        .collect()
+}
+
+pub fn play_start_tone() {
+    let host = cpal::default_host();
+    let Some(device) = host.default_output_device() else {
+        crate::diag::record("start sound skipped");
+        return;
+    };
+    let Ok(supported) = device.default_output_config() else {
+        crate::diag::record("start sound skipped");
+        return;
+    };
+    let rate = supported.sample_rate().0;
+    let channels = supported.channels() as usize;
+    let tone = start_tone_samples(rate, 90);
+    let config: cpal::StreamConfig = supported.into();
+    let cursor = Arc::new(AtomicU32::new(0));
+    let samples = Arc::new(tone);
+    let total = samples.len() as u32;
+    let stream = device.build_output_stream(
+        &config,
+        move |data: &mut [f32], _| {
+            let mut index = cursor.load(Ordering::Relaxed) as usize;
+            for frame in data.chunks_mut(channels.max(1)) {
+                let sample = samples.get(index).copied().unwrap_or(0.0);
+                for slot in frame.iter_mut() {
+                    *slot = sample;
+                }
+                index = index.saturating_add(1);
+            }
+            cursor.store(index as u32, Ordering::Relaxed);
+        },
+        |_| {},
+        None,
+    );
+    if let Ok(stream) = stream {
+        let _ = stream.play();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let _ = total;
+    }
 }
 
 fn push_frames(data: &[f32], channels: usize, shared: &SharedAudio) {
@@ -433,6 +531,7 @@ mod tests {
             capped: AtomicBool::new(false),
             capturing: AtomicBool::new(false),
             heard: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
         });
         push_frames(&[0.4, 0.4], 1, &shared);
         assert!(shared.samples.lock().expect("audio").is_empty());
@@ -440,6 +539,7 @@ mod tests {
         push_frames(&[0.4, 0.2], 1, &shared);
         assert_eq!(shared.samples.lock().expect("audio").len(), 2);
         assert!(shared.heard.load(Ordering::Relaxed));
+        assert!(!start_tone_samples(16_000, 90).is_empty());
     }
 
     #[test]

@@ -22,6 +22,7 @@ export const previewSnapshot: Snapshot = {
     windowTranslucent: true,
     indicatorPlace: "floating",
     groqRateLimitFallback: true,
+    sounds: true,
     uiLanguage: "auto",
     providers: {
       openai: {
