@@ -59,7 +59,7 @@ pub struct DictationSettings {
     #[serde(default)]
     pub paste_last_hotkey: String,
     /// Put the transcript back in the field that was focused at the hotkey.
-    #[serde(default = "default_window_translucent")]
+    #[serde(default = "default_true")]
     pub return_to_field: bool,
     pub thinking: String,
     pub microphone: String,
@@ -452,6 +452,7 @@ pub fn assign_hotkey(
         "dictate" => &mut settings.dictate_hotkey,
         "translate" => &mut settings.translate_hotkey,
         "command" => &mut settings.command_hotkey,
+        "paste" => &mut settings.paste_last_hotkey,
         _ => return Err("Unknown hotkey.".into()),
     };
     let previous = std::mem::replace(slot, canonical);
@@ -462,6 +463,7 @@ pub fn assign_hotkey(
                 "dictate" => &mut settings.dictate_hotkey,
                 "translate" => &mut settings.translate_hotkey,
                 "command" => &mut settings.command_hotkey,
+                "paste" => &mut settings.paste_last_hotkey,
                 _ => return Err(err),
             };
             *slot = previous;
@@ -501,16 +503,25 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     let translate = hotkey::effective_chord(&settings.translate_hotkey, HotkeyMode::Translate, os)?;
     let command = hotkey::effective_chord(&settings.command_hotkey, HotkeyMode::Command, os)?;
     let paste_last = hotkey::effective_chord(&settings.paste_last_hotkey, HotkeyMode::PasteLast, os)?;
-    let bindings = vec![
+    let mut bindings = vec![
         (HotkeyMode::Dictate, dictate),
         (HotkeyMode::Translate, translate),
         (HotkeyMode::Command, command),
-        (HotkeyMode::PasteLast, paste_last),
     ];
     if let Some(error) = binding_error(&bindings) {
         return Err(error);
     }
-    let warnings = binding_warnings(&bindings, os);
+    let mut warnings = binding_warnings(&bindings, os);
+    let mut with_paste = bindings.clone();
+    with_paste.push((HotkeyMode::PasteLast, paste_last.clone()));
+    if binding_error(&with_paste).is_some() {
+        warnings.push(
+            "Paste last transcript uses the same keys as another hotkey, so that shortcut is off."
+                .into(),
+        );
+    } else {
+        bindings = with_paste;
+    }
     let labels = bindings
         .iter()
         .map(|(_, chord)| hotkey::chord_label(chord, os))

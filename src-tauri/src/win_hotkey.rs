@@ -176,7 +176,7 @@ fn deliver(event: HookEvent) {
     let _ = crate::key_feed::push(edge, false);
 }
 
-fn modifiers_physically_up() -> Vec<hotkey::KeyId> {
+pub fn modifiers_physically_up() -> Vec<hotkey::KeyId> {
     let mut up = Vec::new();
     for vk in MODIFIER_VKS {
         let down = unsafe { GetAsyncKeyState(vk) } < 0;

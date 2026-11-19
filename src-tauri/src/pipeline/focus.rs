@@ -8,6 +8,22 @@ use std::time::{Duration, Instant};
 
 use super::insert;
 
+pub fn field_text(target: &FocusTarget) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::field_text(target);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::field_text(target);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = target;
+        None
+    }
+}
+
 pub fn notice() -> &'static str {
     if cfg!(target_os = "macos") {
         crate::locale::text("Copied. Press \u{2318}V to paste.", "已复制，按 \u{2318}V 粘贴")
@@ -111,7 +127,11 @@ pub fn plan(
         };
     }
     let Some(target) = target else {
-        return InsertPlan::CopyOnly;
+        return if current.is_some() {
+            InsertPlan::Paste
+        } else {
+            InsertPlan::CopyOnly
+        };
     };
     if own_pid != 0 && target.pid == own_pid {
         return InsertPlan::CopyOnly;
@@ -205,15 +225,26 @@ pub fn insert_with_target(
 }
 
 fn paste(text: &str, target: Option<&FocusTarget>) -> InsertOutcome {
-    if let Some(target) = target {
-        if write_accessible(target, text) {
-            return InsertOutcome::Pasted;
-        }
-    }
     match insert::insert_text(text) {
         Ok(()) => InsertOutcome::Pasted,
-        Err(err) => InsertOutcome::Failed(err),
+        Err(err) => {
+            if let Some(target) = target {
+                if write_accessible_verified(target, text) {
+                    return InsertOutcome::Pasted;
+                }
+            }
+            InsertOutcome::Failed(err)
+        }
     }
+}
+
+fn write_accessible_verified(target: &FocusTarget, text: &str) -> bool {
+    let before = field_text(target);
+    if !write_accessible(target, text) {
+        return false;
+    }
+    let after = field_text(target);
+    after.is_some() && after != before
 }
 
 fn write_accessible(target: &FocusTarget, text: &str) -> bool {
@@ -409,6 +440,10 @@ mod windows {
             if !editable {
                 return false;
             }
+            let style = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(control, -16);
+            if style & 0x0800 != 0 {
+                return false;
+            }
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             const EM_REPLACESEL: u32 = 0x00C2;
             windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
@@ -418,6 +453,35 @@ mod windows {
                 wide.as_ptr() as isize,
             );
             true
+        }
+    }
+
+    pub fn field_text(target: &FocusTarget) -> Option<String> {
+        unsafe {
+            let control = target.control as usize as *mut std::ffi::c_void;
+            if control.is_null() || IsWindow(control) == 0 {
+                return None;
+            }
+            let style = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(control, -16);
+            if style & 0x20 != 0 || style & 0x0800 != 0 {
+                return None;
+            }
+            let class = class_name(control).unwrap_or_default();
+            if !class.eq_ignore_ascii_case("Edit") && !class.to_ascii_lowercase().contains("richedit") {
+                return None;
+            }
+            let mut buffer = vec![0u16; 2048];
+            let count = windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                control,
+                0x000D,
+                buffer.len(),
+                buffer.as_mut_ptr() as isize,
+            );
+            if count <= 0 {
+                return None;
+            }
+            let end = (count as usize).min(buffer.len());
+            Some(String::from_utf16_lossy(&buffer[..end]))
         }
     }
 
@@ -539,6 +603,29 @@ mod macos {
                 attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
                 value.as_concrete_TypeRef() as *const std::ffi::c_void,
             ) == 0
+        }
+    }
+
+    pub fn field_text(target: &FocusTarget) -> Option<String> {
+        if target.ax == 0 {
+            return None;
+        }
+        copy_ax_string(target.ax, "AXValue")
+    }
+
+    fn copy_ax_string(element: usize, name: &str) -> Option<String> {
+        let attribute = CFString::new(name);
+        unsafe {
+            let mut value = std::ptr::null_mut();
+            let status = AXUIElementCopyAttributeValue(
+                element as *mut std::ffi::c_void,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                &mut value,
+            );
+            if status != 0 || value.is_null() {
+                return None;
+            }
+            Some(CFString::wrap_under_create_rule(value as _).to_string())
         }
     }
 
@@ -777,7 +864,7 @@ mod tests {
         let current = target(8, 0x20, 0x21);
         assert_eq!(plan(Some(&saved), Some(&current), 7, true), InsertPlan::CopyOnly);
         assert_eq!(plan(None, Some(&target(7, 1, 1)), 7, true), InsertPlan::CopyOnly);
-        assert_eq!(plan(None, Some(&target(8, 1, 1)), 7, true), InsertPlan::CopyOnly);
+        assert_eq!(plan(None, Some(&target(8, 1, 1)), 7, true), InsertPlan::Paste);
         assert_eq!(plan(None, Some(&target(8, 1, 1)), 7, false), InsertPlan::Paste);
     }
 

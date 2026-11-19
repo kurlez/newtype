@@ -80,8 +80,8 @@ export const previewSnapshot: Snapshot = {
     },
     hotwords: [{ canonical: "Claude Code", aliases: ["cloud code"], pattern: "" }],
   },
-  hotkeyLabels: ["Right Ctrl", "Right Ctrl + Right Shift", "Right Ctrl + Enter"],
-  hotkeyChords: ["ControlRight", "ControlRight+ShiftRight", "ControlRight+Enter"],
+  hotkeyLabels: ["Right Ctrl", "Right Ctrl + Right Shift", "Right Ctrl + Enter", "Left Ctrl + Left Command + V"],
+  hotkeyChords: ["ControlRight", "ControlRight+ShiftRight", "ControlRight+Enter", "ControlLeft+MetaLeft+V"],
   warnings: [
     "Right Ctrl is also part of Right Ctrl + Right Shift. A short press uses the shorter one; adding the extra key at the start uses the longer one.",
   ],

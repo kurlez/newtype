@@ -901,7 +901,21 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                 );
             }
             Control::Engine(EngineEvent::Pressed(HotkeyMode::PasteLast)) => {
-                paste_last(&app);
+                let queued = app.clone();
+                std::thread::Builder::new()
+                    .name("newtype-paste-last".into())
+                    .spawn(move || {
+                        let start = std::time::Instant::now();
+                        while start.elapsed() < std::time::Duration::from_secs(1)
+                            && !paste_modifiers_up()
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        #[cfg(windows)]
+                        release_menu_activation();
+                        paste_last(&queued);
+                    })
+                    .ok();
             }
             Control::Engine(event) => {
                 let effect = talk.on_event(&event, now_ms());
@@ -2184,17 +2198,83 @@ fn return_to_field(app: &AppHandle) -> bool {
         .return_to_field
 }
 
+static LAST_TRANSCRIPT: Mutex<String> = Mutex::new(String::new());
+static LAST_PASTE_TARGET: Mutex<Option<focus::FocusTarget>> = Mutex::new(None);
+
+fn paste_modifiers_up() -> bool {
+    let keys = [
+        hotkey::KeyId::ControlLeft,
+        hotkey::KeyId::ControlRight,
+        hotkey::KeyId::MetaLeft,
+        hotkey::KeyId::MetaRight,
+        hotkey::KeyId::AltLeft,
+        hotkey::KeyId::AltRight,
+        hotkey::KeyId::ShiftLeft,
+        hotkey::KeyId::ShiftRight,
+    ];
+    #[cfg(target_os = "macos")]
+    {
+        let flags = unsafe { mac_flags_state() };
+        let up = hotkey::mac_modifiers_physically_up(flags);
+        return keys.iter().all(|key| up.contains(key));
+    }
+    #[cfg(windows)]
+    {
+        let up = crate::win_hotkey::modifiers_physically_up();
+        return keys.iter().all(|key| up.contains(key));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = keys;
+        true
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn mac_flags_state() -> u64 {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceFlagsState(state: i32) -> u64;
+    }
+    CGEventSourceFlagsState(1)
+}
+
+#[cfg(windows)]
+fn release_menu_activation() {
+    unsafe {
+        #[link(name = "user32")]
+        extern "system" {
+            fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize);
+        }
+        keybd_event(0xFF, 0, 0, 0);
+        keybd_event(0xFF, 0, 2, 0);
+    }
+}
+
 pub fn paste_last(app: &AppHandle) {
-    let text = app
+    let phase = app
         .state::<Dictation>()
-        .history
+        .phase
         .lock()
-        .expect("history")
-        .iter()
-        .rev()
-        .find(|entry| !entry.text.trim().is_empty())
-        .map(|entry| entry.text.clone())
+        .map(|phase| phase.clone())
         .unwrap_or_default();
+    if matches!(phase.as_str(), "starting" | "recording" | "processing") {
+        emit_phase(
+            app,
+            "busy",
+            "",
+            crate::locale::text(
+                "Still working on the last dictation.",
+                "上一条口授还在处理。",
+            ),
+            0,
+            0.0,
+            "",
+        );
+        show_indicator(app);
+        return;
+    }
+    let text = LAST_TRANSCRIPT.lock().expect("transcript").clone();
     if text.is_empty() {
         emit_phase(
             app,
@@ -2205,11 +2285,12 @@ pub fn paste_last(app: &AppHandle) {
             0.0,
             "",
         );
+        show_indicator(app);
         schedule_hide(app, 2200);
         return;
     }
-    focus::remember(&app.state::<Dictation>().focus_target, false);
-    let _ = deliver_text(app, &text);
+    let target = LAST_PASTE_TARGET.lock().expect("paste target").clone();
+    let _ = focus::insert_with_target(&text, target.as_ref(), true);
 }
 
 fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
@@ -2224,6 +2305,12 @@ fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
         InsertOutcome::Copied => Delivered::Copied(focus::notice().to_string()),
         InsertOutcome::Failed(err) => Delivered::Failed(err),
     };
+    if let Ok(mut slot) = LAST_TRANSCRIPT.lock() {
+        *slot = text.to_string();
+    }
+    if let Ok(mut slot) = LAST_PASTE_TARGET.lock() {
+        *slot = target.clone();
+    }
     crate::diag::mark_stage("text-inserted");
     delivered
 }
@@ -3443,7 +3530,7 @@ fn provider_base(settings: &DictationSettings, provider: &str) -> String {
 }
 
 pub fn begin_capture(app: &AppHandle, mode: &str) -> Result<(), String> {
-    if !matches!(mode, "dictate" | "translate" | "command") {
+    if !matches!(mode, "dictate" | "translate" | "command" | "paste") {
         crate::diag::record(&format!("capture start rejected mode={mode}"));
         return Err("Unknown hotkey.".into());
     }
@@ -3518,7 +3605,7 @@ fn job_for(mode: HotkeyMode, effective: &dictate_config::Effective) -> Job {
             target: effective.target_language.clone(),
         },
         HotkeyMode::Command => Job::Command { selection: None },
-        HotkeyMode::PasteLast => Job::Polish(effective.polish),
+        HotkeyMode::PasteLast => Job::Polish(PolishLevel::Literal),
     }
 }
 

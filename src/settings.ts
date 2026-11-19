@@ -32,6 +32,7 @@ const HOTKEY_MODES: Array<[HotkeyModeName, string, string]> = [
   ["dictate", "Dictate", "口授"],
   ["translate", "Translate", "翻译"],
   ["command", "Command", "指令"],
+  ["paste", "Paste last", "粘贴上一条"],
 ];
 
 const TARGET_LANGUAGES = ["English", "简体中文", "繁体中文", "日本語", "Español", "Français", "Deutsch", "한국어", "Português"];
@@ -47,6 +48,7 @@ const editors: Record<HotkeyModeName, HotkeyEditor> = {
   dictate: idleEditor("", ""),
   translate: idleEditor("", ""),
   command: idleEditor("", ""),
+  paste: idleEditor("", ""),
 };
 
 let hotkeyMessage = "";
@@ -1080,6 +1082,7 @@ async function setHotkey(mode: HotkeyModeName): Promise<void> {
     snap.settings.dictateHotkey = chords[0] ?? "";
     snap.settings.translateHotkey = chords[1] ?? "";
     snap.settings.commandHotkey = chords[2] ?? "";
+    snap.settings.pasteLastHotkey = chords[3] ?? "";
     snap.hotkeyChords = chords;
     snap.hotkeyLabels = HOTKEY_MODES.map(([name], index) =>
       name === mode ? editor.pendingLabel : snap.hotkeyLabels[index] ?? "",
@@ -1101,6 +1104,7 @@ async function setHotkey(mode: HotkeyModeName): Promise<void> {
     snap.settings.dictateHotkey = next.settings.dictateHotkey;
     snap.settings.translateHotkey = next.settings.translateHotkey;
     snap.settings.commandHotkey = next.settings.commandHotkey;
+    snap.settings.pasteLastHotkey = next.settings.pasteLastHotkey;
     editors[mode] = idleEditor(next.hotkeyChords[index] ?? editor.pendingChord, label);
     syncEditorsFromSnapshot();
     setHotkeyMessage(appliedMessage(title, label, next.warnings));
@@ -1167,6 +1171,7 @@ function bindHotkeyButtons(): void {
     snap.settings.dictateHotkey = "";
     snap.settings.translateHotkey = "";
     snap.settings.commandHotkey = "";
+    snap.settings.pasteLastHotkey = "";
     if (preview) {
       snap.hotkeyChords = [...previewSnapshot.hotkeyChords];
       snap.hotkeyLabels = [...previewSnapshot.hotkeyLabels];
@@ -1473,6 +1478,7 @@ async function chooseHotkey(mode: HotkeyModeName, chord: string): Promise<void> 
     snap.settings.dictateHotkey = chords[0] ?? "";
     snap.settings.translateHotkey = chords[1] ?? "";
     snap.settings.commandHotkey = chords[2] ?? "";
+    snap.settings.pasteLastHotkey = chords[3] ?? "";
     snap.hotkeyChords = chords;
     snap.hotkeyLabels = HOTKEY_MODES.map((_, index) => (index === 0 ? label : snap.hotkeyLabels[index] ?? ""));
     snap.warnings = bindingWarnings(chords);
@@ -1492,6 +1498,7 @@ async function chooseHotkey(mode: HotkeyModeName, chord: string): Promise<void> 
     snap.settings.dictateHotkey = next.settings.dictateHotkey;
     snap.settings.translateHotkey = next.settings.translateHotkey;
     snap.settings.commandHotkey = next.settings.commandHotkey;
+    snap.settings.pasteLastHotkey = next.settings.pasteLastHotkey;
     editors[mode] = idleEditor(next.hotkeyChords[index] ?? chord, applied);
     syncEditorsFromSnapshot();
     setHotkeyMessage(appliedMessage(title, applied, next.warnings));

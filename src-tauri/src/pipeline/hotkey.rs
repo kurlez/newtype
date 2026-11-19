@@ -1491,6 +1491,30 @@ mod tests {
     }
 
     #[test]
+    fn a_modifier_only_dictate_chord_does_not_fire_on_ctrl_cmd_v() {
+        let mut engine = HotkeyEngine::default();
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, chord(&[KeyId::ControlRight])),
+            (
+                HotkeyMode::PasteLast,
+                chord(&[KeyId::ControlLeft, KeyId::MetaLeft, KeyId::Letter(b'V')]),
+            ),
+        ]);
+        assert!(engine
+            .consume(KeyEdge::Down(KeyId::ControlLeft))
+            .events
+            .is_empty());
+        assert!(engine
+            .consume(KeyEdge::Down(KeyId::MetaLeft))
+            .events
+            .is_empty());
+        assert_eq!(
+            engine.consume(KeyEdge::Down(KeyId::Letter(b'V'))).events,
+            vec![EngineEvent::Pressed(HotkeyMode::PasteLast)]
+        );
+    }
+
+    #[test]
     fn a_non_modifier_chord_is_swallowed_only_when_its_modifiers_match() {
         let chord = parse_chord("Right Ctrl+Z").unwrap();
         let rules = swallow_rules(&[chord]);
