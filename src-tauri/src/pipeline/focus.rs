@@ -299,7 +299,7 @@ fn restore_and_wait(target: &FocusTarget) -> bool {
     false
 }
 
-fn capture() -> Option<FocusTarget> {
+pub(crate) fn capture() -> Option<FocusTarget> {
     #[cfg(target_os = "windows")]
     {
         return windows::capture();
@@ -623,6 +623,16 @@ mod macos {
                 &mut value,
             );
             if status != 0 || value.is_null() {
+                return None;
+            }
+            #[link(name = "CoreFoundation", kind = "framework")]
+            extern "C" {
+                fn CFGetTypeID(cf: *const std::ffi::c_void) -> usize;
+                fn CFStringGetTypeID() -> usize;
+                fn CFRelease(cf: *const std::ffi::c_void);
+            }
+            if CFGetTypeID(value) != CFStringGetTypeID() {
+                CFRelease(value);
                 return None;
             }
             Some(CFString::wrap_under_create_rule(value as _).to_string())

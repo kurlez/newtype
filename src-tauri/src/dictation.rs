@@ -913,7 +913,7 @@ fn session(app: AppHandle, inbox: Receiver<Control>, control: Sender<Control>) {
                         }
                         #[cfg(windows)]
                         release_menu_activation();
-                        paste_last(&queued);
+                        paste_last(&queued, false);
                     })
                     .ok();
             }
@@ -2251,7 +2251,7 @@ fn release_menu_activation() {
     }
 }
 
-pub fn paste_last(app: &AppHandle) {
+pub fn paste_last(app: &AppHandle, from_tray: bool) {
     let phase = app
         .state::<Dictation>()
         .phase
@@ -2259,6 +2259,7 @@ pub fn paste_last(app: &AppHandle) {
         .map(|phase| phase.clone())
         .unwrap_or_default();
     if matches!(phase.as_str(), "starting" | "recording" | "processing") {
+        let previous = phase.clone();
         emit_phase(
             app,
             "busy",
@@ -2272,6 +2273,29 @@ pub fn paste_last(app: &AppHandle) {
             "",
         );
         show_indicator(app);
+        let restore = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            let now = restore
+                .state::<Dictation>()
+                .phase
+                .lock()
+                .map(|phase| phase.clone())
+                .unwrap_or_default();
+            if now != "busy" {
+                return;
+            }
+            let (name, message) = match previous.as_str() {
+                "recording" => ("recording", crate::locale::text("Listening", "正在听")),
+                "starting" => ("starting", crate::locale::text("Starting…", "正在启动…")),
+                "processing" => ("processing", crate::locale::text("Transcribing…", "转写中…")),
+                _ => {
+                    schedule_hide(&restore, 700);
+                    return;
+                }
+            };
+            emit_phase(&restore, name, "", message, 0, 0.0, "");
+        });
         return;
     }
     let text = LAST_TRANSCRIPT.lock().expect("transcript").clone();
@@ -2289,8 +2313,31 @@ pub fn paste_last(app: &AppHandle) {
         schedule_hide(app, 2200);
         return;
     }
-    let target = LAST_PASTE_TARGET.lock().expect("paste target").clone();
-    let _ = focus::insert_with_target(&text, target.as_ref(), true);
+    let current = focus::capture();
+    let into_current = !from_tray && current.as_ref().is_some_and(|item| item.pid != std::process::id());
+    let saved = if into_current {
+        None
+    } else {
+        LAST_PASTE_TARGET.lock().expect("paste target").clone()
+    };
+    let outcome = if into_current {
+        focus::insert_with_target(&text, current.as_ref(), true)
+    } else {
+        focus::insert_with_target(&text, saved.as_ref(), true)
+    };
+    match outcome {
+        InsertOutcome::Pasted => {}
+        InsertOutcome::Copied => {
+            emit_phase(app, "copied", "", focus::notice(), 0, 0.0, "");
+            show_indicator(app);
+            schedule_hide(app, 4000);
+        }
+        InsertOutcome::Failed(err) => {
+            emit_phase(app, "error", "", &err, 0, 0.0, "");
+            show_indicator(app);
+            schedule_hide(app, 4000);
+        }
+    }
 }
 
 fn deliver_text(app: &AppHandle, text: &str) -> Delivered {

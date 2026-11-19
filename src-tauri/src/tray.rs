@@ -39,7 +39,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             }
             "quit" => app.exit(0),
             "dictate" => crate::dictation::toggle(app),
-            "paste-last" => crate::dictation::paste_last(app),
+            "paste-last" => crate::dictation::paste_last(app, true),
             _ => {}
         }
         });
