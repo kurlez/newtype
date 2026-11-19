@@ -62,7 +62,7 @@ pub struct DictationSettings {
     #[serde(default = "default_true")]
     pub return_to_field: bool,
     /// Learn a repeated spelling correction into the dictionary.
-    #[serde(default = "default_window_translucent")]
+    #[serde(default = "default_true")]
     pub auto_add_corrections: bool,
     /// Canonical spellings that were learned rather than typed.
     #[serde(default)]

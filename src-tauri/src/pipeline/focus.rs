@@ -8,6 +8,21 @@ use std::time::{Duration, Instant};
 
 use super::insert;
 
+pub fn front_pid() -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos::front_pid();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::front_pid();
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 pub fn field_text(target: &FocusTarget) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -352,6 +367,18 @@ mod windows {
 
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
+    pub fn front_pid() -> Option<u32> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            (pid != 0).then_some(pid)
+        }
+    }
+
     pub fn capture() -> Option<FocusTarget> {
         unsafe {
             let hwnd = GetForegroundWindow();
@@ -463,35 +490,6 @@ mod windows {
                 return None;
             }
             let style = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(control, -16);
-            if style & 0x20 != 0 {
-                return None;
-            }
-            let class = class_name(control).unwrap_or_default();
-            if !class.eq_ignore_ascii_case("Edit") && !class.to_ascii_lowercase().contains("richedit") {
-                return None;
-            }
-            let mut buffer = vec![0u16; 2048];
-            let count = windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
-                control,
-                0x000D,
-                buffer.len(),
-                buffer.as_mut_ptr() as isize,
-            );
-            if count <= 0 {
-                return None;
-            }
-            let end = (count as usize).min(buffer.len());
-            Some(String::from_utf16_lossy(&buffer[..end]))
-        }
-    }
-
-    pub fn field_text(target: &FocusTarget) -> Option<String> {
-        unsafe {
-            let control = target.control as usize as *mut std::ffi::c_void;
-            if control.is_null() || IsWindow(control) == 0 {
-                return None;
-            }
-            let style = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(control, -16);
             if style & 0x20 != 0 || style & 0x0800 != 0 {
                 return None;
             }
@@ -583,6 +581,38 @@ mod macos {
         fn CFRelease(cf: *const std::ffi::c_void);
     }
 
+    pub fn front_pid() -> Option<u32> {
+        unsafe {
+            let system = AXUIElementCreateSystemWide();
+            if system.is_null() {
+                return None;
+            }
+            let attribute = CFString::new("AXFocusedApplication");
+            let mut value = std::ptr::null_mut();
+            let status = AXUIElementCopyAttributeValue(
+                system,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                &mut value,
+            );
+            CFRelease(system);
+            if status != 0 || value.is_null() {
+                return None;
+            }
+            #[link(name = "ApplicationServices", kind = "framework")]
+            extern "C" {
+                fn AXUIElementGetPid(element: *mut std::ffi::c_void, pid: *mut i32) -> i32;
+            }
+            let mut pid = 0i32;
+            let status = AXUIElementGetPid(value, &mut pid);
+            CFRelease(value);
+            if status != 0 || pid <= 0 {
+                None
+            } else {
+                Some(pid as u32)
+            }
+        }
+    }
+
     pub fn capture() -> Option<FocusTarget> {
         unsafe {
             let front = front_app()?;
@@ -625,46 +655,11 @@ mod macos {
             return None;
         }
         let role = copy_ax_string(target.ax, "AXRole").unwrap_or_default();
-        if crate::pipeline::corrections::is_secure_role(&role) {
-            return None;
-        }
-        copy_ax_string(target.ax, "AXValue")
-    }
-
-    fn copy_ax_string(element: usize, name: &str) -> Option<String> {
-        let attribute = CFString::new(name);
-        unsafe {
-            let mut value = std::ptr::null_mut();
-            let status = AXUIElementCopyAttributeValue(
-                element as *mut std::ffi::c_void,
-                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
-                &mut value,
-            );
-            if status != 0 || value.is_null() {
-                return None;
-            }
-            let text = CFString::wrap_under_create_rule(value as _).to_string();
-            Some(text)
-        }
-    }
-
-    pub fn set_selected_text(target: &FocusTarget, text: &str) -> bool {
-        if target.ax == 0 || text.is_empty() {
-            return false;
-        }
-        let attribute = CFString::new("AXSelectedText");
-        let value = CFString::new(text);
-        unsafe {
-            AXUIElementSetAttributeValue(
-                target.ax as *mut std::ffi::c_void,
-                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
-                value.as_concrete_TypeRef() as *const std::ffi::c_void,
-            ) == 0
-        }
-    }
-
-    pub fn field_text(target: &FocusTarget) -> Option<String> {
-        if target.ax == 0 {
+        let subrole = copy_ax_string(target.ax, "AXSubrole").unwrap_or_default();
+        if crate::pipeline::corrections::is_secure_role(&role)
+            || crate::pipeline::corrections::is_secure_role(&subrole)
+            || subrole == "AXSecureTextField"
+        {
             return None;
         }
         copy_ax_string(target.ax, "AXValue")
@@ -693,6 +688,21 @@ mod macos {
                 return None;
             }
             Some(CFString::wrap_under_create_rule(value as _).to_string())
+        }
+    }
+
+    pub fn set_selected_text(target: &FocusTarget, text: &str) -> bool {
+        if target.ax == 0 || text.is_empty() {
+            return false;
+        }
+        let attribute = CFString::new("AXSelectedText");
+        let value = CFString::new(text);
+        unsafe {
+            AXUIElementSetAttributeValue(
+                target.ax as *mut std::ffi::c_void,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                value.as_concrete_TypeRef() as *const std::ffi::c_void,
+            ) == 0
         }
     }
 

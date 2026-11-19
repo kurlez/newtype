@@ -1107,6 +1107,7 @@ fn begin_recording(
     if mic.is_some() {
         return;
     }
+    WATCH_GEN.fetch_add(1, Ordering::Relaxed);
     emit_phase(
         app,
         "starting",
@@ -2375,36 +2376,62 @@ fn sounds_enabled(app: &AppHandle) -> bool {
         .unwrap_or(true)
 }
 
+static WATCH_GEN: AtomicU64 = AtomicU64::new(1);
+static SETTINGS_SAVE: Mutex<()> = Mutex::new(());
+
 fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget) {
+    let generation = WATCH_GEN.load(Ordering::Relaxed);
     std::thread::Builder::new()
         .name("newtype-correction".into())
         .spawn(move || {
             let started = std::time::Instant::now();
+            let mut noted = std::collections::HashSet::new();
+            let mut previous = String::new();
+            let mut stable = false;
             while started.elapsed() < std::time::Duration::from_secs(45) {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let current = focus::capture();
-                if current.as_ref().is_some_and(|now| now.pid != 0 && target.pid != 0 && now.pid != target.pid) {
+                if WATCH_GEN.load(Ordering::Relaxed) != generation {
                     break;
+                }
+                if let Some(pid) = focus::front_pid() {
+                    if target.pid != 0 && pid != target.pid {
+                        break;
+                    }
                 }
                 let Some(edited) = focus::field_text(&target) else {
                     continue;
                 };
-                let pairs = crate::pipeline::corrections::term_replacements(&inserted, &edited);
-                if pairs.is_empty() {
+                if edited != previous {
+                    previous = edited;
+                    stable = false;
                     continue;
                 }
-                learn_corrections(&app, &pairs);
+                if !stable {
+                    stable = true;
+                }
+                let pairs = crate::pipeline::corrections::term_replacements(&inserted, &edited);
+                let fresh: Vec<_> = pairs
+                    .into_iter()
+                    .filter(|pair| noted.insert(pair.clone()))
+                    .collect();
+                if fresh.is_empty() {
+                    continue;
+                }
+                learn_corrections(&app, &fresh, generation);
             }
         })
         .ok();
 }
 
-fn learn_corrections(app: &AppHandle, pairs: &[(String, String)]) {
+fn learn_corrections(app: &AppHandle, pairs: &[(String, String)], dictation: u64) {
     let state = app.state::<Dictation>();
     let mut added = 0u32;
+    let _save = SETTINGS_SAVE.lock().expect("settings save");
     {
         let mut settings = state.settings.lock().expect("settings");
-        crate::pipeline::corrections::note_seen(&mut settings.correction_suggestions, pairs);
+        let before = settings.correction_suggestions.clone();
+        crate::pipeline::corrections::note_seen(&mut settings.correction_suggestions, pairs, dictation);
+        let changed = settings.correction_suggestions != before;
         if settings.auto_add_corrections {
             let ready: Vec<_> = settings
                 .correction_suggestions
@@ -2433,14 +2460,14 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)]) {
                     slot.state = "added".into();
                 }
                 if let Ok(mut last) = LAST_CORRECTION.lock() {
-                    *last = Some((item.heard, item.corrected));
+                    *last = Some((item.heard, item.corrected, !already));
                 }
             }
         }
-        let path = state.settings_path.clone();
-        let copy = settings.clone();
-        drop(settings);
-        let _ = dictate_config::save(&path, &copy);
+        if changed || added > 0 {
+            let path = state.settings_path.clone();
+            let _ = dictate_config::save(&path, &settings);
+        }
     }
     crate::diag::record(&format!("corrections added {added}"));
     if added > 0 {
@@ -2451,7 +2478,7 @@ fn learn_corrections(app: &AppHandle, pairs: &[(String, String)]) {
     }
 }
 
-static LAST_CORRECTION: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+static LAST_CORRECTION: std::sync::Mutex<Option<(String, String, bool)>> = std::sync::Mutex::new(None);
 
 pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: &str) -> Result<(), String> {
     let state = app.state::<Dictation>();
@@ -2459,11 +2486,16 @@ pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: 
     match action {
         "accept" => {
             if !heard.is_empty() && !corrected.is_empty() {
-                settings.hotwords.push(crate::pipeline::hotwords::Hotword {
-                    canonical: corrected.to_string(),
-                    aliases: vec![heard.to_string()],
-                    pattern: String::new(),
+                let exists = settings.hotwords.iter().any(|word| {
+                    word.canonical == corrected && word.aliases.iter().any(|alias| alias == heard)
                 });
+                if !exists {
+                    settings.hotwords.push(crate::pipeline::hotwords::Hotword {
+                        canonical: corrected.to_string(),
+                        aliases: vec![heard.to_string()],
+                        pattern: String::new(),
+                    });
+                }
                 if !settings.auto_added.iter().any(|term| term == corrected) {
                     settings.auto_added.push(corrected.to_string());
                 }
@@ -2479,22 +2511,31 @@ pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: 
         }
         "undo" => {
             let pair = LAST_CORRECTION.lock().expect("undo").take();
-            if let Some((heard, corrected)) = pair {
+            if let Some((heard, corrected, created)) = pair {
                 for word in &mut settings.hotwords {
                     if word.canonical == corrected {
                         word.aliases.retain(|alias| alias != &heard);
                     }
                 }
-                settings.hotwords.retain(|word| !word.canonical.is_empty() || !word.aliases.is_empty());
-                settings.auto_added.retain(|term| term != &corrected);
+                if created {
+                    settings.hotwords.retain(|word| {
+                        !(word.canonical == corrected && word.aliases.is_empty() && word.pattern.is_empty())
+                    });
+                    settings.auto_added.retain(|term| term != &corrected);
+                }
+                if let Some(slot) = settings.correction_suggestions.iter_mut().find(|slot| {
+                    slot.heard == heard && slot.corrected == corrected
+                }) {
+                    slot.state = "ignored".into();
+                }
             }
         }
         _ => return Err("Unknown correction action.".into()),
     }
     let path = state.settings_path.clone();
-    let copy = settings.clone();
+    let _save = SETTINGS_SAVE.lock().expect("settings save");
+    dictate_config::save(&path, &settings)?;
     drop(settings);
-    dictate_config::save(&path, &copy)?;
     crate::diag::record("correction action");
     Ok(())
 }

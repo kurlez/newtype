@@ -145,6 +145,19 @@ export async function mount(previewMode: boolean): Promise<void> {
   });
   const { listen } = await import("@tauri-apps/api/event");
   await listen<UpdateState>("update://state", (event) => renderUpdate(event.payload));
+  await listen<{ added: number }>("dictation://correction", (event) => {
+    const count = event.payload.added;
+    notice = ui(`Added ${count} correction(s) · Undo`, `已加入 ${count} 条纠正 · 撤销`);
+    void call<Snapshot>("dictation_snapshot").then((fresh) => {
+      snap = fresh;
+      paint();
+      const node = document.querySelector("#notice");
+      if (node) {
+        node.textContent = notice;
+        node.addEventListener("click", () => void correction("undo", "", ""), { once: true });
+      }
+    });
+  });
   await listen<{ routeLabel: string; routeDetail: string; routeNotice: string; connectivity: string }>("dictation://route", (event) => {
     snap.routeLabel = event.payload.routeLabel;
     snap.routeDetail = event.payload.routeDetail;
@@ -617,6 +630,7 @@ function bind(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-dict-filter]").forEach((button) => {
     button.addEventListener("click", () => {
+      readHotwords();
       dictionaryFilter = button.dataset.dictFilter || "all";
       paint();
     });
@@ -1574,14 +1588,10 @@ function pendingSuggestions(settings: Snapshot["settings"]): string {
 
 function hotwordRow(word: Hotword, index: number): string {
   const learned = snap.settings.autoAdded.includes(word.canonical);
-  if (dictionaryFilter === "auto" && !learned) {
-    return "";
-  }
-  if (dictionaryFilter === "manual" && learned) {
-    return "";
-  }
+  const filteredOut = (dictionaryFilter === "auto" && !learned) || (dictionaryFilter === "manual" && learned);
   const haystack = `${word.canonical} ${word.aliases.join(" ")} ${word.pattern}`.toLowerCase();
-  const hidden = dictionaryQuery.trim() && !haystack.includes(dictionaryQuery.trim().toLowerCase()) ? " hidden" : "";
+  const queryHidden = dictionaryQuery.trim() && !haystack.includes(dictionaryQuery.trim().toLowerCase());
+  const hidden = filteredOut || queryHidden ? " hidden" : "";
   const badge = learned
     ? `<span class="muted">${ui("Auto-added", "自动加入")}</span>`
     : `<span class="muted">${ui("Manual", "手动")}</span>`;
