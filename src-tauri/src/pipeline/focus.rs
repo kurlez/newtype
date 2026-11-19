@@ -392,7 +392,8 @@ mod windows {
                 window
             };
             if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-            SetFocus(hwnd);
+                SetFocus(hwnd);
+            }
         }
     }
 
@@ -418,7 +419,6 @@ mod windows {
             );
             true
         }
-    }
     }
 
     fn process_name(pid: u32) -> Option<String> {
