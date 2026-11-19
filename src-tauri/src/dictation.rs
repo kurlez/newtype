@@ -645,7 +645,12 @@ fn spawn_listener(
                         }
                         return false;
                     }
-                    crate::key_feed::Feed::Tick(_at) => {
+                    crate::key_feed::Feed::Tick(at) => {
+                        if !capturing {
+                            for event in engine.release_stale_non_modifiers(at) {
+                                let _ = control.send(Control::Engine(event));
+                            }
+                        }
                         #[cfg(windows)]
                         {
                             let ready = crate::win_hotkey::hook_ready();
@@ -659,6 +664,7 @@ fn spawn_listener(
                                 );
                                 emit_phase(&status_app, "error", "", message, 0, 0.0, "");
                                 show_indicator(&status_app);
+                                schedule_hide(&status_app, 4000);
                             }
                         }
                         #[cfg(not(windows))]
@@ -2196,17 +2202,14 @@ fn play_start_cue(app: &AppHandle) {
         return;
     }
     let queued = app.clone();
-    let play = move || {
-        if sounds_enabled(&queued) {
-            audio::play_start_tone();
-        }
-    };
-    #[cfg(target_os = "macos")]
-    if crate::overlay::is_main_thread() {
-        play();
-        return;
-    }
-    let _ = app.run_on_main_thread(play);
+    std::thread::Builder::new()
+        .name("newtype-start-tone".into())
+        .spawn(move || {
+            if sounds_enabled(&queued) {
+                audio::play_start_tone();
+            }
+        })
+        .ok();
 }
 
 fn bump(app: &AppHandle) -> u64 {

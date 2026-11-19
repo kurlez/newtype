@@ -359,6 +359,31 @@ impl HotkeyEngine {
         self.consume(edge).events
     }
 
+    /// Drop a non-modifier that has not auto-repeated for 10 seconds.
+    /// The age is `now_ms` minus the recorded `down_at`. A repeat down refreshes that time.
+    pub fn release_stale_non_modifiers(&mut self, now_ms: u64) -> Vec<EngineEvent> {
+        const STALE_MS: u64 = 10_000;
+        let stale: Vec<KeyId> = self
+            .down_at
+            .iter()
+            .filter_map(|(key, at)| {
+                if is_modifier(*key) || now_ms.saturating_sub(*at) <= STALE_MS {
+                    None
+                } else {
+                    Some(*key)
+                }
+            })
+            .collect();
+        let mut events = Vec::new();
+        for key in stale {
+            self.down_at.retain(|(held, _)| *held != key);
+            if self.down.contains(&key) {
+                events.extend(self.consume(KeyEdge::Up(key)).events);
+            }
+        }
+        events
+    }
+
     /// Release keys the OS says are up. A missed key-up otherwise stays in
     /// `down`, and the next press of that key is ignored.
     pub fn release_physically_up(&mut self, keys: &[KeyId]) -> Vec<EngineEvent> {
@@ -1475,6 +1500,32 @@ mod tests {
             .all(|event| !matches!(event, EngineEvent::Released(_))));
         assert!(held
             .release_physically_up(&[KeyId::ControlRight])
+            .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
+    }
+
+    #[test]
+    fn a_non_modifier_releases_after_ten_seconds_without_a_repeat() {
+        let mut held = HotkeyEngine::default();
+        held.set_bindings(vec![(
+            HotkeyMode::Dictate,
+            [KeyId::ControlRight, KeyId::Letter(b'Z')].into_iter().collect(),
+        )]);
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::ControlRight), 1_000)
+            .events
+            .is_empty());
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::Letter(b'Z')), 1_000)
+            .events
+            .contains(&EngineEvent::Pressed(HotkeyMode::Dictate)));
+        assert!(held.release_stale_non_modifiers(1_000 + 10_000).is_empty());
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::Letter(b'Z')), 1_000 + 9_000)
+            .events
+            .iter()
+            .all(|event| !matches!(event, EngineEvent::Released(_))));
+        assert!(held
+            .release_stale_non_modifiers(1_000 + 9_000 + 10_001)
             .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
     }
 

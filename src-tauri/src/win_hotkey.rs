@@ -155,7 +155,15 @@ pub fn run() -> Result<(), String> {
 
 fn deliver(event: HookEvent) {
     if event.vk == 0 && event.scan == 0 && !event.up {
-        crate::key_feed::resync(modifiers_physically_up());
+        let up = modifiers_physically_up();
+        for key in &up {
+            if let Some(vk) = hotkey::virtual_key(*key) {
+                if let Some(bit) = hotkey::windows_modifier_bit(vk) {
+                    MODS.fetch_and(!bit, Ordering::Relaxed);
+                }
+            }
+        }
+        crate::key_feed::resync(up);
         crate::key_feed::tick(now_ms());
         return;
     }
