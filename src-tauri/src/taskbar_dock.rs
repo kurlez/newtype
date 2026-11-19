@@ -223,6 +223,52 @@ pub fn counts_as_fullscreen(class: &str, ours: bool, zoomed: bool, covers: bool)
     covers && !ours && !zoomed && !shell_or_desktop_class(class)
 }
 
+/// `QUNS_BUSY`, `QUNS_RUNNING_D3D_FULL_SCREEN`, and `QUNS_PRESENTATION_MODE`.
+pub fn notification_state_is_fullscreen(state: u32) -> bool {
+    matches!(state, 2 | 3 | 4)
+}
+
+/// Fullscreen video and exclusive apps cover the monitor. Maximized windows
+/// stop at the work area, so they do not cover `rcMonitor`. Shell and our own
+/// windows never count.
+pub fn foreground_is_fullscreen_app(class: &str, ours: bool, covers: bool, notification: u32) -> bool {
+    if ours || shell_or_desktop_class(class) {
+        return false;
+    }
+    covers || notification_state_is_fullscreen(notification)
+}
+
+/// One on-screen window from `CGWindowListCopyWindowInfo`.
+#[derive(Clone, Copy)]
+pub struct ScreenWindow {
+    pub owner: i32,
+    pub layer: i32,
+    pub bounds: PxRect,
+}
+
+/// The frontmost app has a normal (layer 0) window that fills a display.
+pub fn mac_front_window_is_fullscreen(front_pid: i32, screen: PxRect, windows: &[ScreenWindow]) -> bool {
+    front_pid > 0
+        && windows.iter().any(|window| {
+            window.owner == front_pid
+                && window.layer == 0
+                && covers_monitor(window.bounds, screen, 2)
+        })
+}
+
+/// Hide the idle indicator while another app is fullscreen. Recording and
+/// processing still show it.
+pub fn hide_idle_indicator(setting_on: bool, phase: &str, fullscreen: bool) -> bool {
+    setting_on && fullscreen && !phase_keeps_indicator(phase)
+}
+
+pub fn phase_keeps_indicator(phase: &str) -> bool {
+    matches!(
+        phase,
+        "starting" | "recording" | "processing" | "busy" | "error" | "copied" | "inserted" | "silence" | "withheld" | "cancelled"
+    )
+}
+
 /// A foreground window covers its monitor when each edge is within `slop`.
 pub fn covers_monitor(window: PxRect, monitor: PxRect, slop: i32) -> bool {
     window.width > 0
@@ -544,6 +590,57 @@ mod win {
         super::counts_as_fullscreen(&class, false, false, super::covers_monitor(window, screen, 2))
     }
 
+    pub fn any_fullscreen() -> bool {
+        unsafe { query_fullscreen() }
+    }
+
+    unsafe fn query_fullscreen() -> bool {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+        };
+        #[link(name = "shell32")]
+        extern "system" {
+            fn SHQueryUserNotificationState(state: *mut i32) -> i32;
+        }
+        let mut note = 0i32;
+        if SHQueryUserNotificationState(&mut note) != 0 {
+            note = 0;
+        }
+        let foreground = GetForegroundWindow();
+        if foreground.is_null() {
+            return super::foreground_is_fullscreen_app("", false, false, note as u32);
+        }
+        let class = class_of(foreground);
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(foreground, &mut owner);
+        let ours = owner != 0 && owner == GetCurrentProcessId();
+        let mut window = RECT::default();
+        let covers = if GetWindowRect(foreground, &mut window) == 0 {
+            false
+        } else {
+            let monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+            if monitor.is_null() {
+                false
+            } else {
+                let mut info = MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                    ..MONITORINFO::default()
+                };
+                if GetMonitorInfoW(monitor, &mut info) == 0 {
+                    false
+                } else {
+                    super::covers_monitor(from_rect(window), from_rect(info.rcMonitor), 2)
+                }
+            }
+        };
+        super::foreground_is_fullscreen_app(&class, ours, covers, note as u32)
+    }
+
     unsafe fn find_class(
         root: windows_sys::Win32::Foundation::HWND,
         class_name: &str,
@@ -597,6 +694,163 @@ mod win {
 pub use win::place_strip;
 #[cfg(windows)]
 pub use win::read as read_taskbar;
+
+/// True when another app owns the foreground and is fullscreen.
+pub fn foreground_fullscreen() -> bool {
+    #[cfg(windows)]
+    {
+        return win::any_fullscreen();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return mac::any_fullscreen();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::{mac_front_window_is_fullscreen, PxRect, ScreenWindow};
+
+    pub fn any_fullscreen() -> bool {
+        let front = crate::pipeline::focus::front_pid().unwrap_or(0) as i32;
+        if front <= 0 || front as u32 == std::process::id() {
+            return false;
+        }
+        let Some(windows) = on_screen_windows() else {
+            return false;
+        };
+        display_bounds().iter().any(|screen| mac_front_window_is_fullscreen(front, *screen, &windows))
+    }
+
+    fn on_screen_windows() -> Option<Vec<ScreenWindow>> {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGWindowListCopyWindowInfo(option: u32, relative: u32) -> *const std::ffi::c_void;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        extern "C" {
+            fn CFArrayGetCount(array: *const std::ffi::c_void) -> isize;
+            fn CFArrayGetValueAtIndex(array: *const std::ffi::c_void, index: isize) -> *const std::ffi::c_void;
+            fn CFDictionaryGetValue(dict: *const std::ffi::c_void, key: *const std::ffi::c_void) -> *const std::ffi::c_void;
+            fn CFNumberGetValue(number: *const std::ffi::c_void, kind: i32, value: *mut std::ffi::c_void) -> u8;
+            fn CFRelease(item: *const std::ffi::c_void);
+        }
+        use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
+        const ON_SCREEN: u32 = 1;
+        const SINT32: i32 = 3;
+        const FLOAT64: i32 = 6;
+        unsafe {
+            let list = CGWindowListCopyWindowInfo(ON_SCREEN, 0);
+            if list.is_null() {
+                return None;
+            }
+            let owner_key = CFString::new("kCGWindowOwnerPID");
+            let layer_key = CFString::new("kCGWindowLayer");
+            let bounds_key = CFString::new("kCGWindowBounds");
+            let count = CFArrayGetCount(list);
+            let mut windows = Vec::new();
+            for index in 0..count {
+                let dict = CFArrayGetValueAtIndex(list, index);
+                if dict.is_null() {
+                    continue;
+                }
+                let owner = number_i32(CFDictionaryGetValue(dict, owner_key.as_concrete_TypeRef() as *const std::ffi::c_void), SINT32, CFNumberGetValue);
+                let layer = number_i32(CFDictionaryGetValue(dict, layer_key.as_concrete_TypeRef() as *const std::ffi::c_void), SINT32, CFNumberGetValue);
+                let bounds = dict_bounds(CFDictionaryGetValue(dict, bounds_key.as_concrete_TypeRef() as *const std::ffi::c_void), FLOAT64, CFDictionaryGetValue, CFNumberGetValue);
+                if let (Some(owner), Some(layer), Some(bounds)) = (owner, layer, bounds) {
+                    windows.push(ScreenWindow { owner, layer, bounds });
+                }
+            }
+            CFRelease(list);
+            Some(windows)
+        }
+    }
+
+    fn number_i32(
+        value: *const std::ffi::c_void,
+        kind: i32,
+        get: unsafe extern "C" fn(*const std::ffi::c_void, i32, *mut std::ffi::c_void) -> u8,
+    ) -> Option<i32> {
+        if value.is_null() {
+            return None;
+        }
+        let mut out = 0i32;
+        let ok = unsafe { get(value, kind, &mut out as *mut i32 as *mut std::ffi::c_void) };
+        (ok != 0).then_some(out)
+    }
+
+    fn dict_bounds(
+        value: *const std::ffi::c_void,
+        kind: i32,
+        get_dict: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> *const std::ffi::c_void,
+        get_num: unsafe extern "C" fn(*const std::ffi::c_void, i32, *mut std::ffi::c_void) -> u8,
+    ) -> Option<PxRect> {
+        if value.is_null() {
+            return None;
+        }
+        use core_foundation::base::TCFType;
+        use core_foundation::string::CFString;
+        let read = |name: &str| {
+            let key = CFString::new(name);
+            let number = unsafe { get_dict(value, key.as_concrete_TypeRef() as *const std::ffi::c_void) };
+            if number.is_null() {
+                return None;
+            }
+            let mut out = 0f64;
+            let ok = unsafe { get_num(number, kind, &mut out as *mut f64 as *mut std::ffi::c_void) };
+            (ok != 0).then_some(out)
+        };
+        Some(PxRect {
+            x: read("X")? as i32,
+            y: read("Y")? as i32,
+            width: read("Width")? as i32,
+            height: read("Height")? as i32,
+        })
+    }
+
+    fn display_bounds() -> Vec<PxRect> {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        extern "C" {
+            fn CGGetActiveDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+            fn CGDisplayBounds(display: u32) -> DisplayRect;
+        }
+        #[repr(C)]
+        struct DisplayRect {
+            x: f64,
+            y: f64,
+            width: f64,
+            height: f64,
+        }
+        unsafe {
+            let mut count = 0u32;
+            if CGGetActiveDisplayList(0, std::ptr::null_mut(), &mut count) != 0 || count == 0 {
+                return Vec::new();
+            }
+            let mut ids = vec![0u32; count as usize];
+            if CGGetActiveDisplayList(count, ids.as_mut_ptr(), &mut count) != 0 {
+                return Vec::new();
+            }
+            ids.into_iter()
+                .take(count as usize)
+                .map(|id| {
+                    let rect = CGDisplayBounds(id);
+                    PxRect {
+                        x: rect.x as i32,
+                        y: rect.y as i32,
+                        width: rect.width as i32,
+                        height: rect.height as i32,
+                    }
+                })
+                .filter(|rect| rect.width > 0 && rect.height > 0)
+                .collect()
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -822,6 +1076,45 @@ mod tests {
             false,
             covers_monitor(work, screen, 2)
         ));
+    }
+
+    #[test]
+    fn a_fullscreen_video_hides_the_idle_indicator() {
+        let screen = PxRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let video = screen;
+        let covers = covers_monitor(video, screen, 2);
+        assert!(foreground_is_fullscreen_app("Chrome_WidgetWin_1", false, covers, 5));
+        assert!(foreground_is_fullscreen_app("Chrome_WidgetWin_1", false, false, 2));
+        assert!(foreground_is_fullscreen_app("Chrome_WidgetWin_1", false, false, 3));
+        assert!(foreground_is_fullscreen_app("Chrome_WidgetWin_1", false, false, 4));
+        assert!(!foreground_is_fullscreen_app("Chrome_WidgetWin_1", false, false, 5));
+        assert!(!foreground_is_fullscreen_app("Progman", false, true, 2));
+        assert!(!foreground_is_fullscreen_app("WorkerW", false, true, 3));
+        assert!(!foreground_is_fullscreen_app("Shell_TrayWnd", false, true, 4));
+        assert!(!foreground_is_fullscreen_app("Chrome_WidgetWin_1", true, true, 3));
+        assert!(hide_idle_indicator(true, "idle", true));
+        assert!(!hide_idle_indicator(true, "recording", true));
+        assert!(!hide_idle_indicator(true, "processing", true));
+        assert!(!hide_idle_indicator(false, "idle", true));
+        assert!(!hide_idle_indicator(true, "idle", false));
+        let chrome = ScreenWindow {
+            owner: 42,
+            layer: 0,
+            bounds: screen,
+        };
+        let menu = ScreenWindow {
+            owner: 42,
+            layer: 8,
+            bounds: screen,
+        };
+        assert!(mac_front_window_is_fullscreen(42, screen, &[chrome, menu]));
+        assert!(!mac_front_window_is_fullscreen(42, screen, &[menu]));
+        assert!(!mac_front_window_is_fullscreen(7, screen, &[chrome]));
     }
 
     #[test]

@@ -98,6 +98,9 @@ pub struct DictationSettings {
     /// Play the short start tone when the microphone begins delivering samples.
     #[serde(default = "default_true")]
     pub sounds: bool,
+    /// Hide the idle indicator while another app is fullscreen.
+    #[serde(default = "default_true")]
+    pub hide_indicator_fullscreen: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
@@ -187,6 +190,7 @@ impl Default for DictationSettings {
             ui_language: "auto".into(),
             indicator_place: default_indicator_place(),
             sounds: true,
+            hide_indicator_fullscreen: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -368,6 +372,9 @@ pub fn merge_ui_settings(
     }
     if let Some(value) = obj.get("sounds").and_then(|value| value.as_bool()) {
         next.sounds = value;
+    }
+    if let Some(value) = obj.get("hideIndicatorFullscreen").and_then(|value| value.as_bool()) {
+        next.hide_indicator_fullscreen = value;
     }
     if let Some(value) = obj
         .get("groqRateLimitFallback")

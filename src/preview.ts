@@ -29,6 +29,7 @@ export const previewSnapshot: Snapshot = {
     indicatorPlace: "floating",
     groqRateLimitFallback: true,
     sounds: true,
+    hideIndicatorFullscreen: true,
     uiLanguage: "auto",
     providers: {
       openai: {

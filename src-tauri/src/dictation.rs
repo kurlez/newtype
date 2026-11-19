@@ -272,6 +272,7 @@ impl Dictation {
         show_indicator(&app);
         #[cfg(windows)]
         watch_taskbar(app.clone());
+        watch_fullscreen(app.clone());
         {
             let state = app.state::<Dictation>();
             apply_route_mode(&state, true);
@@ -2677,6 +2678,24 @@ fn show_indicator(app: &AppHandle) {
     sync_indicator(app);
 }
 
+fn watch_fullscreen(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("newtype-fullscreen".into())
+        .spawn(move || {
+            let mut last = false;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let now = crate::taskbar_dock::foreground_fullscreen();
+                if now == last {
+                    continue;
+                }
+                last = now;
+                show_indicator(&app);
+            }
+        })
+        .ok();
+}
+
 #[cfg(windows)]
 fn watch_taskbar(app: AppHandle) {
     std::thread::Builder::new()
@@ -2720,6 +2739,31 @@ fn sync_indicator(app: &AppHandle) {
         .unwrap_or_default();
     let place = dictate_config::indicator_place(&raw);
     log_indicator("mode", &format!("indicator mode {place}"));
+    let phase = app
+        .state::<Dictation>()
+        .phase
+        .lock()
+        .map(|phase| phase.clone())
+        .unwrap_or_default();
+    let hide_fullscreen = app
+        .state::<Dictation>()
+        .settings
+        .lock()
+        .map(|settings| settings.hide_indicator_fullscreen)
+        .unwrap_or(true);
+    let fullscreen = crate::taskbar_dock::foreground_fullscreen();
+    if crate::taskbar_dock::hide_idle_indicator(hide_fullscreen, &phase, fullscreen) {
+        let _ = window.hide();
+        log_indicator("hidden", "indicator hidden: fullscreen app");
+        mark_indicator(&window, "hidden");
+        LAST.store(LAYOUT_HIDDEN, Ordering::Relaxed);
+        return;
+    }
+    if hide_fullscreen && fullscreen && crate::taskbar_dock::phase_keeps_indicator(&phase) {
+        let previous = LAST.swap(LAYOUT_FLOATING, Ordering::Relaxed);
+        show_floating(&window, previous != LAYOUT_FLOATING);
+        return;
+    }
     match place {
         "hidden" => {
             let _ = window.hide();
@@ -2877,11 +2921,18 @@ fn dock_indicator(
             ),
         );
         if reading.fullscreen {
-            let _ = window.hide();
-            log_indicator("hidden", "indicator hidden: fullscreen app");
-            clear_indicator_log("fallback");
-            clear_indicator_log("strip");
-            return true;
+            let phase = window
+                .app_handle()
+                .try_state::<Dictation>()
+                .and_then(|state| state.phase.lock().ok().map(|phase| phase.clone()))
+                .unwrap_or_default();
+            if !crate::taskbar_dock::phase_keeps_indicator(&phase) {
+                let _ = window.hide();
+                log_indicator("hidden", "indicator hidden: fullscreen app");
+                clear_indicator_log("fallback");
+                clear_indicator_log("strip");
+                return true;
+            }
         }
         let thickness = match reading.edge {
             crate::taskbar_dock::BarEdge::Left | crate::taskbar_dock::BarEdge::Right => {
