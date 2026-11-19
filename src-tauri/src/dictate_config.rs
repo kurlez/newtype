@@ -55,6 +55,23 @@ pub struct DictationSettings {
     pub dictate_hotkey: String,
     pub translate_hotkey: String,
     pub command_hotkey: String,
+    /// Empty uses Ctrl+Cmd+V on macOS and Alt+Shift+Z on Windows.
+    #[serde(default)]
+    pub paste_last_hotkey: String,
+    /// Put the transcript back in the field that was focused at the hotkey.
+    #[serde(default = "default_true")]
+    pub return_to_field: bool,
+    /// Learn a repeated spelling correction into the dictionary.
+    #[serde(default = "default_true")]
+    pub auto_add_corrections: bool,
+    /// Canonical spellings that were learned rather than typed.
+    #[serde(default)]
+    pub auto_added: Vec<String>,
+    /// Learned spellings the user deleted. They are not added again.
+    #[serde(default)]
+    pub auto_removed: Vec<String>,
+    #[serde(default)]
+    pub correction_suggestions: Vec<crate::pipeline::corrections::Suggestion>,
     pub thinking: String,
     pub microphone: String,
     pub local_mirror: String,
@@ -78,11 +95,18 @@ pub struct DictationSettings {
     /// `taskbar` (Windows default), `floating`, or `hidden`.
     #[serde(default = "default_indicator_place")]
     pub indicator_place: String,
+    /// Play the short start tone when the microphone begins delivering samples.
+    #[serde(default = "default_true")]
+    pub sounds: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub hotwords: Vec<Hotword>,
 }
 
 fn default_window_translucent() -> bool {
+    true
+}
+
+pub fn default_true() -> bool {
     true
 }
 
@@ -143,6 +167,12 @@ impl Default for DictationSettings {
             dictate_hotkey: String::new(),
             translate_hotkey: String::new(),
             command_hotkey: String::new(),
+            paste_last_hotkey: String::new(),
+            return_to_field: true,
+            auto_add_corrections: true,
+            auto_added: Vec::new(),
+            auto_removed: Vec::new(),
+            correction_suggestions: Vec::new(),
             thinking: "auto".into(),
             microphone: String::new(),
             local_mirror: "auto".into(),
@@ -156,6 +186,7 @@ impl Default for DictationSettings {
             groq_rate_limit_fallback: true,
             ui_language: "auto".into(),
             indicator_place: default_indicator_place(),
+            sounds: true,
             providers,
             hotwords: Vec::new(),
         }
@@ -195,6 +226,7 @@ pub struct Effective {
     pub warnings: Vec<String>,
     pub hotwords: Vec<Hotword>,
     pub microphone: String,
+    pub return_to_field: bool,
     pub target_language: String,
     pub history_retention: Retention,
 }
@@ -308,6 +340,15 @@ pub fn merge_ui_settings(
     if let Some(value) = json_str(obj, "commandHotkey") {
         assign_hotkey_field(&mut next.command_hotkey, value, clear_hotkeys);
     }
+    if let Some(value) = json_str(obj, "pasteLastHotkey") {
+        assign_hotkey_field(&mut next.paste_last_hotkey, value, clear_hotkeys);
+    }
+    if let Some(value) = obj.get("returnToField").and_then(|value| value.as_bool()) {
+        next.return_to_field = value;
+    }
+    if let Some(value) = obj.get("autoAddCorrections").and_then(|value| value.as_bool()) {
+        next.auto_add_corrections = value;
+    }
     assign_text(obj, "asrProvider", &mut next.asr_provider, true);
     assign_text(obj, "llmProvider", &mut next.llm_provider, true);
     assign_text(obj, "talkMode", &mut next.talk_mode, true);
@@ -324,6 +365,9 @@ pub fn merge_ui_settings(
     assign_text(obj, "indicatorPlace", &mut next.indicator_place, true);
     if let Some(value) = obj.get("windowTranslucent").and_then(|value| value.as_bool()) {
         next.window_translucent = value;
+    }
+    if let Some(value) = obj.get("sounds").and_then(|value| value.as_bool()) {
+        next.sounds = value;
     }
     if let Some(value) = obj
         .get("groqRateLimitFallback")
@@ -343,6 +387,14 @@ pub fn merge_ui_settings(
     if let Some(words) = obj.get("hotwords") {
         next.hotwords = serde_json::from_value(words.clone())
             .map_err(|err| format!("Could not read the dictionary in this save: {err}"))?;
+    }
+    if let Some(removed) = obj.get("removedAutoAdded").and_then(|value| value.as_array()) {
+        for term in removed.iter().filter_map(|value| value.as_str()) {
+            next.auto_added.retain(|existing| existing != term);
+            if !next.auto_removed.iter().any(|existing| existing == term) {
+                next.auto_removed.push(term.to_string());
+            }
+        }
     }
     if let Some(providers) = obj.get("providers").and_then(|value| value.as_object()) {
         merge_provider_patch(&mut next, providers)?;
@@ -426,6 +478,7 @@ pub fn assign_hotkey(
         "dictate" => &mut settings.dictate_hotkey,
         "translate" => &mut settings.translate_hotkey,
         "command" => &mut settings.command_hotkey,
+        "paste" => &mut settings.paste_last_hotkey,
         _ => return Err("Unknown hotkey.".into()),
     };
     let previous = std::mem::replace(slot, canonical);
@@ -436,6 +489,7 @@ pub fn assign_hotkey(
                 "dictate" => &mut settings.dictate_hotkey,
                 "translate" => &mut settings.translate_hotkey,
                 "command" => &mut settings.command_hotkey,
+                "paste" => &mut settings.paste_last_hotkey,
                 _ => return Err(err),
             };
             *slot = previous;
@@ -474,7 +528,8 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     let dictate = hotkey::effective_chord(&settings.dictate_hotkey, HotkeyMode::Dictate, os)?;
     let translate = hotkey::effective_chord(&settings.translate_hotkey, HotkeyMode::Translate, os)?;
     let command = hotkey::effective_chord(&settings.command_hotkey, HotkeyMode::Command, os)?;
-    let bindings = vec![
+    let paste_last = hotkey::effective_chord(&settings.paste_last_hotkey, HotkeyMode::PasteLast, os)?;
+    let mut bindings = vec![
         (HotkeyMode::Dictate, dictate),
         (HotkeyMode::Translate, translate),
         (HotkeyMode::Command, command),
@@ -482,7 +537,17 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
     if let Some(error) = binding_error(&bindings) {
         return Err(error);
     }
-    let warnings = binding_warnings(&bindings, os);
+    let mut warnings = binding_warnings(&bindings, os);
+    let mut with_paste = bindings.clone();
+    with_paste.push((HotkeyMode::PasteLast, paste_last.clone()));
+    if binding_error(&with_paste).is_some() {
+        warnings.push(
+            "Paste last transcript uses the same keys as another hotkey, so that shortcut is off."
+                .into(),
+        );
+    } else {
+        bindings = with_paste;
+    }
     let labels = bindings
         .iter()
         .map(|(_, chord)| hotkey::chord_label(chord, os))
@@ -522,6 +587,7 @@ pub fn effective(settings: &DictationSettings, os: OsKind) -> Result<Effective, 
         warnings,
         hotwords: settings.hotwords.clone(),
         microphone: settings.microphone.clone(),
+        return_to_field: settings.return_to_field,
         target_language: task::normalize_target(&settings.target_language),
         history_retention: Retention::parse(&settings.history_retention),
     })

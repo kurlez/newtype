@@ -178,6 +178,16 @@ pub async fn dictation_rerun_history(app: AppHandle, id: String) -> Result<Strin
 }
 
 #[tauri::command]
+pub fn dictation_correction(
+    app: AppHandle,
+    action: String,
+    heard: String,
+    corrected: String,
+) -> Result<(), String> {
+    crate::dictation::correction_action(&app, &action, &heard, &corrected)
+}
+
+#[tauri::command]
 pub fn dictation_export_dictionary(app: AppHandle) -> Result<String, String> {
     crate::dictation::export_dictionary(&app)
 }

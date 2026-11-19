@@ -31,9 +31,24 @@ const WM_TIMER: u32 = 0x0113;
 const LLKHF_UP: u32 = 0x80;
 const WATCH_VKS: [i32; 8] = [0xA5, 0xA3, 0xA1, 0xA2, 0xA4, 0x14, 0x1B, 0x70];
 
+const MODIFIER_VKS: [i32; 8] = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
+
 static TX: OnceLock<SyncSender<HookEvent>> = OnceLock::new();
 static LAST_CALLBACK_MS: AtomicU64 = AtomicU64::new(0);
 static DROPPED: AtomicU32 = AtomicU32::new(0);
+static HOOK_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MODS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RULE_COUNT: AtomicU32 = AtomicU32::new(0);
+static RULES: [AtomicU64; 8] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 static SWALLOW: [AtomicU32; 8] = [
     AtomicU32::new(0),
     AtomicU32::new(0),
@@ -45,12 +60,17 @@ static SWALLOW: [AtomicU32; 8] = [
     AtomicU32::new(0),
 ];
 
-#[derive(Clone, Copy)]
-struct HookEvent {
-    vk: u32,
-    scan: u32,
-    flags: u32,
-    up: bool,
+pub fn hook_ready() -> bool {
+    HOOK_READY.load(Ordering::Relaxed)
+}
+
+pub fn publish_chords(chords: &[hotkey::Chord]) {
+    let rules = hotkey::swallow_rules(chords);
+    for (index, rule) in rules.iter().take(RULES.len()).enumerate() {
+        let packed = (u64::from(rule.mods) << 32) | u64::from(rule.vk);
+        RULES[index].store(packed, Ordering::Relaxed);
+    }
+    RULE_COUNT.store(rules.len().min(RULES.len()) as u32, Ordering::Release);
 }
 
 fn mark_swallowed(vk: u32) {
@@ -71,6 +91,54 @@ fn take_swallowed(vk: u32) -> bool {
     previous & bit != 0
 }
 
+fn note_modifier(event: &HookEvent) {
+    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
+        return;
+    }
+    let Some(bit) = hotkey::windows_modifier_bit(event.vk) else {
+        return;
+    };
+    if event.up {
+        MODS.fetch_and(!bit, Ordering::Relaxed);
+    } else {
+        MODS.fetch_or(bit, Ordering::Relaxed);
+    }
+}
+
+fn chord_matches(mods: u32, vk: u32) -> bool {
+    let count = RULE_COUNT.load(Ordering::Acquire) as usize;
+    for rule in RULES.iter().take(count) {
+        let packed = rule.load(Ordering::Relaxed);
+        let rule_vk = packed as u32;
+        let rule_mods = (packed >> 32) as u32;
+        if rule_vk == vk && rule_mods == mods {
+            return true;
+        }
+    }
+    false
+}
+
+fn should_swallow_down(event: &HookEvent) -> bool {
+    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
+        return hotkey::os_capture() || hotkey::altgr_bound();
+    }
+    if hotkey::os_capture() {
+        return true;
+    }
+    if hotkey::session_keys() && matches!(event.vk, 0x0D | 0x1B) {
+        return true;
+    }
+    chord_matches(MODS.load(Ordering::Relaxed), event.vk)
+}
+
+#[derive(Clone, Copy)]
+struct HookEvent {
+    vk: u32,
+    scan: u32,
+    flags: u32,
+    up: bool,
+}
+
 pub fn run() -> Result<(), String> {
     let (tx, rx) = sync_channel::<HookEvent>(256);
     TX.set(tx).map_err(|_| "hotkey hook already started".to_string())?;
@@ -86,6 +154,19 @@ pub fn run() -> Result<(), String> {
 }
 
 fn deliver(event: HookEvent) {
+    if event.vk == 0 && event.scan == 0 && !event.up {
+        let up = modifiers_physically_up();
+        for key in &up {
+            if let Some(vk) = hotkey::virtual_key(*key) {
+                if let Some(bit) = hotkey::windows_modifier_bit(vk) {
+                    MODS.fetch_and(!bit, Ordering::Relaxed);
+                }
+            }
+        }
+        crate::key_feed::resync(up);
+        crate::key_feed::tick(now_ms());
+        return;
+    }
     if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
         return;
     }
@@ -95,6 +176,22 @@ fn deliver(event: HookEvent) {
     let _ = crate::key_feed::push(edge, false);
 }
 
+pub fn modifiers_physically_up() -> Vec<hotkey::KeyId> {
+    let mut up = Vec::new();
+    for vk in MODIFIER_VKS {
+        let down = unsafe { GetAsyncKeyState(vk) } < 0;
+        if down {
+            continue;
+        }
+        if let Some(edge) = hotkey::edge_from_windows(vk as u32, 0, LLKHF_UP, true) {
+            if let hotkey::KeyEdge::Up(key) = edge {
+                up.push(key);
+            }
+        }
+    }
+    up
+}
+
 fn hook_thread() {
     unsafe {
         let mut ready = MSG::default();
@@ -102,8 +199,9 @@ fn hook_thread() {
         let mut hook = match install_hook() {
             Ok(hook) => hook,
             Err(err) => {
-                crate::diag::record(&format!("hotkey hook stopped: {err}"));
-                return;
+                HOOK_READY.store(false, Ordering::Relaxed);
+                crate::diag::record(&format!("hotkey hook install failed: {err}"));
+                std::ptr::null_mut()
             }
         };
         // Clear the sticky "pressed since last query" bit before watching.
@@ -132,9 +230,17 @@ fn hook_thread() {
                     crate::diag::record(&format!("hotkey hook queue dropped {dropped}"));
                 }
                 let now = now_ms();
-                if watch.observe(LAST_CALLBACK_MS.load(Ordering::Relaxed), now, key_activity())
-                    && now.saturating_sub(last_reinstall_ms) > 1_000
-                {
+                if let Some(tx) = TX.get() {
+                    let _ = tx.try_send(HookEvent {
+                        vk: 0,
+                        scan: 0,
+                        flags: 0,
+                        up: false,
+                    });
+                }
+                let dead = hook.is_null()
+                    || watch.observe(LAST_CALLBACK_MS.load(Ordering::Relaxed), now, key_activity());
+                if dead && now.saturating_sub(last_reinstall_ms) > 1_000 {
                     crate::diag::record("hotkey hook dead; reinstalling");
                     if !hook.is_null() {
                         UnhookWindowsHookEx(hook);
@@ -147,6 +253,7 @@ fn hook_thread() {
                         }
                         Err(err) => {
                             hook = std::ptr::null_mut();
+                            HOOK_READY.store(false, Ordering::Relaxed);
                             crate::diag::record(&format!("hotkey hook reinstall failed: {err}"));
                         }
                     }
@@ -169,6 +276,7 @@ fn install_hook() -> Result<HHOOK, String> {
             let code = GetLastError();
             return Err(format!("SetWindowsHookExW failed ({code})"));
         }
+        HOOK_READY.store(true, Ordering::Relaxed);
         crate::diag::record("Windows hotkey hook installed");
         Ok(hook)
     }
@@ -187,23 +295,22 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         if let Some(event) = raw_event(wparam, lparam) {
             LAST_CALLBACK_MS.store(now_ms(), Ordering::Relaxed);
-            let queued = match TX.get() {
-                Some(tx) => match tx.try_send(event) {
-                    Ok(()) => true,
-                    Err(TrySendError::Full(_)) => {
-                        DROPPED.fetch_add(1, Ordering::Relaxed);
-                        false
-                    }
-                    Err(TrySendError::Disconnected(_)) => false,
-                },
-                None => false,
-            };
-            if event.up {
-                if take_swallowed(event.vk) {
-                    return 1;
+            note_modifier(&event);
+            let swallow = if event.up {
+                take_swallowed(event.vk)
+            } else {
+                let swallow = should_swallow_down(&event);
+                if swallow {
+                    mark_swallowed(event.vk);
                 }
-            } else if queued && swallow_down(event) {
-                mark_swallowed(event.vk);
+                swallow
+            };
+            if let Some(tx) = TX.get() {
+                if let Err(TrySendError::Full(_)) = tx.try_send(event) {
+                    DROPPED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            if swallow {
                 return 1;
             }
         }
@@ -224,31 +331,6 @@ fn raw_event(wparam: WPARAM, lparam: LPARAM) -> Option<HookEvent> {
         flags: info.flags,
         up: up || info.flags & LLKHF_UP != 0,
     })
-}
-
-fn swallow_down(event: HookEvent) -> bool {
-    if hotkey::is_altgr_synthetic_ctrl(event.vk, event.scan, event.flags) {
-        return hotkey::os_capture() || hotkey::altgr_bound();
-    }
-    if hotkey::os_capture() {
-        return true;
-    }
-    let key = hotkey::key_from_windows_vk(event.vk);
-    hotkey::suppress_published(&held_modifiers(), key, hotkey::session_keys())
-}
-
-fn held_modifiers() -> hotkey::Chord {
-    let mut held = hotkey::Chord::new();
-    for vk in [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C] {
-        let down = unsafe { GetAsyncKeyState(vk) } < 0;
-        if down {
-            let key = hotkey::key_from_windows_vk(vk as u32);
-            if hotkey::is_modifier(key) {
-                held.insert(key);
-            }
-        }
-    }
-    held
 }
 
 fn now_ms() -> u64 {

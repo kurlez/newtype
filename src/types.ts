@@ -15,6 +15,13 @@ export interface Hotword {
   pattern: string;
 }
 
+export interface CorrectionSuggestion {
+  heard: string;
+  corrected: string;
+  seen: number;
+  state: string;
+}
+
 export interface DictationSettings {
   asrProvider: string;
   llmProvider: string;
@@ -24,6 +31,12 @@ export interface DictationSettings {
   dictateHotkey: string;
   translateHotkey: string;
   commandHotkey: string;
+  pasteLastHotkey: string;
+  returnToField: boolean;
+  autoAddCorrections: boolean;
+  autoAdded: string[];
+  autoRemoved: string[];
+  correctionSuggestions: CorrectionSuggestion[];
   thinking: string;
   microphone: string;
   localMirror: string;
@@ -36,6 +49,7 @@ export interface DictationSettings {
   windowTranslucent: boolean;
   indicatorPlace: string;
   groqRateLimitFallback: boolean;
+  sounds: boolean;
   uiLanguage: string;
   providers: Record<string, ProviderConfig>;
   hotwords: Hotword[];

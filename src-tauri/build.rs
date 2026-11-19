@@ -35,6 +35,7 @@ fn main() {
             "dictation_clear_history",
             "dictation_rerun_history",
             "dictation_export_dictionary",
+            "dictation_correction",
             "dictation_import_dictionary",
             "dictation_microphones",
             "dictation_probe_microphone",

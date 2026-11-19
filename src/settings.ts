@@ -32,6 +32,7 @@ const HOTKEY_MODES: Array<[HotkeyModeName, string, string]> = [
   ["dictate", "Dictate", "口授"],
   ["translate", "Translate", "翻译"],
   ["command", "Command", "指令"],
+  ["paste", "Paste last", "粘贴上一条"],
 ];
 
 const TARGET_LANGUAGES = ["English", "简体中文", "繁体中文", "日本語", "Español", "Français", "Deutsch", "한국어", "Português"];
@@ -47,6 +48,7 @@ const editors: Record<HotkeyModeName, HotkeyEditor> = {
   dictate: idleEditor("", ""),
   translate: idleEditor("", ""),
   command: idleEditor("", ""),
+  paste: idleEditor("", ""),
 };
 
 let hotkeyMessage = "";
@@ -74,6 +76,7 @@ let notice = "";
 let preview = false;
 let remoteModels: string[] = [];
 let dictionaryQuery = "";
+let dictionaryFilter = "all";
 let historyQuery = "";
 let mainTab: "history" | "settings" = "history";
 
@@ -142,6 +145,19 @@ export async function mount(previewMode: boolean): Promise<void> {
   });
   const { listen } = await import("@tauri-apps/api/event");
   await listen<UpdateState>("update://state", (event) => renderUpdate(event.payload));
+  await listen<{ added: number }>("dictation://correction", (event) => {
+    const count = event.payload.added;
+    notice = ui(`Added ${count} correction(s) · Undo`, `已加入 ${count} 条纠正 · 撤销`);
+    void call<Snapshot>("dictation_snapshot").then((fresh) => {
+      snap = fresh;
+      paint();
+      const node = document.querySelector("#notice");
+      if (node) {
+        node.textContent = notice;
+        node.addEventListener("click", () => void correction("undo", "", ""), { once: true });
+      }
+    });
+  });
   await listen<{ routeLabel: string; routeDetail: string; routeNotice: string; connectivity: string }>("dictation://route", (event) => {
     snap.routeLabel = event.payload.routeLabel;
     snap.routeDetail = event.payload.routeDetail;
@@ -336,6 +352,7 @@ function refreshChrome(): void {
 }
 
 function paint(): void {
+  rememberPaintedLearned();
   const host = document.querySelector("#dictate");
   if (!host) {
     return;
@@ -443,6 +460,10 @@ function paint(): void {
       <h2 id="sec-hotkey">${ui("Hotkeys", "快捷键")}</h2>
       <p class="status hotkey-hint">${ui("The default chord uses Right Ctrl. If this keyboard has no Right Ctrl key, click Capture, press a key that exists (Right Alt works), then click Set. Set saves that chord and starts using it immediately. Cancel or Escape leaves the saved chord in place. A shortcut clash is a warning, and Set still keeps the chord.", "默认组合是右 Ctrl。如果键盘没有右 Ctrl，点击捕获，按一个存在的键（右 Alt 可以），再点击设置。设置会立刻保存并使用。取消或 Esc 保留原来的组合。和其他应用的快捷键冲突只是警告，设置仍会保留这个组合。")}</p>
       ${radios("talk", [["toggle", ui("Toggle", "切换"), ui("Press to start, press again to stop.", "按一次开始，再按一次停止。")], ["hold", ui("Hold to talk", "按住说话"), ui("Release to stop.", "松开即停止。")]], settings.talkMode)}
+      <label class="choice"><input type="checkbox" id="sounds" ${settings.sounds !== false ? "checked" : ""} /><span>${ui("Start sound", "开始提示音")}<small>${ui("A short tone when the microphone starts delivering audio.", "麦克风开始收到声音时播放一声短提示。")}</small></span></label>
+      <label class="check"><input id="return-to-field" type="checkbox" ${settings.returnToField ? "checked" : ""} /> ${ui("Return to the original input field", "回到原来的输入框")}</label>
+      <label class="check"><input id="auto-corrections" type="checkbox" ${settings.autoAddCorrections ? "checked" : ""} /> ${ui("Auto-add corrections to dictionary", "自动把纠正加入词典")}</label>
+      <p class="hint">${ui("Paste last transcript uses Ctrl+Command+V on macOS and Alt+Shift+Z on Windows. Leave the hotkey blank to keep that default.", "粘贴上一条在 macOS 上是 Ctrl+Command+V，在 Windows 上是 Alt+Shift+Z。快捷键留空就用这个默认。")}</p>
       <div id="hotkey-editor">${hotkeyEditorInner()}</div>
     </section>
     <section>
@@ -468,9 +489,16 @@ function paint(): void {
       <h2>${ui("Dictionary", "词典")}</h2>
       <p class="status">${ui("Groq and OpenAI receive a short speech hint. Volcengine and DashScope receive native hotwords. Every provider still lists the full dictionary in the rewrite prompt. Replacements run before the model.", "Groq 和 OpenAI 收到一段短提示。火山和通义收到原生热词。改写提示仍包含完整词典。替换在模型之前执行。")}</p>
       <label class="field">${ui("Search", "搜索")}<input id="dictionary-search" value="${escapeHtml(dictionaryQuery)}" placeholder="${ui("Term or replacement", "词条或替换")}" /></label>
+      <div class="row">
+        <button type="button" data-dict-filter="all">${ui("All", "全部")}</button>
+        <button type="button" data-dict-filter="auto">${ui("Auto-added", "自动加入")}</button>
+        <button type="button" data-dict-filter="manual">${ui("Manual", "手动")}</button>
+      </div>
+      ${pendingSuggestions(settings)}
       <div id="hotwords">${settings.hotwords.map((word, index) => hotwordRow(word, index)).join("")}</div>
       <div class="row">
         <button type="button" id="add-hotword">${ui("Add term", "添加词条")}</button>
+        <button type="button" id="undo-correction">${ui("Undo auto-add", "撤销自动加入")}</button>
         <button type="button" id="export-dictionary">${ui("Export JSON", "导出 JSON")}</button>
         <button type="button" id="import-dictionary">${ui("Import dictionary", "导入词典")}</button>
       </div>
@@ -601,6 +629,24 @@ function bind(): void {
     snap.settings.hotwords.push({ canonical: "", aliases: [], pattern: "" });
     paint();
   });
+  document.querySelectorAll<HTMLButtonElement>("[data-dict-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      readHotwords();
+      dictionaryFilter = button.dataset.dictFilter || "all";
+      paint();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-accept-correction]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void correction("accept", button.dataset.acceptCorrection || "", button.dataset.corrected || "");
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-ignore-correction]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void correction("ignore", button.dataset.ignoreCorrection || "", button.dataset.corrected || "");
+    });
+  });
+  document.querySelector("#undo-correction")?.addEventListener("click", () => void correction("undo", "", ""));
   document.querySelector("#dictionary-search")?.addEventListener("input", (event) => {
     readHotwords();
     dictionaryQuery = (event.target as HTMLInputElement).value;
@@ -666,9 +712,21 @@ function readForm(): void {
   if (translucent) {
     settings.windowTranslucent = translucent.checked;
   }
+  const sounds = document.querySelector<HTMLInputElement>("#sounds");
+  if (sounds) {
+    settings.sounds = sounds.checked;
+  }
   const place = document.querySelector<HTMLSelectElement>("#indicator-place");
   if (place) {
     settings.indicatorPlace = place.value || settings.indicatorPlace || "taskbar";
+  }
+  const returnField = document.querySelector<HTMLInputElement>("#return-to-field");
+  if (returnField) {
+    settings.returnToField = returnField.checked;
+  }
+  const autoCorrections = document.querySelector<HTMLInputElement>("#auto-corrections");
+  if (autoCorrections) {
+    settings.autoAddCorrections = autoCorrections.checked;
   }
   const groqFallback = document.querySelector<HTMLInputElement>("#groq-openai-fallback");
   if (groqFallback) {
@@ -767,15 +825,41 @@ function formPatch(): Record<string, unknown> {
     windowTranslucent: settings.windowTranslucent,
     indicatorPlace: settings.indicatorPlace,
     groqRateLimitFallback: settings.groqRateLimitFallback,
+    sounds: settings.sounds,
+    returnToField: settings.returnToField,
+    autoAddCorrections: settings.autoAddCorrections,
+    pasteLastHotkey: settings.pasteLastHotkey,
     uiLanguage: settings.uiLanguage,
     providers: settings.providers,
     hotwords: settings.hotwords,
   };
 }
 
+let paintedAutoAdded: string[] = [];
+
+function rememberPaintedLearned(): void {
+  paintedAutoAdded = [...(snap.settings.autoAdded || [])];
+}
+
 async function save(): Promise<void> {
   readForm();
-  await persist(formPatch());
+  const baseline = [...paintedAutoAdded];
+  let removed = baseline.filter((term) => !snap.settings.hotwords.some((row) => row.canonical === term));
+  try {
+    const fresh = await call<Snapshot>("dictation_snapshot");
+    const local = snap.settings.hotwords;
+    const learnedSince = fresh.settings.hotwords.filter(
+      (word) =>
+        fresh.settings.autoAdded.includes(word.canonical) &&
+        !baseline.includes(word.canonical) &&
+        !local.some((row) => row.canonical === word.canonical),
+    );
+    snap.settings.hotwords = [...local, ...learnedSince];
+    removed = baseline.filter((term) => !snap.settings.hotwords.some((row) => row.canonical === term));
+  } catch {
+    // Keep the form copy when the snapshot cannot be read.
+  }
+  await persist({ ...formPatch(), removedAutoAdded: removed });
 }
 
 async function persist(patch: Record<string, unknown>): Promise<void> {
@@ -905,6 +989,24 @@ async function resetModels(): Promise<void> {
   }
   snap = await call<Snapshot>("dictation_reset_models");
   notice = "Suggested models restored. Keys were not changed.";
+  paint();
+}
+
+async function correction(action: string, heard: string, corrected: string): Promise<void> {
+  if (preview) {
+    notice = "Preview does not change the dictionary.";
+    paint();
+    return;
+  }
+  try {
+    await call("dictation_correction", { action, heard, corrected });
+    snap = await call<Snapshot>("dictation_snapshot");
+    notice = action === "undo"
+      ? ui("Removed the last automatic correction.", "已去掉上一条自动纠正。")
+      : ui("Dictionary updated.", "词典已更新。");
+  } catch (error) {
+    notice = String(error);
+  }
   paint();
 }
 
@@ -1066,6 +1168,7 @@ async function setHotkey(mode: HotkeyModeName): Promise<void> {
     snap.settings.dictateHotkey = chords[0] ?? "";
     snap.settings.translateHotkey = chords[1] ?? "";
     snap.settings.commandHotkey = chords[2] ?? "";
+    snap.settings.pasteLastHotkey = chords[3] ?? "";
     snap.hotkeyChords = chords;
     snap.hotkeyLabels = HOTKEY_MODES.map(([name], index) =>
       name === mode ? editor.pendingLabel : snap.hotkeyLabels[index] ?? "",
@@ -1087,6 +1190,7 @@ async function setHotkey(mode: HotkeyModeName): Promise<void> {
     snap.settings.dictateHotkey = next.settings.dictateHotkey;
     snap.settings.translateHotkey = next.settings.translateHotkey;
     snap.settings.commandHotkey = next.settings.commandHotkey;
+    snap.settings.pasteLastHotkey = next.settings.pasteLastHotkey;
     editors[mode] = idleEditor(next.hotkeyChords[index] ?? editor.pendingChord, label);
     syncEditorsFromSnapshot();
     setHotkeyMessage(appliedMessage(title, label, next.warnings));
@@ -1153,6 +1257,7 @@ function bindHotkeyButtons(): void {
     snap.settings.dictateHotkey = "";
     snap.settings.translateHotkey = "";
     snap.settings.commandHotkey = "";
+    snap.settings.pasteLastHotkey = "";
     if (preview) {
       snap.hotkeyChords = [...previewSnapshot.hotkeyChords];
       snap.hotkeyLabels = [...previewSnapshot.hotkeyLabels];
@@ -1459,6 +1564,7 @@ async function chooseHotkey(mode: HotkeyModeName, chord: string): Promise<void> 
     snap.settings.dictateHotkey = chords[0] ?? "";
     snap.settings.translateHotkey = chords[1] ?? "";
     snap.settings.commandHotkey = chords[2] ?? "";
+    snap.settings.pasteLastHotkey = chords[3] ?? "";
     snap.hotkeyChords = chords;
     snap.hotkeyLabels = HOTKEY_MODES.map((_, index) => (index === 0 ? label : snap.hotkeyLabels[index] ?? ""));
     snap.warnings = bindingWarnings(chords);
@@ -1478,6 +1584,7 @@ async function chooseHotkey(mode: HotkeyModeName, chord: string): Promise<void> 
     snap.settings.dictateHotkey = next.settings.dictateHotkey;
     snap.settings.translateHotkey = next.settings.translateHotkey;
     snap.settings.commandHotkey = next.settings.commandHotkey;
+    snap.settings.pasteLastHotkey = next.settings.pasteLastHotkey;
     editors[mode] = idleEditor(next.hotkeyChords[index] ?? chord, applied);
     syncEditorsFromSnapshot();
     setHotkeyMessage(appliedMessage(title, applied, next.warnings));
@@ -1488,10 +1595,31 @@ async function chooseHotkey(mode: HotkeyModeName, chord: string): Promise<void> 
   }
 }
 
+function pendingSuggestions(settings: Snapshot["settings"]): string {
+  const pending = settings.correctionSuggestions.filter((item) => item.state === "pending");
+  if (!pending.length) {
+    return "";
+  }
+  const rows = pending
+    .map(
+      (item) =>
+        `<div class="row"><span>${escapeHtml(item.heard)} → ${escapeHtml(item.corrected)} · ${item.seen}</span><button type="button" data-accept-correction="${escapeHtml(item.heard)}" data-corrected="${escapeHtml(item.corrected)}">${ui("Accept", "接受")}</button><button type="button" data-ignore-correction="${escapeHtml(item.heard)}" data-corrected="${escapeHtml(item.corrected)}">${ui("Ignore", "忽略")}</button></div>`,
+    )
+    .join("");
+  return `<div class="status">${ui("Suggested corrections", "建议的纠正")}</div>${rows}`;
+}
+
 function hotwordRow(word: Hotword, index: number): string {
+  const learned = snap.settings.autoAdded.includes(word.canonical);
+  const filteredOut = (dictionaryFilter === "auto" && !learned) || (dictionaryFilter === "manual" && learned);
   const haystack = `${word.canonical} ${word.aliases.join(" ")} ${word.pattern}`.toLowerCase();
-  const hidden = dictionaryQuery.trim() && !haystack.includes(dictionaryQuery.trim().toLowerCase()) ? " hidden" : "";
+  const queryHidden = dictionaryQuery.trim() && !haystack.includes(dictionaryQuery.trim().toLowerCase());
+  const hidden = filteredOut || queryHidden ? " hidden" : "";
+  const badge = learned
+    ? `<span class="muted">${ui("Auto-added", "自动加入")}</span>`
+    : `<span class="muted">${ui("Manual", "手动")}</span>`;
   return `<div class="hotword${hidden}" data-index="${index}">
+    ${badge}
     <input class="canonical" placeholder="${ui("Term", "词条")}" value="${escapeHtml(word.canonical)}" />
     <input class="aliases" placeholder="${ui("Replacements, comma separated", "替换，逗号分隔")}" value="${escapeHtml(word.aliases.join(", "))}" />
     <input class="pattern" placeholder="${ui("Optional regex", "可选正则")}" value="${escapeHtml(word.pattern)}" />

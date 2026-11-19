@@ -110,6 +110,61 @@ pub fn virtual_key(key: KeyId) -> Option<u32> {
     })
 }
 
+/// Windows modifier bits tracked by the hook from its own events.
+pub fn windows_modifier_bit(vk: u32) -> Option<u32> {
+    Some(match vk {
+        0xA0 => 1 << 0,
+        0xA1 => 1 << 1,
+        0xA2 => 1 << 2,
+        0xA3 => 1 << 3,
+        0xA4 => 1 << 4,
+        0xA5 => 1 << 5,
+        0x5B => 1 << 6,
+        0x5C => 1 << 7,
+        _ => return None,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwallowRule {
+    pub mods: u32,
+    pub vk: u32,
+}
+
+/// The single non-modifier key of a chord, with the modifier mask it needs.
+pub fn swallow_rules(chords: &[Chord]) -> Vec<SwallowRule> {
+    let mut rules = Vec::new();
+    for chord in chords {
+        let mut mods = 0u32;
+        let mut trigger = None;
+        let mut extra = false;
+        for key in chord {
+            let Some(vk) = virtual_key(*key) else {
+                continue;
+            };
+            if let Some(bit) = windows_modifier_bit(vk) {
+                mods |= bit;
+            } else if !is_modifier(*key) {
+                if trigger.is_some() {
+                    extra = true;
+                }
+                trigger = Some(vk);
+            }
+        }
+        if extra {
+            continue;
+        }
+        if let Some(vk) = trigger {
+            rules.push(SwallowRule { mods, vk });
+        }
+    }
+    rules
+}
+
+pub fn swallow_trigger(rules: &[SwallowRule], mods: u32, vk: u32) -> bool {
+    rules.iter().any(|rule| rule.vk == vk && rule.mods == mods)
+}
+
 /// Decides that Windows has dropped the low-level hook.
 ///
 /// A watched key is physically down, or was pressed, and the hook has not
@@ -204,6 +259,7 @@ pub enum HotkeyMode {
     Dictate,
     Translate,
     Command,
+    PasteLast,
 }
 
 impl HotkeyMode {
@@ -213,6 +269,7 @@ impl HotkeyMode {
             Self::Dictate => "dictate",
             Self::Translate => "translate",
             Self::Command => "command",
+            Self::PasteLast => "paste",
         }
     }
 }
@@ -255,7 +312,11 @@ pub struct HotkeyEngine {
     captured: Chord,
     /// Non-modifier keys swallowed on the way down. Their key-up is swallowed too.
     suppressed: Chord,
+    /// When each held key last went down. A repeat down refreshes the time.
+    down_at: Vec<(KeyId, u64)>,
 }
+
+pub const MIN_HOLD_MS: u64 = 300;
 
 impl Default for HotkeyEngine {
     fn default() -> Self {
@@ -267,6 +328,7 @@ impl Default for HotkeyEngine {
             capturing: false,
             captured: Chord::new(),
             suppressed: Chord::new(),
+            down_at: Vec::new(),
         }
     }
 }
@@ -283,6 +345,7 @@ impl HotkeyEngine {
         self.down.clear();
         self.captured.clear();
         self.suppressed.clear();
+        self.down_at.clear();
         self.active = None;
         self.extra_sent = false;
         self.capturing = capturing;
@@ -296,6 +359,66 @@ impl HotkeyEngine {
 
     pub fn on_edge(&mut self, edge: KeyEdge) -> Vec<EngineEvent> {
         self.consume(edge).events
+    }
+
+    /// Drop a non-modifier that has not auto-repeated for 10 seconds.
+    /// The age is `now_ms` minus the recorded `down_at`. A repeat down refreshes that time.
+    pub fn release_stale_non_modifiers(&mut self, now_ms: u64) -> Vec<EngineEvent> {
+        const STALE_MS: u64 = 10_000;
+        let stale: Vec<KeyId> = self
+            .down_at
+            .iter()
+            .filter_map(|(key, at)| {
+                if is_modifier(*key) || now_ms.saturating_sub(*at) <= STALE_MS {
+                    None
+                } else {
+                    Some(*key)
+                }
+            })
+            .collect();
+        let mut events = Vec::new();
+        for key in stale {
+            self.down_at.retain(|(held, _)| *held != key);
+            if self.down.contains(&key) {
+                events.extend(self.consume(KeyEdge::Up(key)).events);
+            }
+        }
+        events
+    }
+
+    /// Release keys the OS says are up. A missed key-up otherwise stays in
+    /// `down`, and the next press of that key is ignored.
+    pub fn release_physically_up(&mut self, keys: &[KeyId]) -> Vec<EngineEvent> {
+        let mut events = Vec::new();
+        for key in keys {
+            self.down_at.retain(|(held, _)| held != key);
+            if !self.down.contains(key) {
+                continue;
+            }
+            events.extend(self.consume(KeyEdge::Up(*key)).events);
+        }
+        events
+    }
+
+    /// Apply one edge. A key that is still down is not released by age.
+    /// A repeat down refreshes `down_at`.
+    pub fn consume_timed(&mut self, edge: KeyEdge, now_ms: u64) -> EdgeOutcome {
+        let outcome = self.consume(edge);
+        match edge {
+            KeyEdge::Down(key) => {
+                if self.down.contains(&key) {
+                    if let Some(slot) = self.down_at.iter_mut().find(|(held, _)| *held == key) {
+                        slot.1 = now_ms;
+                    } else {
+                        self.down_at.push((key, now_ms));
+                    }
+                }
+            }
+            KeyEdge::Up(key) => {
+                self.down_at.retain(|(held, _)| *held != key);
+            }
+        }
+        outcome
     }
 
     /// Capture mode never matches a saved hotkey. A matched non-modifier is swallowed.
@@ -469,11 +592,15 @@ impl TalkController {
         match event {
             EngineEvent::Pressed(mode) => self.on_pressed(*mode, now_ms),
             EngineEvent::Released(mode) => {
-                if self.talk_mode == TalkMode::Hold && self.active == Some(*mode) {
-                    self.active = None;
-                    TalkEffect::Stop
+                if self.active != Some(*mode) || self.talk_mode != TalkMode::Hold {
+                    return TalkEffect::Ignore;
+                }
+                let age = now_ms.saturating_sub(self.started_ms);
+                self.active = None;
+                if age < MIN_HOLD_MS {
+                    TalkEffect::Cancel
                 } else {
-                    TalkEffect::Ignore
+                    TalkEffect::Stop
                 }
             }
             EngineEvent::ExtraKeys => {
@@ -526,7 +653,7 @@ impl TalkController {
     }
 }
 
-pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
+pub fn default_chord(mode: HotkeyMode, os: OsKind) -> Chord {
     // macOS matches Windows. Right Option is also used by Typeless when a PC
     // keyboard (Right Alt) is attached to a Mac, so the factory key is Right Control.
     let mut chord = Chord::new();
@@ -538,6 +665,19 @@ pub fn default_chord(mode: HotkeyMode, _os: OsKind) -> Chord {
         }
         HotkeyMode::Command => {
             chord.insert(KeyId::Enter);
+        }
+        HotkeyMode::PasteLast => {
+            chord.clear();
+            if os == OsKind::Mac {
+                chord.insert(KeyId::ControlLeft);
+                chord.insert(KeyId::MetaLeft);
+                chord.insert(KeyId::Letter(b'V'));
+            } else {
+                chord.insert(KeyId::AltLeft);
+                chord.insert(KeyId::ShiftLeft);
+                chord.insert(KeyId::Letter(b'Z'));
+            }
+            return chord;
         }
     }
     chord
@@ -665,6 +805,7 @@ fn mode_name(mode: HotkeyMode) -> &'static str {
         HotkeyMode::Dictate => "Dictate",
         HotkeyMode::Translate => "Translate",
         HotkeyMode::Command => "Command",
+        HotkeyMode::PasteLast => "Paste last",
     }
 }
 
@@ -1130,6 +1271,74 @@ const MAC_FLAG_RIGHT_CONTROL: u64 = 0x0000_2000;
 const MAC_FLAG_FN: u64 = 0x0080_0000;
 const MAC_FLAG_CAPS_LOCK: u64 = 0x0001_0000;
 
+/// Modifiers whose device-dependent bit is clear.
+///
+/// A generic flag with no side bit is ambiguous, so neither side is released.
+/// The caller turns the result into key-up edges. This does not read text input.
+pub fn mac_modifiers_physically_up(flags: u64) -> Vec<KeyId> {
+    let mut up = Vec::new();
+    release_pair(
+        flags,
+        0x0002_0000,
+        MAC_FLAG_LEFT_SHIFT,
+        MAC_FLAG_RIGHT_SHIFT,
+        KeyId::ShiftLeft,
+        KeyId::ShiftRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0004_0000,
+        MAC_FLAG_LEFT_CONTROL,
+        MAC_FLAG_RIGHT_CONTROL,
+        KeyId::ControlLeft,
+        KeyId::ControlRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0008_0000,
+        MAC_FLAG_LEFT_OPTION,
+        MAC_FLAG_RIGHT_OPTION,
+        KeyId::AltLeft,
+        KeyId::AltRight,
+        &mut up,
+    );
+    release_pair(
+        flags,
+        0x0010_0000,
+        MAC_FLAG_LEFT_COMMAND,
+        MAC_FLAG_RIGHT_COMMAND,
+        KeyId::MetaLeft,
+        KeyId::MetaRight,
+        &mut up,
+    );
+    if flags & MAC_FLAG_FN == 0 {
+        up.push(KeyId::Fn);
+    }
+    up
+}
+
+fn release_pair(
+    flags: u64,
+    generic: u64,
+    left_bit: u64,
+    right_bit: u64,
+    left_key: KeyId,
+    right_key: KeyId,
+    up: &mut Vec<KeyId>,
+) {
+    let generic_on = flags & generic != 0;
+    let left = flags & left_bit != 0;
+    let right = flags & right_bit != 0;
+    if !left && (right || !generic_on) {
+        up.push(left_key);
+    }
+    if !right && (left || !generic_on) {
+        up.push(right_key);
+    }
+}
+
 /// Press or release for a macOS `flagsChanged` event. `None` when `code` is
 /// not a modifier key.
 pub fn mac_flags_changed(code: u16, flags: u64) -> Option<KeyEdge> {
@@ -1257,6 +1466,124 @@ mod tests {
             (HotkeyMode::Command, default_chord(HotkeyMode::Command, os)),
         ]);
         engine
+    }
+
+    #[test]
+    fn a_missed_key_up_starts_responding_again_after_resync() {
+        let mut held = engine(OsKind::Windows);
+        let down = KeyEdge::Down(KeyId::ControlRight);
+        assert_eq!(
+            held.consume(down).events,
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        assert!(held.consume(down).events.is_empty());
+        assert_eq!(
+            held.release_physically_up(&[KeyId::ControlRight]),
+            vec![EngineEvent::Released(HotkeyMode::Dictate)]
+        );
+        assert_eq!(
+            held.consume(down).events,
+            vec![EngineEvent::Pressed(HotkeyMode::Dictate)]
+        );
+        assert!(held
+            .release_physically_up(&[KeyId::ControlLeft])
+            .is_empty());
+    }
+
+    #[test]
+    fn a_modifier_only_dictate_chord_does_not_fire_on_ctrl_cmd_v() {
+        let mut engine = HotkeyEngine::default();
+        engine.set_bindings(vec![
+            (HotkeyMode::Dictate, chord(&[KeyId::ControlRight])),
+            (
+                HotkeyMode::PasteLast,
+                chord(&[KeyId::ControlLeft, KeyId::MetaLeft, KeyId::Letter(b'V')]),
+            ),
+        ]);
+        assert!(engine
+            .consume(KeyEdge::Down(KeyId::ControlLeft))
+            .events
+            .is_empty());
+        assert!(engine
+            .consume(KeyEdge::Down(KeyId::MetaLeft))
+            .events
+            .is_empty());
+        assert_eq!(
+            engine.consume(KeyEdge::Down(KeyId::Letter(b'V'))).events,
+            vec![EngineEvent::Pressed(HotkeyMode::PasteLast)]
+        );
+    }
+
+    #[test]
+    fn a_non_modifier_chord_is_swallowed_only_when_its_modifiers_match() {
+        let chord = parse_chord("Right Ctrl+Z").unwrap();
+        let rules = swallow_rules(&[chord]);
+        let right_ctrl = windows_modifier_bit(0xA3).unwrap();
+        let letter = virtual_key(KeyId::Letter(b'Z')).unwrap();
+        assert!(swallow_trigger(&rules, right_ctrl, letter));
+        assert!(!swallow_trigger(&rules, 0, letter));
+        assert!(swallow_rules(&[default_chord(HotkeyMode::Dictate, OsKind::Windows)]).is_empty());
+    }
+
+    #[test]
+    fn a_held_key_is_not_released_while_it_stays_down() {
+        let mut held = engine(OsKind::Mac);
+        let down = KeyEdge::Down(KeyId::ControlRight);
+        assert!(held
+            .consume_timed(down, 1_000)
+            .events
+            .contains(&EngineEvent::Pressed(HotkeyMode::Dictate)));
+        let still = held.consume_timed(down, 1_000 + 11_000);
+        assert!(still
+            .events
+            .iter()
+            .all(|event| !matches!(event, EngineEvent::Released(_))));
+        assert!(held
+            .release_physically_up(&[KeyId::ControlRight])
+            .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
+    }
+
+    #[test]
+    fn a_non_modifier_releases_after_ten_seconds_without_a_repeat() {
+        let mut held = HotkeyEngine::default();
+        held.set_bindings(vec![(
+            HotkeyMode::Dictate,
+            [KeyId::ControlRight, KeyId::Letter(b'Z')].into_iter().collect(),
+        )]);
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::ControlRight), 1_000)
+            .events
+            .is_empty());
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::Letter(b'Z')), 1_000)
+            .events
+            .contains(&EngineEvent::Pressed(HotkeyMode::Dictate)));
+        assert!(held.release_stale_non_modifiers(1_000 + 10_000).is_empty());
+        assert!(held
+            .consume_timed(KeyEdge::Down(KeyId::Letter(b'Z')), 1_000 + 9_000)
+            .events
+            .iter()
+            .all(|event| !matches!(event, EngineEvent::Released(_))));
+        assert!(held
+            .release_stale_non_modifiers(1_000 + 9_000 + 10_001)
+            .contains(&EngineEvent::Released(HotkeyMode::Dictate)));
+    }
+
+    #[test]
+    fn mac_flag_bits_release_only_the_side_that_is_up() {
+        let right_only = MAC_FLAG_RIGHT_CONTROL | 0x0004_0000;
+        let up = mac_modifiers_physically_up(right_only);
+        assert!(up.contains(&KeyId::ControlLeft));
+        assert!(!up.contains(&KeyId::ControlRight));
+        let ambiguous = mac_modifiers_physically_up(0x0004_0000);
+        assert!(!ambiguous.contains(&KeyId::ControlLeft));
+        assert!(!ambiguous.contains(&KeyId::ControlRight));
+        let clear = mac_modifiers_physically_up(0);
+        assert!(clear.contains(&KeyId::ControlRight));
+        assert!(clear.contains(&KeyId::ShiftLeft));
+        assert!(clear.contains(&KeyId::Fn));
+        let fn_held = mac_modifiers_physically_up(MAC_FLAG_FN);
+        assert!(!fn_held.contains(&KeyId::Fn));
     }
 
     #[test]
@@ -1513,7 +1840,15 @@ mod tests {
             TalkEffect::Start(HotkeyMode::Dictate)
         );
         assert_eq!(
-            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 400),
+            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 100),
+            TalkEffect::Cancel
+        );
+        assert_eq!(
+            hold.on_event(&EngineEvent::Pressed(HotkeyMode::Dictate), 200),
+            TalkEffect::Start(HotkeyMode::Dictate)
+        );
+        assert_eq!(
+            hold.on_event(&EngineEvent::Released(HotkeyMode::Dictate), 600),
             TalkEffect::Stop
         );
 

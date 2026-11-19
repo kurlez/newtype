@@ -175,7 +175,7 @@ function render(event: PhaseEvent): void {
   const bar = document.querySelector<HTMLDivElement>("#bar");
   const phase = document.querySelector("#phase");
   const route = document.querySelector("#route");
-  const message = document.querySelector("#message");
+  const message = document.querySelector<HTMLElement>("#message");
   if (!bar || !phase || !route || !message) {
     return;
   }
@@ -188,6 +188,16 @@ function render(event: PhaseEvent): void {
   route.textContent = routeBadge(event.route, routeWords());
   route.setAttribute("title", event.route);
   message.textContent = event.message;
+  message.onclick = null;
+  message.style.cursor = "";
+  if (event.text === "undo") {
+    message.style.cursor = "pointer";
+    message.onclick = () => {
+      void import("@tauri-apps/api/core").then(({ invoke }) =>
+        invoke("dictation_correction", { action: "undo", heard: "", corrected: "" }),
+      );
+    };
+  }
 }
 
 function label(phase: string, elapsedMs: number): string {
@@ -196,6 +206,10 @@ function label(phase: string, elapsedMs: number): string {
   switch (phase) {
     case "recording":
       return clock;
+    case "starting":
+      return t("starting");
+    case "busy":
+      return t("busy");
     case "processing":
       return t("processing");
     case "inserted":

@@ -1,4 +1,4 @@
-export type HotkeyModeName = "dictate" | "translate" | "command";
+export type HotkeyModeName = "dictate" | "translate" | "command" | "paste";
 export type HotkeyPhase = "idle" | "capturing" | "pending";
 
 export interface HotkeyEditor {
@@ -9,7 +9,7 @@ export interface HotkeyEditor {
   pendingLabel: string;
 }
 
-const MODE_NAMES = ["Dictate", "Translate", "Command"];
+const MODE_NAMES = ["Dictate", "Translate", "Command", "Paste last"];
 
 export function idleEditor(activeChord: string, activeLabel: string): HotkeyEditor {
   return {
