@@ -15,6 +15,13 @@ export interface Hotword {
   pattern: string;
 }
 
+export interface CorrectionSuggestion {
+  heard: string;
+  corrected: string;
+  seen: number;
+  state: string;
+}
+
 export interface DictationSettings {
   asrProvider: string;
   llmProvider: string;
@@ -26,6 +33,9 @@ export interface DictationSettings {
   commandHotkey: string;
   pasteLastHotkey: string;
   returnToField: boolean;
+  autoAddCorrections: boolean;
+  autoAdded: string[];
+  correctionSuggestions: CorrectionSuggestion[];
   thinking: string;
   microphone: string;
   localMirror: string;

@@ -37,6 +37,7 @@
     "allow-dictation-clear-history",
     "allow-dictation-rerun-history",
     "allow-dictation-export-dictionary",
+    "allow-dictation-correction",
     "allow-dictation-import-dictionary",
     "allow-dictation-microphones",
     "allow-dictation-probe-microphone",

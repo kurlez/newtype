@@ -455,6 +455,39 @@ mod windows {
             true
         }
     }
+<<<<<<< HEAD
+=======
+
+    pub fn field_text(target: &FocusTarget) -> Option<String> {
+        unsafe {
+            let control = target.control as usize as *mut std::ffi::c_void;
+            if control.is_null() || IsWindow(control) == 0 {
+                return None;
+            }
+            let style = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongW(control, -16);
+            if style & 0x20 != 0 {
+                return None;
+            }
+            let class = class_name(control).unwrap_or_default();
+            if !class.eq_ignore_ascii_case("Edit") && !class.to_ascii_lowercase().contains("richedit") {
+                return None;
+            }
+            let mut buffer = vec![0u16; 2048];
+            let count = windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW(
+                control,
+                0x000D,
+                buffer.len(),
+                buffer.as_mut_ptr() as isize,
+            );
+            if count <= 0 {
+                return None;
+            }
+            let end = (count as usize).min(buffer.len());
+            Some(String::from_utf16_lossy(&buffer[..end]))
+        }
+    }
+    }
+>>>>>>> 6a85517 (feat: learn spelling corrections into the local dictionary)
 
     pub fn field_text(target: &FocusTarget) -> Option<String> {
         unsafe {
@@ -589,6 +622,34 @@ mod macos {
         }
         raise_window(target.ax as *mut std::ffi::c_void);
         set_bool(target.ax as *mut std::ffi::c_void, "AXFocused");
+    }
+
+    pub fn field_text(target: &FocusTarget) -> Option<String> {
+        if target.ax == 0 {
+            return None;
+        }
+        let role = copy_ax_string(target.ax, "AXRole").unwrap_or_default();
+        if crate::pipeline::corrections::is_secure_role(&role) {
+            return None;
+        }
+        copy_ax_string(target.ax, "AXValue")
+    }
+
+    fn copy_ax_string(element: usize, name: &str) -> Option<String> {
+        let attribute = CFString::new(name);
+        unsafe {
+            let mut value = std::ptr::null_mut();
+            let status = AXUIElementCopyAttributeValue(
+                element as *mut std::ffi::c_void,
+                attribute.as_concrete_TypeRef() as *const std::ffi::c_void,
+                &mut value,
+            );
+            if status != 0 || value.is_null() {
+                return None;
+            }
+            let text = CFString::wrap_under_create_rule(value as _).to_string();
+            Some(text)
+        }
     }
 
     pub fn set_selected_text(target: &FocusTarget, text: &str) -> bool {

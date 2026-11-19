@@ -78,6 +78,7 @@ pub fn run() {
             commands::dictation_clear_history,
             commands::dictation_rerun_history,
             commands::dictation_export_dictionary,
+            commands::dictation_correction,
             commands::dictation_import_dictionary,
             commands::dictation_microphones,
             commands::dictation_probe_microphone,

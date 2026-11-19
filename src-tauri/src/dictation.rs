@@ -2359,6 +2359,11 @@ fn deliver_text(app: &AppHandle, text: &str) -> Delivered {
         *slot = target.clone();
     }
     crate::diag::mark_stage("text-inserted");
+    if matches!(delivered, Delivered::Pasted) {
+        if let Some(target) = target.clone() {
+            watch_correction(app.clone(), text.to_string(), target);
+        }
+    }
     delivered
 }
 
@@ -2368,6 +2373,130 @@ fn sounds_enabled(app: &AppHandle) -> bool {
         .lock()
         .map(|settings| settings.sounds)
         .unwrap_or(true)
+}
+
+fn watch_correction(app: AppHandle, inserted: String, target: focus::FocusTarget) {
+    std::thread::Builder::new()
+        .name("newtype-correction".into())
+        .spawn(move || {
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(45) {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let current = focus::capture();
+                if current.as_ref().is_some_and(|now| now.pid != 0 && target.pid != 0 && now.pid != target.pid) {
+                    break;
+                }
+                let Some(edited) = focus::field_text(&target) else {
+                    continue;
+                };
+                let pairs = crate::pipeline::corrections::term_replacements(&inserted, &edited);
+                if pairs.is_empty() {
+                    continue;
+                }
+                learn_corrections(&app, &pairs);
+            }
+        })
+        .ok();
+}
+
+fn learn_corrections(app: &AppHandle, pairs: &[(String, String)]) {
+    let state = app.state::<Dictation>();
+    let mut added = 0u32;
+    {
+        let mut settings = state.settings.lock().expect("settings");
+        crate::pipeline::corrections::note_seen(&mut settings.correction_suggestions, pairs);
+        if settings.auto_add_corrections {
+            let ready: Vec<_> = settings
+                .correction_suggestions
+                .iter()
+                .filter(|item| item.state == "pending" && item.seen >= 2)
+                .cloned()
+                .collect();
+            for item in ready {
+                let already = settings.hotwords.iter().any(|word| {
+                    word.canonical == item.corrected && word.aliases.iter().any(|alias| alias == &item.heard)
+                });
+                if !already {
+                    settings.hotwords.push(crate::pipeline::hotwords::Hotword {
+                        canonical: item.corrected.clone(),
+                        aliases: vec![item.heard.clone()],
+                        pattern: String::new(),
+                    });
+                    added += 1;
+                }
+                if !settings.auto_added.iter().any(|term| term == &item.corrected) {
+                    settings.auto_added.push(item.corrected.clone());
+                }
+                if let Some(slot) = settings.correction_suggestions.iter_mut().find(|slot| {
+                    slot.heard == item.heard && slot.corrected == item.corrected
+                }) {
+                    slot.state = "added".into();
+                }
+                if let Ok(mut last) = LAST_CORRECTION.lock() {
+                    *last = Some((item.heard, item.corrected));
+                }
+            }
+        }
+        let path = state.settings_path.clone();
+        let copy = settings.clone();
+        drop(settings);
+        let _ = dictate_config::save(&path, &copy);
+    }
+    crate::diag::record(&format!("corrections added {added}"));
+    if added > 0 {
+        let _ = app.emit(
+            "dictation://correction",
+            serde_json::json!({ "added": added }),
+        );
+    }
+}
+
+static LAST_CORRECTION: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+pub fn correction_action(app: &AppHandle, action: &str, heard: &str, corrected: &str) -> Result<(), String> {
+    let state = app.state::<Dictation>();
+    let mut settings = state.settings.lock().expect("settings");
+    match action {
+        "accept" => {
+            if !heard.is_empty() && !corrected.is_empty() {
+                settings.hotwords.push(crate::pipeline::hotwords::Hotword {
+                    canonical: corrected.to_string(),
+                    aliases: vec![heard.to_string()],
+                    pattern: String::new(),
+                });
+                if !settings.auto_added.iter().any(|term| term == corrected) {
+                    settings.auto_added.push(corrected.to_string());
+                }
+                if let Some(slot) = settings.correction_suggestions.iter_mut().find(|slot| slot.heard == heard && slot.corrected == corrected) {
+                    slot.state = "added".into();
+                }
+            }
+        }
+        "ignore" => {
+            if let Some(slot) = settings.correction_suggestions.iter_mut().find(|slot| slot.heard == heard && slot.corrected == corrected) {
+                slot.state = "ignored".into();
+            }
+        }
+        "undo" => {
+            let pair = LAST_CORRECTION.lock().expect("undo").take();
+            if let Some((heard, corrected)) = pair {
+                for word in &mut settings.hotwords {
+                    if word.canonical == corrected {
+                        word.aliases.retain(|alias| alias != &heard);
+                    }
+                }
+                settings.hotwords.retain(|word| !word.canonical.is_empty() || !word.aliases.is_empty());
+                settings.auto_added.retain(|term| term != &corrected);
+            }
+        }
+        _ => return Err("Unknown correction action.".into()),
+    }
+    let path = state.settings_path.clone();
+    let copy = settings.clone();
+    drop(settings);
+    dictate_config::save(&path, &copy)?;
+    crate::diag::record("correction action");
+    Ok(())
 }
 
 fn play_start_cue(app: &AppHandle) {

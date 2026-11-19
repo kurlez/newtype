@@ -61,6 +61,14 @@ pub struct DictationSettings {
     /// Put the transcript back in the field that was focused at the hotkey.
     #[serde(default = "default_true")]
     pub return_to_field: bool,
+    /// Learn a repeated spelling correction into the dictionary.
+    #[serde(default = "default_window_translucent")]
+    pub auto_add_corrections: bool,
+    /// Canonical spellings that were learned rather than typed.
+    #[serde(default)]
+    pub auto_added: Vec<String>,
+    #[serde(default)]
+    pub correction_suggestions: Vec<crate::pipeline::corrections::Suggestion>,
     pub thinking: String,
     pub microphone: String,
     pub local_mirror: String,
@@ -158,6 +166,9 @@ impl Default for DictationSettings {
             command_hotkey: String::new(),
             paste_last_hotkey: String::new(),
             return_to_field: true,
+            auto_add_corrections: true,
+            auto_added: Vec::new(),
+            correction_suggestions: Vec::new(),
             thinking: "auto".into(),
             microphone: String::new(),
             local_mirror: "auto".into(),
@@ -330,6 +341,9 @@ pub fn merge_ui_settings(
     }
     if let Some(value) = obj.get("returnToField").and_then(|value| value.as_bool()) {
         next.return_to_field = value;
+    }
+    if let Some(value) = obj.get("autoAddCorrections").and_then(|value| value.as_bool()) {
+        next.auto_add_corrections = value;
     }
     assign_text(obj, "asrProvider", &mut next.asr_provider, true);
     assign_text(obj, "llmProvider", &mut next.llm_provider, true);
