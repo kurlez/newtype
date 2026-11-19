@@ -102,6 +102,7 @@ pub fn virtual_key(key: KeyId) -> Option<u32> {
         KeyId::Tab => 0x09,
         KeyId::Backspace => 0x08,
         KeyId::Delete => 0x2E,
+        KeyId::Slash => 0xBF,
         KeyId::Letter(ch) if ch.is_ascii_uppercase() => ch as u32,
         KeyId::Digit(n) if n <= 9 => 0x30 + u32::from(n),
         KeyId::Function(n) if (1..=12).contains(&n) => 0x6F + u32::from(n),
@@ -163,6 +164,165 @@ pub fn swallow_rules(chords: &[Chord]) -> Vec<SwallowRule> {
 
 pub fn swallow_trigger(rules: &[SwallowRule], mods: u32, vk: u32) -> bool {
     rules.iter().any(|rule| rule.vk == vk && rule.mods == mods)
+}
+
+/// Fold one Windows hook event into the modifier mask.
+///
+/// The synthetic left Ctrl that arrives with AltGr is ignored, so Right Alt+/
+/// still matches a mask that contains only Right Alt.
+pub fn fold_windows_modifier(mods: u32, vk: u32, scan: u32, flags: u32, up: bool) -> u32 {
+    if is_altgr_synthetic_ctrl(vk, scan, flags) {
+        return mods;
+    }
+    let Some(bit) = windows_modifier_bit(vk) else {
+        return mods;
+    };
+    if up {
+        mods & !bit
+    } else {
+        mods | bit
+    }
+}
+
+/// Swallow the Alt key-up that follows a swallowed Alt combination.
+/// The key-down of Alt is never swallowed.
+pub fn swallow_alt_keyup(combo_used: bool, vk: u32) -> bool {
+    combo_used && matches!(vk, 0x12 | 0xA4 | 0xA5)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MacSwallowRule {
+    pub mods: u32,
+    pub keycode: u16,
+}
+
+const MAC_MOD_ALT_LEFT: u32 = 1 << 0;
+const MAC_MOD_ALT_RIGHT: u32 = 1 << 1;
+const MAC_MOD_CONTROL_LEFT: u32 = 1 << 2;
+const MAC_MOD_CONTROL_RIGHT: u32 = 1 << 3;
+const MAC_MOD_SHIFT_LEFT: u32 = 1 << 4;
+const MAC_MOD_SHIFT_RIGHT: u32 = 1 << 5;
+const MAC_MOD_META_LEFT: u32 = 1 << 6;
+const MAC_MOD_META_RIGHT: u32 = 1 << 7;
+const MAC_MOD_FN: u32 = 1 << 8;
+
+fn mac_mod_bit(key: KeyId) -> Option<u32> {
+    Some(match key {
+        KeyId::AltLeft => MAC_MOD_ALT_LEFT,
+        KeyId::AltRight => MAC_MOD_ALT_RIGHT,
+        KeyId::ControlLeft => MAC_MOD_CONTROL_LEFT,
+        KeyId::ControlRight => MAC_MOD_CONTROL_RIGHT,
+        KeyId::ShiftLeft => MAC_MOD_SHIFT_LEFT,
+        KeyId::ShiftRight => MAC_MOD_SHIFT_RIGHT,
+        KeyId::MetaLeft => MAC_MOD_META_LEFT,
+        KeyId::MetaRight => MAC_MOD_META_RIGHT,
+        KeyId::Fn => MAC_MOD_FN,
+        _ => return None,
+    })
+}
+
+/// Hardware keycode for a non-modifier the macOS tap can swallow.
+pub fn mac_keycode_for(key: KeyId) -> Option<u16> {
+    Some(match key {
+        KeyId::Slash => 44,
+        KeyId::Enter => 36,
+        KeyId::Space => 49,
+        KeyId::Escape => 53,
+        KeyId::Tab => 48,
+        KeyId::Backspace => 51,
+        KeyId::Letter(b'A') => 0,
+        KeyId::Letter(b'S') => 1,
+        KeyId::Letter(b'D') => 2,
+        KeyId::Letter(b'F') => 3,
+        KeyId::Letter(b'H') => 4,
+        KeyId::Letter(b'G') => 5,
+        KeyId::Letter(b'Z') => 6,
+        KeyId::Letter(b'X') => 7,
+        KeyId::Letter(b'C') => 8,
+        KeyId::Letter(b'V') => 9,
+        KeyId::Letter(b'B') => 11,
+        KeyId::Letter(b'Q') => 12,
+        KeyId::Letter(b'W') => 13,
+        KeyId::Letter(b'E') => 14,
+        KeyId::Letter(b'R') => 15,
+        KeyId::Letter(b'Y') => 16,
+        KeyId::Letter(b'T') => 17,
+        KeyId::Letter(b'O') => 31,
+        KeyId::Letter(b'U') => 32,
+        KeyId::Letter(b'I') => 34,
+        KeyId::Letter(b'P') => 35,
+        KeyId::Letter(b'L') => 37,
+        KeyId::Letter(b'J') => 38,
+        KeyId::Letter(b'K') => 40,
+        KeyId::Letter(b'N') => 45,
+        KeyId::Letter(b'M') => 46,
+        _ => return None,
+    })
+}
+
+/// Device-dependent modifier bits currently down, in the mac swallow mask.
+pub fn mac_modifier_mask(flags: u64) -> u32 {
+    let mut mask = 0u32;
+    if flags & 0x0000_0020 != 0 {
+        mask |= MAC_MOD_ALT_LEFT;
+    }
+    if flags & 0x0000_0040 != 0 {
+        mask |= MAC_MOD_ALT_RIGHT;
+    }
+    if flags & 0x0000_0001 != 0 {
+        mask |= MAC_MOD_CONTROL_LEFT;
+    }
+    if flags & 0x0000_2000 != 0 {
+        mask |= MAC_MOD_CONTROL_RIGHT;
+    }
+    if flags & 0x0000_0002 != 0 {
+        mask |= MAC_MOD_SHIFT_LEFT;
+    }
+    if flags & 0x0000_0004 != 0 {
+        mask |= MAC_MOD_SHIFT_RIGHT;
+    }
+    if flags & 0x0000_0008 != 0 {
+        mask |= MAC_MOD_META_LEFT;
+    }
+    if flags & 0x0000_0010 != 0 {
+        mask |= MAC_MOD_META_RIGHT;
+    }
+    if flags & 0x0080_0000 != 0 {
+        mask |= MAC_MOD_FN;
+    }
+    mask
+}
+
+/// The non-modifier key of a fully held chord, addressed by hardware keycode.
+/// A modifier-only chord produces no rule.
+pub fn mac_swallow_rules(chords: &[Chord]) -> Vec<MacSwallowRule> {
+    let mut rules = Vec::new();
+    for chord in chords {
+        let mut mods = 0u32;
+        let mut trigger = None;
+        let mut extra = false;
+        for key in chord {
+            if let Some(bit) = mac_mod_bit(*key) {
+                mods |= bit;
+            } else if !is_modifier(*key) {
+                if trigger.is_some() {
+                    extra = true;
+                }
+                trigger = mac_keycode_for(*key);
+            }
+        }
+        if extra {
+            continue;
+        }
+        if let Some(keycode) = trigger {
+            rules.push(MacSwallowRule { mods, keycode });
+        }
+    }
+    rules
+}
+
+pub fn mac_swallow_trigger(rules: &[MacSwallowRule], mods: u32, keycode: u16) -> bool {
+    rules.iter().any(|rule| rule.keycode == keycode && rule.mods == mods)
 }
 
 /// Decides that Windows has dropped the low-level hook.
@@ -1512,6 +1672,49 @@ mod tests {
             engine.consume(KeyEdge::Down(KeyId::Letter(b'V'))).events,
             vec![EngineEvent::Pressed(HotkeyMode::PasteLast)]
         );
+    }
+
+    #[test]
+    fn right_alt_slash_is_swallowed_without_the_altgr_ctrl() {
+        let chord = parse_chord("AltRight+Slash").unwrap();
+        let rules = swallow_rules(&[chord]);
+        let alt = windows_modifier_bit(0xA5).unwrap();
+        let slash = virtual_key(KeyId::Slash).unwrap();
+        assert_eq!(slash, 0xBF);
+        assert!(swallow_trigger(&rules, alt, slash));
+        let mut mods = 0u32;
+        mods = fold_windows_modifier(mods, 0xA2, 0x1D, 0x01, false);
+        assert_eq!(mods, 0);
+        mods = fold_windows_modifier(mods, 0xA5, 0x38, 0x01, false);
+        assert_eq!(mods, alt);
+        assert!(swallow_trigger(&rules, mods, slash));
+        let with_fake_ctrl = alt | windows_modifier_bit(0xA2).unwrap();
+        assert!(!swallow_trigger(&rules, with_fake_ctrl, slash));
+        assert!(swallow_alt_keyup(true, 0xA5));
+        assert!(!swallow_alt_keyup(false, 0xA5));
+        assert!(!swallow_alt_keyup(true, slash));
+    }
+
+    #[test]
+    fn right_option_slash_is_swallowed_and_the_option_key_is_not() {
+        let chord = parse_chord("AltRight+Slash").unwrap();
+        let rules = mac_swallow_rules(&[chord]);
+        let flags = 0x0000_0040u64;
+        let mods = mac_modifier_mask(flags);
+        assert!(mac_swallow_trigger(&rules, mods, 44));
+        assert!(!mac_swallow_trigger(&rules, mods, 61));
+        assert!(mac_swallow_rules(&[parse_chord("AltRight").unwrap()]).is_empty());
+        assert!(!is_modifier(KeyId::Slash));
+        assert!(is_modifier(KeyId::AltRight));
+    }
+
+    #[test]
+    fn alt_right_slash_does_not_warn_about_typeless() {
+        let chord = parse_chord("AltRight+Slash").unwrap();
+        let bindings = [(HotkeyMode::Dictate, chord)];
+        for os in [OsKind::Mac, OsKind::Windows] {
+            assert!(binding_warnings(&bindings, os).is_empty());
+        }
     }
 
     #[test]

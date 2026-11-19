@@ -632,7 +632,7 @@ fn spawn_listener(
                 engine.set_capture(want);
                 (share.generation, want)
             };
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             publish_swallow(&hotkeys.lock().expect("hotkeys").bindings);
             let on_edge = move |feed: crate::key_feed::Feed| -> bool {
                 let now = now_ms();
@@ -693,7 +693,7 @@ fn spawn_listener(
                         seen = share.generation;
                         engine.set_bindings(share.bindings.clone());
                         hotkey::set_altgr_bound(engine.uses_alt_right());
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "macos"))]
                         publish_swallow(&share.bindings);
                     }
                     if share.capture != capturing {
@@ -761,27 +761,43 @@ fn spawn_listener(
             #[cfg(target_os = "macos")]
             {
                 let mut last_perm_overlay = 0u64;
-                crate::mac_hotkey::listen(|listening| {
-                    if listening {
-                        set_listener(
-                            &app,
-                            &listener,
-                            crate::locale::text(
-                                "Listening for the right-hand Control key.",
-                                "正在监听右侧 Ctrl 键。",
-                            ),
-                        );
-                    } else {
-                        let message = crate::locale::text(
-                            "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
-                            "快捷键监听在等待输入监视或辅助功能。它会再试。",
-                        );
-                        set_listener(&app, &listener, message);
-                        let now = now_ms();
-                        if now.saturating_sub(last_perm_overlay) >= 30_000 {
-                            last_perm_overlay = now;
-                            emit_phase(&app, "error", "", message, 0, 0.0, "");
-                            show_indicator(&app);
+                crate::mac_hotkey::listen(|mode| {
+                    match mode {
+                        Some(crate::mac_hotkey::TapMode::Active) => {
+                            set_listener(
+                                &app,
+                                &listener,
+                                crate::locale::text(
+                                    "Listening for the right-hand Control key.",
+                                    "正在监听右侧 Ctrl 键。",
+                                ),
+                            );
+                        }
+                        Some(crate::mac_hotkey::TapMode::ListenOnly) => {
+                            let message = crate::locale::text(
+                                "Grant Accessibility so the hotkey does not type an extra character.",
+                                "请允许辅助功能，这样快捷键不会多打出一个字符。",
+                            );
+                            set_listener(&app, &listener, message);
+                            let now = now_ms();
+                            if now.saturating_sub(last_perm_overlay) >= 30_000 {
+                                last_perm_overlay = now;
+                                emit_phase(&app, "error", "", message, 0, 0.0, "");
+                                show_indicator(&app);
+                            }
+                        }
+                        None => {
+                            let message = crate::locale::text(
+                                "Hotkey listener is waiting for Input Monitoring or Accessibility. It will try again.",
+                                "快捷键监听在等待输入监视或辅助功能。它会再试。",
+                            );
+                            set_listener(&app, &listener, message);
+                            let now = now_ms();
+                            if now.saturating_sub(last_perm_overlay) >= 30_000 {
+                                last_perm_overlay = now;
+                                emit_phase(&app, "error", "", message, 0, 0.0, "");
+                                show_indicator(&app);
+                            }
                         }
                     }
                 });
@@ -818,11 +834,14 @@ fn spawn_listener(
         .expect("hotkey thread");
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn publish_swallow(bindings: &[(HotkeyMode, hotkey::Chord)]) {
     let chords: Vec<hotkey::Chord> = bindings.iter().map(|(_, chord)| chord.clone()).collect();
     hotkey::set_match_chords(chords.clone());
+    #[cfg(windows)]
     crate::win_hotkey::publish_chords(&chords);
+    #[cfg(target_os = "macos")]
+    crate::mac_hotkey::publish_chords(&chords);
 }
 
 fn set_listener(app: &AppHandle, listener: &Mutex<String>, message: &str) {

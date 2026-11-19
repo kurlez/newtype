@@ -62,4 +62,5 @@ test("saved alt chords stay distinct and still warn about typeless", () => {
   assert.ok(warnings.some((warning) => warning.includes("short press")));
   assert.equal(bindingError(["AltRight", "AltRight", "AltRight+Enter"]), "Dictate and Translate use the same hotkey.");
   assert.equal(knownConflict("ControlRight"), null);
+  assert.equal(knownConflict("AltRight+Slash"), null);
 });
