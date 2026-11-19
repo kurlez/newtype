@@ -455,8 +455,6 @@ mod windows {
             true
         }
     }
-<<<<<<< HEAD
-=======
 
     pub fn field_text(target: &FocusTarget) -> Option<String> {
         unsafe {
@@ -486,8 +484,6 @@ mod windows {
             Some(String::from_utf16_lossy(&buffer[..end]))
         }
     }
-    }
->>>>>>> 6a85517 (feat: learn spelling corrections into the local dictionary)
 
     pub fn field_text(target: &FocusTarget) -> Option<String> {
         unsafe {
